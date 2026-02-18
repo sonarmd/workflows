@@ -118,3 +118,32 @@ jobs:
 
           curl -sf -d "{\"channel\": \"$CHANNEL\", \"text\": \"@r2-d2 deploy $ENV ${{ github.sha }} $ARTIFACT_URL\"}" \
             "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
+
+  ## ── ECS Deploy (future — uncomment when Fargate is ready) ──────
+  #
+  # deploy-ecs:
+  #   needs: [lint, test]
+  #   if: github.ref_name == 'dev' || github.ref_name == 'staging' || github.ref_name == 'master'
+  #   uses: sonarmd/workflows/.github/workflows/deploy-ecs.yml@main
+  #   with:
+  #     ecr-repository: sonarmd/triggr-api
+  #     ecs-cluster: sonarmd-${{ github.ref_name == 'dev' && 'dev' || github.ref_name == 'staging' && 'stg' || 'prd' }}
+  #     ecs-service: triggr-api
+  #     task-definition-family: triggr-api-${{ github.ref_name == 'dev' && 'dev' || github.ref_name == 'staging' && 'stg' || 'prd' }}
+  #     container-name: api
+  #     image-tag: ${{ github.sha }}
+  #   secrets:
+  #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #
+  # notify:
+  #   needs: [deploy-ecs]
+  #   if: always()
+  #   uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+  #   with:
+  #     status: ${{ needs.deploy-ecs.result }}
+  #     environment: ${{ github.ref_name == 'dev' && 'dev' || github.ref_name == 'staging' && 'stg' || 'prd' }}
+  #     app-name: triggr_api
+  #     tag: ${{ github.sha }}
+  #   secrets:
+  #     SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}

@@ -1,0 +1,112 @@
+name: Deploy — ECS
+
+on:
+  workflow_call:
+    inputs:
+      ecr-repository:
+        description: ECR repository name
+        type: string
+        required: true
+      ecs-cluster:
+        description: ECS cluster name
+        type: string
+        required: true
+      ecs-service:
+        description: ECS service name
+        type: string
+        required: true
+      task-definition-family:
+        description: ECS task definition family name
+        type: string
+        required: true
+      container-name:
+        description: Container name in the task definition
+        type: string
+        required: true
+      aws-region:
+        description: AWS region
+        type: string
+        default: 'us-east-2'
+      image-tag:
+        description: Docker image tag
+        type: string
+        required: true
+      wait-for-stability:
+        description: Wait for ECS service to stabilize
+        type: boolean
+        default: true
+
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+
+    outputs:
+      image:
+        description: Full ECR image URI
+        value: ${{ jobs.deploy.outputs.image }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: push
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ inputs.image-tag }}"
+
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ inputs.task-definition-family }}" \
+            --query 'taskDefinition' \
+            --output json > task-def.json
+
+          # Remove fields that can't be included in register-task-definition
+          python3 -c "
+          import json
+          with open('task-def.json') as f:
+              td = json.load(f)
+          for key in ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes',
+                      'compatibilities', 'registeredAt', 'registeredBy']:
+              td.pop(key, None)
+          with open('task-def.json', 'w') as f:
+              json.dump(td, f, indent=2)
+          "
+
+      - name: Update task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ inputs.container-name }}
+          image: ${{ steps.push.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ inputs.ecs-service }}
+          cluster: ${{ inputs.ecs-cluster }}
+          wait-for-service-stability: ${{ inputs.wait-for-stability }}
