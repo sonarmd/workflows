@@ -1,0 +1,55 @@
+name: Notify Slack
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: Deploy status (success, failure, cancelled, rollback)
+        type: string
+        required: true
+      environment:
+        description: Target environment (dev, stg, prd)
+        type: string
+        required: true
+      app-name:
+        description: Application name
+        type: string
+        required: true
+      tag:
+        description: Deployment tag
+        type: string
+        default: ''
+      run-url:
+        description: GitHub Actions run URL
+        type: string
+        default: ''
+
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          sparse-checkout: actions
+
+      - name: Load Slack webhook from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SLACK_WEBHOOK_URL: op://smd_cicd/Slack/deploy-webhook/credential
+
+      - name: Send Slack notification
+        uses: sonarmd/workflows/actions/slack-notify@main
+        with:
+          webhook-url: ${{ env.SLACK_WEBHOOK_URL }}
+          status: ${{ inputs.status }}
+          environment: ${{ inputs.environment }}
+          app-name: ${{ inputs.app-name }}
+          tag: ${{ inputs.tag }}
+          run-url: ${{ inputs.run-url || github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          actor: ${{ github.actor }}

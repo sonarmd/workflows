@@ -1,0 +1,143 @@
+name: Deploy — API via SSM
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment (dev, stg, prd)
+        type: string
+        required: true
+      artifact-s3-key:
+        description: S3 key for the API artifact (e.g. api/stg/stg-api-1.0.0-b1/api.tar.gz)
+        type: string
+        required: true
+      config-s3-key:
+        description: S3 key for configuration.json (e.g. api/stg/stg-api-1.0.0-b1/configuration.json)
+        type: string
+        required: true
+      instance-tag-value:
+        description: Value of the Name/APIRole tag to target EC2 instances
+        type: string
+        required: true
+      s3-bucket:
+        description: S3 bucket name for deploy artifacts
+        type: string
+        default: 'sonarmd-deploy-artifacts'
+      aws-region:
+        description: AWS region
+        type: string
+        default: 'us-east-2'
+      aws-role-arn:
+        description: IAM role ARN to assume via OIDC
+        type: string
+        required: true
+      ssm-document:
+        description: SSM document name
+        type: string
+        default: 'SonarMD-DeployAPI'
+      deploy-tag:
+        description: Deployment tag for logging
+        type: string
+        required: true
+
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Discover target EC2 instances
+        id: instances
+        run: |
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:APIRole,Values=${{ inputs.instance-tag-value }}" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)
+
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "::error::No running instances found with tag APIRole=${{ inputs.instance-tag-value }}"
+            exit 1
+          fi
+
+          # Convert space-separated to comma-separated
+          INSTANCE_IDS_CSV=$(echo "$INSTANCE_IDS" | tr '\t' ',')
+          echo "ids=$INSTANCE_IDS_CSV" >> "$GITHUB_OUTPUT"
+          echo "Found instances: $INSTANCE_IDS_CSV"
+
+          # Count for serial deployment
+          COUNT=$(echo "$INSTANCE_IDS" | wc -w | tr -d ' ')
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to instances (serial)
+        id: deploy
+        run: |
+          IFS=',' read -ra INSTANCES <<< "${{ steps.instances.outputs.ids }}"
+
+          for i in "${!INSTANCES[@]}"; do
+            INSTANCE="${INSTANCES[$i]}"
+            echo "=== Deploying to instance $((i+1))/${#INSTANCES[@]}: $INSTANCE ==="
+
+            # Send SSM command to single instance
+            COMMAND_ID=$(aws ssm send-command \
+              --document-name "${{ inputs.ssm-document }}" \
+              --instance-ids "$INSTANCE" \
+              --parameters \
+                "S3Bucket=${{ inputs.s3-bucket }},S3ArtifactKey=${{ inputs.artifact-s3-key }},S3ConfigKey=${{ inputs.config-s3-key }},DeployTag=${{ inputs.deploy-tag }}" \
+              --timeout-seconds 300 \
+              --max-concurrency "1" \
+              --max-errors "0" \
+              --query 'Command.CommandId' \
+              --output text)
+
+            echo "SSM Command ID: $COMMAND_ID"
+
+            # Poll for completion
+            for attempt in $(seq 1 30); do
+              sleep 10
+              STATUS=$(aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$INSTANCE" \
+                --query 'Status' \
+                --output text 2>/dev/null || echo "InProgress")
+
+              echo "  Attempt $attempt: $STATUS"
+
+              case "$STATUS" in
+                Success)
+                  echo "Instance $INSTANCE deployed successfully"
+                  break
+                  ;;
+                Failed|TimedOut|Cancelled)
+                  echo "::error::Deployment failed on instance $INSTANCE (status: $STATUS)"
+                  # Fetch output for debugging
+                  aws ssm get-command-invocation \
+                    --command-id "$COMMAND_ID" \
+                    --instance-id "$INSTANCE" \
+                    --query '[StandardOutputContent, StandardErrorContent]' \
+                    --output text || true
+                  exit 1
+                  ;;
+              esac
+
+              if [ "$attempt" -eq 30 ]; then
+                echo "::error::Deployment timed out on instance $INSTANCE"
+                exit 1
+              fi
+            done
+          done
+
+          echo "All instances deployed successfully"

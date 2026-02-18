@@ -1,0 +1,68 @@
+name: Deploy — EAS Build
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: EAS build profile (preview, production)
+        type: string
+        required: true
+      platform:
+        description: Target platform (all, ios, android)
+        type: string
+        default: 'all'
+      auto-submit:
+        description: Auto-submit to app stores after build
+        type: boolean
+        default: false
+      environment:
+        description: Target environment (stg, prd)
+        type: string
+        required: true
+      node-version:
+        description: Node.js version
+        type: string
+        default: '22'
+      deploy-tag:
+        description: Deployment tag for logging
+        type: string
+        required: true
+
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          EXPO_TOKEN: op://smd_cicd/Mobile/expo-token/credential
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ env.EXPO_TOKEN }}
+
+      - name: Run EAS Build
+        run: |
+          BUILD_CMD="eas build --profile ${{ inputs.profile }} --platform ${{ inputs.platform }} --non-interactive"
+          if [ "${{ inputs.auto-submit }}" = "true" ]; then
+            BUILD_CMD="$BUILD_CMD --auto-submit"
+          fi
+          $BUILD_CMD

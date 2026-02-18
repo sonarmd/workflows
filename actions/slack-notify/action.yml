@@ -1,0 +1,93 @@
+name: Slack Notification
+description: Send a formatted deployment notification to Slack
+
+inputs:
+  webhook-url:
+    description: Slack Incoming Webhook URL
+    required: true
+  status:
+    description: Deploy status (success, failure, cancelled, rollback)
+    required: true
+  environment:
+    description: Target environment (dev, stg, prd)
+    required: true
+  app-name:
+    description: Application name
+    required: true
+  tag:
+    description: Deployment tag or version
+    required: false
+    default: ''
+  run-url:
+    description: GitHub Actions run URL
+    required: false
+    default: ''
+  actor:
+    description: GitHub user who triggered the deploy
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Send Slack notification
+      shell: bash
+      run: |
+        STATUS="${{ inputs.status }}"
+        ENV="${{ inputs.environment }}"
+        APP="${{ inputs.app-name }}"
+        TAG="${{ inputs.tag }}"
+        RUN_URL="${{ inputs.run-url }}"
+        ACTOR="${{ inputs.actor }}"
+
+        # Color coding
+        case "$STATUS" in
+          success)  COLOR="#36a64f"; EMOJI=":white_check_mark:" ;;
+          failure)  COLOR="#dc3545"; EMOJI=":x:" ;;
+          cancelled) COLOR="#ffc107"; EMOJI=":warning:" ;;
+          rollback) COLOR="#ff6600"; EMOJI=":rewind:" ;;
+          *)        COLOR="#6c757d"; EMOJI=":question:" ;;
+        esac
+
+        # Environment label
+        case "$ENV" in
+          dev) ENV_LABEL="Development" ;;
+          stg) ENV_LABEL="Staging" ;;
+          prd) ENV_LABEL="Production" ;;
+          *)   ENV_LABEL="$ENV" ;;
+        esac
+
+        # Build fields
+        FIELDS="[{\"title\":\"App\",\"value\":\"$APP\",\"short\":true},{\"title\":\"Environment\",\"value\":\"$ENV_LABEL\",\"short\":true}"
+
+        if [ -n "$TAG" ]; then
+          FIELDS="$FIELDS,{\"title\":\"Version\",\"value\":\"\`$TAG\`\",\"short\":true}"
+        fi
+        if [ -n "$ACTOR" ]; then
+          FIELDS="$FIELDS,{\"title\":\"Triggered by\",\"value\":\"$ACTOR\",\"short\":true}"
+        fi
+
+        FIELDS="$FIELDS]"
+
+        # Build action link
+        ACTIONS=""
+        if [ -n "$RUN_URL" ]; then
+          ACTIONS=",\"actions\":[{\"type\":\"button\",\"text\":\"View Run\",\"url\":\"$RUN_URL\"}]"
+        fi
+
+        PAYLOAD=$(cat <<EOJSON
+        {
+          "attachments": [{
+            "color": "$COLOR",
+            "fallback": "$EMOJI Deploy $STATUS: $APP $TAG to $ENV_LABEL",
+            "title": "$EMOJI Deploy $STATUS",
+            "fields": $FIELDS
+            $ACTIONS
+          }]
+        }
+        EOJSON
+        )
+
+        curl -sf -X POST -H 'Content-type: application/json' \
+          --data "$PAYLOAD" \
+          "${{ inputs.webhook-url }}" || echo "::warning::Slack notification failed"

@@ -1,0 +1,114 @@
+name: Deploy — Production
+
+on:
+  push:
+    tags: ['prd-fe-*']
+
+concurrency:
+  group: deploy-prd-fe
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --openssl-legacy-provider
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - app: admin
+            bucket: admin.sonarmd.com
+          - app: patient
+            bucket: my.sonarmd.com
+          - app: provider
+            bucket: care.sonarmd.com
+          - app: seat
+            bucket: seat.sonarmd.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+
+      - name: Build shared + app
+        run: |
+          yarn build-shared
+          REACT_APP_VERSION=${GITHUB_REF_NAME} yarn build-${{ matrix.app }}-prd
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.app }}-prd
+          path: ${{ matrix.app }}/build/
+          retention-days: 30
+
+  deploy:
+    needs: [build]
+    strategy:
+      matrix:
+        include:
+          - app: admin
+            bucket: admin.sonarmd.com
+            distribution-id: ${{ vars.CF_DIST_ADMIN_PRD }}
+          - app: patient
+            bucket: my.sonarmd.com
+            distribution-id: ${{ vars.CF_DIST_PATIENT_PRD }}
+          - app: provider
+            bucket: care.sonarmd.com
+            distribution-id: ${{ vars.CF_DIST_PROVIDER_PRD }}
+          - app: seat
+            bucket: seat.sonarmd.com
+            distribution-id: ${{ vars.CF_DIST_SEAT_PRD }}
+    uses: sonarmd/workflows/.github/workflows/deploy-s3-cloudfront.yml@main
+    with:
+      environment: prd
+      app-name: ${{ matrix.app }}
+      bucket: ${{ matrix.bucket }}
+      build-artifact-name: build-${{ matrix.app }}-prd
+      distribution-id: ${{ matrix.distribution-id }}
+      aws-region: us-east-2
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+  started:
+    runs-on: ubuntu-latest
+    outputs:
+      timestamp: ${{ steps.ts.outputs.timestamp }}
+    steps:
+      - id: ts
+        run: echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  notify:
+    needs: [deploy, started]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status: ${{ needs.deploy.result }}
+      environment: prd
+      app-name: frontend
+      tag: ${{ github.ref_name }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+  metrics:
+    needs: [deploy, started]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main
+    with:
+      repo: sonarmd/frontend
+      environment: prd
+      tag: ${{ github.ref_name }}
+      status: ${{ needs.deploy.result }}
+      started: ${{ needs.started.outputs.timestamp }}
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+    permissions:
+      id-token: write
+      contents: read

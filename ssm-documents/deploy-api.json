@@ -1,0 +1,123 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Deploy SonarMD API: download artifact from S3, extract, place config, swap directories, restart, health check with auto-rollback",
+  "parameters": {
+    "S3Bucket": {
+      "type": "String",
+      "description": "S3 bucket containing deploy artifacts",
+      "default": "sonarmd-deploy-artifacts"
+    },
+    "S3ArtifactKey": {
+      "type": "String",
+      "description": "S3 key for the API artifact tar.gz"
+    },
+    "S3ConfigKey": {
+      "type": "String",
+      "description": "S3 key for configuration.json"
+    },
+    "DeployTag": {
+      "type": "String",
+      "description": "Deploy tag for logging"
+    },
+    "InstallPath": {
+      "type": "String",
+      "description": "Installation directory for the API",
+      "default": "/var/www/triggr_api"
+    },
+    "ServiceName": {
+      "type": "String",
+      "description": "systemd service name",
+      "default": "triggr-api"
+    },
+    "HealthCheckUrl": {
+      "type": "String",
+      "description": "URL to check after deploy",
+      "default": "http://localhost:1337/health"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deploy",
+      "inputs": {
+        "timeoutSeconds": "300",
+        "runCommand": [
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "",
+          "S3_BUCKET='{{ S3Bucket }}'",
+          "S3_ARTIFACT_KEY='{{ S3ArtifactKey }}'",
+          "S3_CONFIG_KEY='{{ S3ConfigKey }}'",
+          "DEPLOY_TAG='{{ DeployTag }}'",
+          "INSTALL_PATH='{{ InstallPath }}'",
+          "SERVICE_NAME='{{ ServiceName }}'",
+          "HEALTH_URL='{{ HealthCheckUrl }}'",
+          "",
+          "echo \"=== SonarMD API Deploy: $DEPLOY_TAG ===\"",
+          "echo \"Instance: $(hostname)\"",
+          "echo \"Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+          "",
+          "# Step 1: Download artifact from S3",
+          "echo '--- Step 1: Download artifact ---'",
+          "rm -rf /tmp/api-deploy /tmp/api.tar.gz",
+          "mkdir -p /tmp/api-deploy",
+          "aws s3 cp \"s3://${S3_BUCKET}/${S3_ARTIFACT_KEY}\" /tmp/api.tar.gz",
+          "",
+          "# Step 2: Extract artifact",
+          "echo '--- Step 2: Extract artifact ---'",
+          "tar xzf /tmp/api.tar.gz -C /tmp/api-deploy",
+          "rm -f /tmp/api.tar.gz",
+          "",
+          "# Step 3: Download and place configuration",
+          "echo '--- Step 3: Place configuration ---'",
+          "aws s3 cp \"s3://${S3_BUCKET}/${S3_CONFIG_KEY}\" /tmp/api-deploy/dist/configuration.json",
+          "chmod 400 /tmp/api-deploy/dist/configuration.json",
+          "",
+          "# Step 4: Swap directories (keep .old for rollback)",
+          "echo '--- Step 4: Swap directories ---'",
+          "if [ -d \"${INSTALL_PATH}\" ]; then",
+          "  rm -rf \"${INSTALL_PATH}.old\"",
+          "  mv \"${INSTALL_PATH}\" \"${INSTALL_PATH}.old\"",
+          "fi",
+          "mv /tmp/api-deploy \"${INSTALL_PATH}\"",
+          "chown -R www-data:www-data \"${INSTALL_PATH}\"",
+          "",
+          "# Step 5: Restart service",
+          "echo '--- Step 5: Restart service ---'",
+          "systemctl restart \"${SERVICE_NAME}\"",
+          "",
+          "# Step 6: Health check with retry (6 attempts, ~30s total)",
+          "echo '--- Step 6: Health check ---'",
+          "HEALTHY=false",
+          "for i in 1 2 3 4 5 6; do",
+          "  sleep 5",
+          "  HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \"${HEALTH_URL}\" 2>/dev/null || echo '000')",
+          "  echo \"  Health check attempt $i: HTTP $HTTP_STATUS\"",
+          "  if [ \"$HTTP_STATUS\" = '200' ]; then",
+          "    HEALTHY=true",
+          "    break",
+          "  fi",
+          "done",
+          "",
+          "if [ \"$HEALTHY\" = 'true' ]; then",
+          "  echo '=== Deploy successful ==='",
+          "  rm -rf \"${INSTALL_PATH}.old\"",
+          "  exit 0",
+          "else",
+          "  echo '!!! Health check failed — rolling back !!!'",
+          "  # Rollback: swap back to .old",
+          "  if [ -d \"${INSTALL_PATH}.old\" ]; then",
+          "    rm -rf \"${INSTALL_PATH}\"",
+          "    mv \"${INSTALL_PATH}.old\" \"${INSTALL_PATH}\"",
+          "    systemctl restart \"${SERVICE_NAME}\"",
+          "    echo 'Rollback complete — previous version restored'",
+          "  else",
+          "    echo 'ERROR: No .old directory available for rollback'",
+          "  fi",
+          "  exit 1",
+          "fi"
+        ]
+      }
+    }
+  ]
+}

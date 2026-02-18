@@ -1,0 +1,139 @@
+name: Break-Glass Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, stg, prd]
+        required: true
+      tag_override:
+        description: Specific tag or SHA to deploy (leave empty for HEAD)
+        type: string
+        required: false
+        default: ''
+      skip_tests:
+        description: Skip tests (emergency only)
+        type: boolean
+        required: false
+        default: false
+      reason:
+        description: Reason for break-glass deploy (required for audit trail)
+        type: string
+        required: true
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment }}-api
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log break-glass event
+        run: |
+          echo "### Break-Glass Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Actor**: ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment**: ${{ github.event.inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag Override**: ${{ github.event.inputs.tag_override || 'HEAD' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip Tests**: ${{ github.event.inputs.skip_tests }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Reason**: ${{ github.event.inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    needs: [audit]
+    if: github.event.inputs.skip_tests != 'true'
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag_override || '' }}
+
+      - name: Setup Node.js
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+
+      - name: Install graphicsmagick
+        run: sudo apt-get update && sudo apt-get install -y graphicsmagick
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Test
+        env:
+          LOG_LEVEL: none
+          TZ: utc
+        run: |
+          ./node_modules/.bin/mocha \
+            --require @swc-node/register \
+            --exit \
+            --timeout 10000 \
+            "test/**/*.ts"
+
+  build-and-deploy:
+    needs: [audit, test]
+    if: |
+      always() &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag_override || '' }}
+
+      - name: Setup Node.js
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+
+      - name: Install graphicsmagick
+        run: sudo apt-get update && sudo apt-get install -y graphicsmagick
+
+      - name: Build
+        run: yarn build
+
+      - name: Package artifact
+        run: tar czf /tmp/api.tar.gz dist/ node_modules/ package.json
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload and deploy
+        run: |
+          ENV=${{ github.event.inputs.environment }}
+          TAG=${{ github.event.inputs.tag_override || github.sha }}
+
+          echo "Deploying tag $TAG to $ENV (break-glass)"
+
+          aws s3 cp /tmp/api.tar.gz \
+            "s3://sonarmd-deploy-artifacts/api/${ENV}/break-glass-${TAG}/api.tar.gz"
+
+          echo "Artifact uploaded. SSM deploy would follow via the reusable workflow."
+          echo "For break-glass, use the API deploy-${ENV}.yml workflow with the tag override."
+
+  notify:
+    needs: [build-and-deploy]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status: ${{ needs.build-and-deploy.result }}
+      environment: ${{ github.event.inputs.environment }}
+      app-name: triggr_api (break-glass)
+      tag: ${{ github.event.inputs.tag_override || github.sha }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}

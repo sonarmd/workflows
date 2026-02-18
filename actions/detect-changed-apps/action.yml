@@ -1,0 +1,75 @@
+name: Detect Changed Apps
+description: Detect which frontend apps have changed using path filtering (for monorepo CI)
+
+inputs:
+  base-ref:
+    description: Base ref for comparison (default is the PR base or previous commit)
+    required: false
+    default: ''
+
+outputs:
+  admin:
+    description: Whether admin app changed (true/false)
+    value: ${{ steps.filter.outputs.admin }}
+  patient:
+    description: Whether patient app changed (true/false)
+    value: ${{ steps.filter.outputs.patient }}
+  provider:
+    description: Whether provider app changed (true/false)
+    value: ${{ steps.filter.outputs.provider }}
+  seat:
+    description: Whether seat app changed (true/false)
+    value: ${{ steps.filter.outputs.seat }}
+  shared:
+    description: Whether shared library changed (true/false)
+    value: ${{ steps.filter.outputs.shared }}
+  any:
+    description: Whether any app or shared changed (true/false)
+    value: ${{ steps.filter.outputs.any }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect changed paths
+      id: filter
+      uses: dorny/paths-filter@v3
+      with:
+        base: ${{ inputs.base-ref || '' }}
+        filters: |
+          admin:
+            - 'admin/**'
+            - 'shared/**'
+            - 'package.json'
+            - 'yarn.lock'
+            - '.github/**'
+          patient:
+            - 'patient/**'
+            - 'shared/**'
+            - 'package.json'
+            - 'yarn.lock'
+            - '.github/**'
+          provider:
+            - 'provider/**'
+            - 'shared/**'
+            - 'package.json'
+            - 'yarn.lock'
+            - '.github/**'
+          seat:
+            - 'seat/**'
+            - 'shared/**'
+            - 'package.json'
+            - 'yarn.lock'
+            - '.github/**'
+          shared:
+            - 'shared/**'
+            - 'package.json'
+            - 'yarn.lock'
+          any:
+            - 'admin/**'
+            - 'patient/**'
+            - 'provider/**'
+            - 'seat/**'
+            - 'shared/**'
+            - 'package.json'
+            - 'yarn.lock'
+            - '.github/**'

@@ -1,0 +1,36 @@
+name: Generate configuration.json
+description: Render configuration.json from template using environment variables loaded from 1Password
+
+inputs:
+  template-path:
+    description: Path to the configuration.json.tpl template file
+    required: true
+  output-path:
+    description: Path to write the rendered configuration.json
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Render configuration template
+      shell: bash
+      run: |
+        TEMPLATE="${{ inputs.template-path }}"
+        OUTPUT="${{ inputs.output-path }}"
+
+        if [ ! -f "$TEMPLATE" ]; then
+          echo "::error::Template not found: $TEMPLATE"
+          exit 1
+        fi
+
+        # Use envsubst to replace ${VAR} placeholders with environment variable values
+        envsubst < "$TEMPLATE" > "$OUTPUT"
+
+        # Validate the output is valid JSON
+        if ! python3 -c "import json; json.load(open('$OUTPUT'))"; then
+          echo "::error::Generated configuration.json is not valid JSON"
+          exit 1
+        fi
+
+        echo "Generated configuration.json at $OUTPUT"
+        echo "File size: $(wc -c < "$OUTPUT") bytes"

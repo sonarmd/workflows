@@ -1,0 +1,59 @@
+name: Tag Release
+
+on:
+  workflow_call:
+    inputs:
+      repo-short:
+        description: Short repo identifier (fe, api, mobile)
+        type: string
+        required: true
+      environment:
+        description: Environment prefix for the tag (stg)
+        type: string
+        default: 'stg'
+      working-directory:
+        description: Directory containing package.json with version
+        type: string
+        default: '.'
+
+    outputs:
+      tag:
+        description: The created tag name
+        value: ${{ jobs.tag.outputs.tag }}
+      version:
+        description: The version from package.json
+        value: ${{ jobs.tag.outputs.version }}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.create-tag.outputs.tag }}
+      version: ${{ steps.create-tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create release tag
+        id: create-tag
+        run: |
+          VERSION=$(node -p "require('./${{ inputs.working-directory }}/package.json').version")
+          TAG="${{ inputs.environment }}-${{ inputs.repo-short }}-${VERSION}-b${{ github.run_number }}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          echo "Creating tag: $TAG"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Auto-release $TAG from merge to ${{ inputs.environment }}"
+          git push origin "$TAG"
+
+          echo "### Tag Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag**: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version**: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Build**: \`${{ github.run_number }}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,255 @@
+name: Deploy — Dev
+
+on:
+  push:
+    tags: ['dev-api-*']
+
+concurrency:
+  group: deploy-dev-api
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  started:
+    runs-on: ubuntu-latest
+    outputs:
+      timestamp: ${{ steps.ts.outputs.timestamp }}
+    steps:
+      - id: ts
+        run: echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+
+      - name: Install graphicsmagick
+        run: sudo apt-get update && sudo apt-get install -y graphicsmagick
+
+      - name: Build
+        run: yarn build
+
+      - name: Package artifact
+        run: tar czf /tmp/api.tar.gz dist/ node_modules/ package.json
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload artifact to S3
+        run: |
+          aws s3 cp /tmp/api.tar.gz \
+            "s3://sonarmd-deploy-artifacts/api/dev/${{ github.ref_name }}/api.tar.gz"
+
+  generate-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          sparse-checkout: |
+            actions
+            templates
+
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          # All config secrets for dev environment
+          MONGO_URI: op://smd_cicd/API/dev/config-secrets/mongo_uri
+          MONGO_USERNAME: op://smd_cicd/API/dev/config-secrets/mongo_username
+          MONGO_PASSWORD: op://smd_cicd/API/dev/config-secrets/mongo_password
+          MONGO_URL: op://smd_cicd/API/dev/config-secrets/mongo_url
+          MONGO_PREFIX: op://smd_cicd/API/dev/config-secrets/mongo_prefix
+          MONGO_READ_ONLY_URI: op://smd_cicd/API/dev/config-secrets/mongo_read_only_uri
+          MONGO_READ_ONLY_USERNAME: op://smd_cicd/API/dev/config-secrets/mongo_read_only_username
+          MONGO_READ_ONLY_PASSWORD: op://smd_cicd/API/dev/config-secrets/mongo_read_only_password
+          SESSION_SECRET: op://smd_cicd/API/dev/config-secrets/session_secret
+          JWT_SECRET: op://smd_cicd/API/dev/config-secrets/jwt_secret
+          TWILIO_AUTH_TOKEN: op://smd_cicd/API/dev/config-secrets/twilio_auth_token
+          TWILIO_API_KEY: op://smd_cicd/API/dev/config-secrets/twilio_api_key
+          TWILIO_API_SECRET: op://smd_cicd/API/dev/config-secrets/twilio_api_secret
+          SENDGRID_API_KEY: op://smd_cicd/API/dev/config-secrets/sendgrid_api_key
+          SLACK_BOT_TOKEN: op://smd_cicd/API/dev/config-secrets/slack_bot_token
+          REDIS_AUTH_TOKEN: op://smd_cicd/API/dev/config-secrets/redis_auth_token
+          FIREBASE_SERVER_KEY: op://smd_cicd/API/dev/config-secrets/firebase_server_key
+          GITHUB_OAUTH_SECRET: op://smd_cicd/API/dev/config-secrets/github_oauth_secret
+          GCAL_CLIENT_SECRET: op://smd_cicd/API/dev/config-secrets/gcal_client_secret
+          GCAL_REFRESH_TOKEN: op://smd_cicd/API/dev/config-secrets/gcal_refresh_token
+          ITERABLE_API_KEY: op://smd_cicd/API/dev/config-secrets/iterable_api_key
+          CHANGE_HEALTHCARE_CLIENT_ID: op://smd_cicd/API/dev/config-secrets/change_healthcare_client_id
+          CHANGE_HEALTHCARE_CLIENT_SECRET: op://smd_cicd/API/dev/config-secrets/change_healthcare_client_secret
+          PAGERDUTY_KEY_LOW_PRIORITY: op://smd_cicd/API/dev/config-secrets/pagerduty_key_low_priority
+          PAGERDUTY_KEY_HIGH_PRIORITY: op://smd_cicd/API/dev/config-secrets/pagerduty_key_high_priority
+          MIXPANEL_MOBILE_API_SECRET: op://smd_cicd/API/dev/config-secrets/mixpanel_api_secret
+          MIXPANEL_MOBILE_TOKEN: op://smd_cicd/API/dev/config-secrets/mixpanel_token
+          BRITEVERIFY_API_KEY: op://smd_cicd/API/dev/config-secrets/briteverify_api_key
+
+      - name: Set non-secret environment variables
+        run: |
+          # These are environment-specific but not secret
+          cat >> "$GITHUB_ENV" <<'EOF'
+          DEPLOY_TAG=${{ github.ref_name }}
+          DEPLOY_ENV=dev
+          ENVIRONMENT_NAME=Development
+          SERVER_TYPE=Server
+          BASE_URL=https://api.dev.sonarmd.com
+          PROVIDER_URL=https://care.dev.sonarmd.com
+          ADMIN_URL=https://admin.dev.sonarmd.com
+          SEAT_URL=https://seat.dev.sonarmd.com
+          SEAT_SIMULATOR_URL=https://seat.dev.sonarmd.com/simulator
+          PATIENT_PORTAL_URL=https://my.dev.sonarmd.com
+          WEBSITE_URL=https://www.sonarmd.com
+          API_PROTOCOL=https
+          API_URL=https://api.dev.sonarmd.com
+          APP_INSTALL_URL=https://my.dev.sonarmd.com/install
+          CLIENT_ASSET_BASE_URL=https://s3.us-east-2.amazonaws.com/images.dev.sonarmd.com
+          CLIENT_RA_PHONE_NUMBER=+15555551234
+          CHANGE_HEALTHCARE_BASE_URL=https://sandbox.apigw.changehealthcare.com
+          CHANGE_STREAMS_ENABLED=false
+          FIREBASE_ENABLED=false
+          FIREBASE_SENDER_ID=
+          IMAGES_ENABLE_RESIZING=false
+          IMAGES_S3_BUCKET=images.dev.sonarmd.com
+          REDIS_ENABLED=false
+          REDIS_ENDPOINT=
+          EXTRA_ALLOWED_HOSTS=[]
+          MONGOOSE_AUTO_INDEX=true
+          BRITEVERIFY_PERFORM_VALIDATION=false
+          SFTP_ENABLED=false
+          SFTP_USERS=[]
+          REPORTS_S3_BUCKET=
+          REPORTS_ENABLED=false
+          REPORTS_SIGNED_URL_EXPIRES=1
+          SANITY_CHECK_THRESHOLD=100
+          DOCUMENT_VALIDATION_COUNT=100
+          ML_SERVER_URL=
+          ML_SERVER_PREDICTION_MODE=disabled
+          SAGEMAKER_ENROLLMENT_ENDPOINT=
+          GOOGLE_ANALYTICS_PROPERTY_ID=
+          GCAL_CLIENT_ID=
+          GCAL_DEFAULT_INVITEES=[]
+          GCAL_CALLS_CALENDAR_ID=
+          GITHUB_OAUTH_ID=
+          ITERABLE_BASE_URL=
+          ITERABLE_CUSTOM_SMS_CAMPAIGN=
+          ITERABLE_WEBHOOK_USER=
+          ITERABLE_WEBHOOK_PASSWORD=
+          CUSTOM_ONE_OFF_SMS__BLANK_TEMPLATE=
+          PATIENT_MOBILE_LOGIN_SMS=
+          GENERIC_EMAIL_TEMPLATE=
+          PRACTICE_ALERT_NOTIFICATION=
+          PATIENT_INELIGIBLE__OPTED_OUT=
+          PATIENT_INELIGIBLE__LEFT_PRACTICE=
+          PATIENT_INELIGIBLE__NO_DIAGNOSIS=
+          PATIENT_INELIGIBLE__INSURANCE_CHANGE=
+          NEW_ACTIVITY_IN_PROGRESS_ALERT=
+          NEW_ACTIVITY_OPEN_ALERT=
+          ALERT_OVERDUE=
+          NEW_ACTIVITY_OVERDUE_ALERT=
+          PASSWORD_RESET=
+          BULK_ACTION_COMPLETED=
+          CLAIM_START=
+          BULK_MESSAGE_COMPLETED=
+          BULK_ACTION_STARTED=
+          CLAIM_STATUS_CHECK_COMPLETED=
+          CLAIM_STATUS_CHECK_STARTED=
+          CLAIM_COMPLETED=
+          PATIENT_MOBILE_LOGIN_EMAIL=
+          DIRECT_TO_CONSUMER_ID=
+          GROWTH_ID=
+          DEFAULT_MESSAGING_PERSONALITY_ID=
+          TWILIO_ALERT_SID=
+          TWILIO_PATIENT_CONVO_SID=
+          TWILIO_OUTGOING_PHONE_NUMBER=
+          TWILIO_DEFAULT_SMS_PHONE_NUMBER=
+          TWILIO_OUTBOUND_PHONE_NUMBERS=[]
+          TWILIO_IVR_FLOW_SID=
+          TWILIO_VOICE_APP_SID=
+          SLACK_ADD_CLINIC_LEAD_CHANNEL=
+          SLACK_CLAIMS_WEBHOOK=
+          SLACK_FEED_CONTENT_CHANNEL=
+          SLACK_GROWTH_ALERT_CHANNEL=
+          SLACK_GROWTH_CALL_REMINDERS_CHANNEL=
+          SLACK_INTRO_ALERT_CHANNEL=
+          SLACK_INVALID_PHONE_NUMBER_CHANNEL=
+          SLACK_LOCATION_ALERTS_CHANNEL=
+          SLACK_NEW_LEAD_ALERT_CHANNEL=
+          SLACK_ORPHANED_PPT_ALERT_CHANNEL=
+          SLACK_PEER_CONVERSATIONS_CHANNEL=
+          SLACK_RA_ALERT_CHANNEL=
+          SLACK_SEAT_SIMULATOR_RESULTS_CHANNEL=
+          SLACK_RESPONSE_TIME_ALERT_CHANNEL=
+          SLACK_SUPPORT_SQUAD_ALERT_CHANNEL=
+          SLACK_SUPPORTER_ALERT_CHANNEL=
+          SLACK_UNDELIVERABLE_EMAIL_ALERTS_WEBHOOK=
+          SLACK_UNDELIVERABLE_MESSAGE_ALERTS_WEBHOOK_URL=
+          SLACK_COMMUNITY_WEBHOOK_VERIFICATION_TOKEN=
+          EOF
+
+      - name: Generate configuration.json
+        uses: sonarmd/workflows/actions/generate-config-json@main
+        with:
+          template-path: templates/configuration.json.tpl
+          output-path: /tmp/configuration.json
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload config to S3
+        run: |
+          aws s3 cp /tmp/configuration.json \
+            "s3://sonarmd-deploy-artifacts/api/dev/${{ github.ref_name }}/configuration.json"
+
+  deploy:
+    needs: [build, generate-config]
+    uses: sonarmd/workflows/.github/workflows/deploy-api-ssm.yml@main
+    with:
+      environment: dev
+      artifact-s3-key: api/dev/${{ github.ref_name }}/api.tar.gz
+      config-s3-key: api/dev/${{ github.ref_name }}/configuration.json
+      instance-tag-value: APIDev
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      deploy-tag: ${{ github.ref_name }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+  notify:
+    needs: [deploy, started]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status: ${{ needs.deploy.result }}
+      environment: dev
+      app-name: triggr_api
+      tag: ${{ github.ref_name }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+  metrics:
+    needs: [deploy, started]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main
+    with:
+      repo: sonarmd/triggr_api
+      environment: dev
+      tag: ${{ github.ref_name }}
+      status: ${{ needs.deploy.result }}
+      started: ${{ needs.started.outputs.timestamp }}
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+    permissions:
+      id-token: write
+      contents: read

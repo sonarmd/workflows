@@ -1,0 +1,26 @@
+name: Load Secrets from 1Password
+description: Load secrets from 1Password using the Connect Server / Service Account
+
+inputs:
+  export-env:
+    description: Whether to export secrets as environment variables
+    required: false
+    default: 'true'
+  secret-references:
+    description: |
+      Multi-line string of secret references in the format:
+      ENV_VAR_NAME: op://vault/item/field
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Load secrets from 1Password
+      uses: 1password/load-secrets-action@v2
+      with:
+        export-env: ${{ inputs.export-env }}
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ env.OP_SERVICE_ACCOUNT_TOKEN }}
+        # The calling workflow must set individual op:// references as env vars
+        # before calling this action. The 1password/load-secrets-action resolves
+        # any env var whose value starts with op:// into the actual secret value.

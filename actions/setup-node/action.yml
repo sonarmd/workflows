@@ -1,0 +1,52 @@
+name: Setup Node.js
+description: Install Node.js via Volta-aware version detection with yarn dependency caching
+
+inputs:
+  node-version:
+    description: Node.js version to install (default reads from package.json volta config)
+    required: false
+    default: ''
+  working-directory:
+    description: Directory containing package.json and yarn.lock
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - name: Detect Node version from package.json
+      id: detect
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ -n "${{ inputs.node-version }}" ]; then
+          echo "version=${{ inputs.node-version }}" >> "$GITHUB_OUTPUT"
+        else
+          VERSION=$(node -p "require('./package.json').volta?.node || require('./package.json').engines?.node || '18'" | tr -d '^~>=x ')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ steps.detect.outputs.version }}
+
+    - name: Get yarn cache directory
+      id: yarn-cache
+      shell: bash
+      run: echo "dir=$(yarn cache dir)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache yarn dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ steps.yarn-cache.outputs.dir }}
+          ${{ inputs.working-directory }}/node_modules
+        key: yarn-${{ runner.os }}-${{ hashFiles(format('{0}/yarn.lock', inputs.working-directory)) }}
+        restore-keys: |
+          yarn-${{ runner.os }}-
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: yarn install --frozen-lockfile

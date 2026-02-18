@@ -1,0 +1,156 @@
+name: Break-Glass Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, stg, prd]
+        required: true
+      tag_override:
+        description: Specific tag or SHA to deploy (leave empty for HEAD)
+        type: string
+        required: false
+        default: ''
+      skip_tests:
+        description: Skip tests (emergency only)
+        type: boolean
+        required: false
+        default: false
+      reason:
+        description: Reason for break-glass deploy (required for audit trail)
+        type: string
+        required: true
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment }}-fe
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --openssl-legacy-provider
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log break-glass event
+        run: |
+          echo "### Break-Glass Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Actor**: ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment**: ${{ github.event.inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag Override**: ${{ github.event.inputs.tag_override || 'HEAD' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip Tests**: ${{ github.event.inputs.skip_tests }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Reason**: ${{ github.event.inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    needs: [audit]
+    if: github.event.inputs.skip_tests != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag_override || '' }}
+
+      - name: Setup Node.js
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+
+      - name: Build shared
+        run: yarn build-shared
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Test
+        run: yarn just-test
+
+  build-and-deploy:
+    needs: [audit, test]
+    if: |
+      always() &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - app: admin
+            bucket-dev: admin.dev.sonarmd.com
+            bucket-stg: admin.stg.sonarmd.com
+            bucket-prd: admin.sonarmd.com
+          - app: patient
+            bucket-dev: my.dev.sonarmd.com
+            bucket-stg: my.stg.sonarmd.com
+            bucket-prd: my.sonarmd.com
+          - app: provider
+            bucket-dev: care.dev.sonarmd.com
+            bucket-stg: care.stg.sonarmd.com
+            bucket-prd: care.sonarmd.com
+          - app: seat
+            bucket-dev: seat.dev.sonarmd.com
+            bucket-stg: seat.stg.sonarmd.com
+            bucket-prd: seat.sonarmd.com
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag_override || '' }}
+
+      - name: Setup Node.js
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+
+      - name: Build
+        run: |
+          ENV=${{ github.event.inputs.environment }}
+          TAG=${{ github.event.inputs.tag_override || github.sha }}
+          yarn build-shared
+          REACT_APP_VERSION=$TAG yarn build-${{ matrix.app }}-$ENV
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Determine bucket
+        id: bucket
+        run: |
+          ENV=${{ github.event.inputs.environment }}
+          case "$ENV" in
+            dev) echo "name=${{ matrix.bucket-dev }}" >> "$GITHUB_OUTPUT" ;;
+            stg) echo "name=${{ matrix.bucket-stg }}" >> "$GITHUB_OUTPUT" ;;
+            prd) echo "name=${{ matrix.bucket-prd }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync ${{ matrix.app }}/build/ "s3://${{ steps.bucket.outputs.name }}" \
+            --cache-control "max-age=604800, public" \
+            --exclude index.html --exclude asset-manifest.json
+
+          aws s3api put-object \
+            --bucket "${{ steps.bucket.outputs.name }}" \
+            --key index.html \
+            --body ${{ matrix.app }}/build/index.html \
+            --cache-control "max-age=300, public" \
+            --content-type text/html
+
+  notify:
+    needs: [build-and-deploy]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status: ${{ needs.build-and-deploy.result }}
+      environment: ${{ github.event.inputs.environment }}
+      app-name: frontend (break-glass)
+      tag: ${{ github.event.inputs.tag_override || github.sha }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}

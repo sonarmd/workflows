@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: pip3 install ansible
+
+      - name: Ansible syntax check
+        run: |
+          cd Ansible
+          for playbook in *.yml; do
+            if [ -f "$playbook" ]; then
+              echo "Checking $playbook..."
+              ansible-playbook --syntax-check "$playbook" || true
+            fi
+          done
