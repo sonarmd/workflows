@@ -1,40 +1,21 @@
 # sonarmd/workflows
 
-Central CI/CD infrastructure for SonarMD's GitHub Actions pipelines. Contains reusable workflows, composite actions, Terraform for AWS provisioning, and per-repo workflow templates.
+Central CI/CD infrastructure for SonarMD's GitHub Actions pipelines. Drop-in replacement for CircleCI — same branch-based triggers, same deploy patterns, same secrets approach.
 
 ## Structure
 
 ```
 .github/workflows/          Reusable workflows (called by per-repo workflows)
   ci-node.yml                 CI: lint + test + build (Node.js)
-  deploy-s3-cloudfront.yml    Deploy: S3 sync + CloudFront invalidation
-  deploy-api-ssm.yml          Deploy: artifact → S3 → SSM → EC2
+  deploy-s3-cloudfront.yml    Deploy: S3 sync + optional CloudFront invalidation
   deploy-eas-build.yml        Deploy: EAS Build (mobile)
-  tag-release.yml             Auto-tag on merge to staging
+  tag-release.yml             Auto-tag on merge (for future use)
   notify-slack.yml            Slack deploy notifications
-  metrics-collector.yml       Record deploy metrics to S3
-  metrics-report.yml          Weekly KPI summary to Slack
 
 actions/                     Composite actions
-  setup-node/                  Node.js + yarn cache
-  load-secrets/                1Password secrets loader
-  health-check/                HTTP health poll with backoff
-  generate-config-json/        Render config template from env vars
-  slack-notify/                Formatted Slack message
+  setup-node/                  Node.js via Volta detection + yarn cache
   detect-changed-apps/         Path filtering for frontend monorepo
-
-terraform/                   AWS infrastructure
-  main.tf                      Provider config
-  oidc.tf                      GitHub OIDC provider
-  iam.tf                       IAM roles + policies
-  s3.tf                        Deploy artifacts + metrics buckets
-  ssm.tf                       SSM document registration
-
-ssm-documents/               AWS Systems Manager documents
-  deploy-api.json              API deploy: download → extract → swap → restart → health check
-
-templates/                   Configuration templates
-  configuration.json.tpl       API config with ${VAR} placeholders
+  slack-notify/                Formatted Slack message
 
 per-repo/                    Workflow templates for each repository
   frontend/                    sonarmd/frontend workflows
@@ -45,53 +26,59 @@ per-repo/                    Workflow templates for each repository
 docs/                        Documentation
   architecture.md              System architecture overview
   migration-runbook.md         Step-by-step CircleCI → GHA migration
-  rollback-playbook.md         Rollback procedures per service
-  secrets-inventory.md         1Password vault + secret reference
 ```
 
-## Quick Start
+## GitHub Secrets Required
 
-### 1. Apply Terraform
+Set these as repository secrets (same values as CircleCI's `DevOps` context):
 
-```bash
-cd terraform
-terraform init
-terraform plan
-terraform apply
-```
+| Secret | Repos | Purpose |
+|--------|-------|---------|
+| `AWS_ACCESS_KEY_ID` | frontend | AWS deploy credentials |
+| `AWS_SECRET_ACCESS_KEY` | frontend | AWS deploy credentials |
+| `SLACK_TOKEN` | frontend, triggr_api | Slack webhook token |
+| `EXPO_TOKEN` | frontend-patient-app | Expo/EAS CLI token |
 
-### 2. Set GitHub Org Secret
+## Copy Workflows to Repos
 
-Set `OP_SERVICE_ACCOUNT_TOKEN` as an organization-level secret in GitHub.
+Copy the appropriate `per-repo/<name>/.github/workflows/` directory to each repository's `.github/workflows/`.
 
-### 3. Set Repository Variables
+## How It Works
 
-Each repo needs `AWS_DEPLOY_ROLE_ARN` (from Terraform output). Frontend also needs CloudFront distribution ID variables.
+### Frontend (`sonarmd/frontend`)
 
-### 4. Copy Workflows to Repos
+**CI** — Runs on every push and PRs to staging/master:
+- Detects which apps changed (admin, patient, provider, seat, shared)
+- Installs deps + builds shared lib (cached across jobs)
+- Runs per-app unit tests + Cypress (only for changed apps)
+- Lints the full codebase
 
-Copy the appropriate `per-repo/<name>/.github/workflows/` directory to each repository.
+**Deploy** — Runs on push to `dev`, `staging`, `master`:
+- Detects changed apps via path filtering
+- Builds each changed app with environment-specific vars
+- Syncs to S3 (7-day cache for assets, 5-min cache for index.html)
+- Notifies Slack
 
-## Deployment Flow
+### API (`sonarmd/triggr_api`)
 
-```
-PR → CI (push/PR) → Merge to staging → auto-tag (stg-{repo}-{ver}-b{N}) → tag triggers deploy
-```
+**CI** — Runs on every push and PRs to staging/master:
+- Lints, runs tests across 4 shards with MongoDB service container, builds
 
-Production: manually create `prd-{repo}-{version}` tag → requires GitHub Environment approval.
+**Deploy** — Runs on push to `dev`, `staging`, `master`:
+- Runs lint + test + build
+- Packages build artifact (tar.gz) and uploads as GHA artifact
+- Sends `@r2-d2 deploy {env} {sha} {artifact_url}` to Slack (same pattern as current `slack-deploy.sh`)
+- Hubot + Ansible handle the actual EC2 deployment (unchanged)
 
-## Key Design Decisions
+### Mobile (`sonarmd/frontend-patient-app`)
 
-- **Tag-based deploys** (not branch-based) — safe parallel running with CircleCI during migration
-- **OIDC** for AWS — no stored credentials
-- **1Password** for all secrets — single `OP_SERVICE_ACCOUNT_TOKEN` resolves everything
-- **Serial API deploy** — one instance at a time with auto-rollback
-- **CloudFront invalidation** — improvement over current TTL-based cache expiry
-- **Break-glass workflows** — manual deploy escape hatch with audit trail
+**CI** — Runs on every push and PRs:
+- Lint + typecheck + test (Node 22)
 
-## Docs
+**EAS Builds** — Tag-triggered:
+- `stg-mobile-*` tags trigger preview builds
+- `prd-mobile-*` tags trigger production builds with auto-submit
 
-- [Architecture](docs/architecture.md)
-- [Migration Runbook](docs/migration-runbook.md)
-- [Rollback Playbook](docs/rollback-playbook.md)
-- [Secrets Inventory](docs/secrets-inventory.md)
+### Misc (`sonarmd/triggr_misc`)
+
+**CI** — Ansible playbook syntax check on push/PR

@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       status:
-        description: Deploy status (success, failure, cancelled, rollback)
+        description: Deploy status (success, failure, cancelled)
         type: string
         required: true
       environment:
@@ -16,40 +16,41 @@ on:
         type: string
         required: true
       tag:
-        description: Deployment tag
+        description: Version or ref name
         type: string
         default: ''
-      run-url:
-        description: GitHub Actions run URL
+      channel:
+        description: Slack channel override
         type: string
-        default: ''
+        default: '#ops'
 
     secrets:
-      OP_SERVICE_ACCOUNT_TOKEN:
+      SLACK_TOKEN:
         required: true
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: sonarmd/workflows
-          sparse-checkout: actions
-
-      - name: Load Slack webhook from 1Password
-        uses: 1password/load-secrets-action@v2
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          SLACK_WEBHOOK_URL: op://smd_cicd/Slack/deploy-webhook/credential
-
       - name: Send Slack notification
-        uses: sonarmd/workflows/actions/slack-notify@main
-        with:
-          webhook-url: ${{ env.SLACK_WEBHOOK_URL }}
-          status: ${{ inputs.status }}
-          environment: ${{ inputs.environment }}
-          app-name: ${{ inputs.app-name }}
-          tag: ${{ inputs.tag }}
-          run-url: ${{ inputs.run-url || github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          actor: ${{ github.actor }}
+        run: |
+          STATUS="${{ inputs.status }}"
+          ENV="${{ inputs.environment }}"
+          APP="${{ inputs.app-name }}"
+          TAG="${{ inputs.tag }}"
+          CHANNEL="${{ inputs.channel }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          ACTOR="${{ github.actor }}"
+
+          case "$STATUS" in
+            success)  EMOJI=":white_check_mark:" ;;
+            failure)  EMOJI=":x:" ;;
+            *)        EMOJI=":warning:" ;;
+          esac
+
+          TEXT="${EMOJI} *${APP}* deployed to *${ENV}* — ${STATUS}\nVersion: \`${TAG}\` | By: ${ACTOR} | <${RUN_URL}|View Run>"
+
+          curl -sf -X POST \
+            -d "$(jq -n --arg channel "$CHANNEL" --arg text "$TEXT" '{channel: $channel, text: $text}')" \
+            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" \
+            || echo "::warning::Slack notification failed"

@@ -1,0 +1,210 @@
+name: Deploy
+
+on:
+  push:
+    branches: [dev, staging, master]
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --openssl-legacy-provider
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      admin: ${{ steps.filter.outputs.admin }}
+      patient: ${{ steps.filter.outputs.patient }}
+      provider: ${{ steps.filter.outputs.provider }}
+      seat: ${{ steps.filter.outputs.seat }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/detect-changed-apps@main
+        id: filter
+
+  # Determine environment from branch name
+  env:
+    runs-on: ubuntu-latest
+    outputs:
+      env: ${{ steps.env.outputs.env }}
+      slack-channel: ${{ steps.env.outputs.slack_channel }}
+    steps:
+      - id: env
+        run: |
+          case "${{ github.ref_name }}" in
+            dev)     echo "env=dev" >> "$GITHUB_OUTPUT"; echo "slack_channel=#ops-dev" >> "$GITHUB_OUTPUT" ;;
+            staging) echo "env=stg" >> "$GITHUB_OUTPUT"; echo "slack_channel=#ops" >> "$GITHUB_OUTPUT" ;;
+            master)  echo "env=prd" >> "$GITHUB_OUTPUT"; echo "slack_channel=#ops" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # ── Build + Deploy per app ────────────────────────────────────
+
+  admin:
+    needs: [detect-changes, env]
+    if: needs.detect-changes.outputs.admin == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - name: Build
+        run: REACT_APP_VERSION=${{ github.sha }} yarn build-admin-${{ needs.env.outputs.env }}
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Deploy to S3
+        working-directory: admin
+        run: |
+          aws s3 sync build/ "s3://$BUCKET" \
+            --cache-control "max-age=604800, public" \
+            --exclude index.html
+
+          aws s3api put-object \
+            --bucket "$BUCKET" \
+            --key index.html \
+            --body build/index.html \
+            --cache-control "max-age=300, public" \
+            --content-type text/html
+        env:
+          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'admin.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'admin.stg.sonarmd.com' || 'admin.sonarmd.com' }}
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed Admin Tool ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
+            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
+
+  patient:
+    needs: [detect-changes, env]
+    if: needs.detect-changes.outputs.patient == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - name: Build
+        run: REACT_APP_VERSION=${{ github.sha }} yarn build-patient-${{ needs.env.outputs.env }}
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Deploy to S3
+        working-directory: patient
+        run: |
+          aws s3 sync build/ "s3://$BUCKET" \
+            --cache-control "max-age=604800, public" \
+            --exclude index.html
+
+          aws s3api put-object \
+            --bucket "$BUCKET" \
+            --key index.html \
+            --body build/index.html \
+            --cache-control "max-age=300, public" \
+            --content-type text/html
+        env:
+          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'my.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'my.stg.sonarmd.com' || 'my.sonarmd.com' }}
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed Patient ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
+            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
+
+  provider:
+    needs: [detect-changes, env]
+    if: needs.detect-changes.outputs.provider == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - name: Build
+        run: REACT_APP_VERSION=${{ github.sha }} yarn build-provider-${{ needs.env.outputs.env }}
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Deploy to S3
+        working-directory: provider
+        run: |
+          aws s3 sync build/ "s3://$BUCKET" \
+            --cache-control "max-age=604800, public" \
+            --exclude index.html
+
+          aws s3api put-object \
+            --bucket "$BUCKET" \
+            --key index.html \
+            --body build/index.html \
+            --cache-control "max-age=300, public" \
+            --content-type text/html
+        env:
+          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'care.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'care.stg.sonarmd.com' || 'care.sonarmd.com' }}
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed Provider Dashboard ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
+            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
+
+  seat:
+    needs: [detect-changes, env]
+    if: needs.detect-changes.outputs.seat == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - name: Build
+        run: REACT_APP_VERSION=${{ github.sha }} yarn build-seat-${{ needs.env.outputs.env }}
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Deploy to S3
+        working-directory: seat
+        run: |
+          aws s3 sync build/ "s3://$BUCKET" \
+            --cache-control "max-age=604800, public" \
+            --exclude index.html
+
+          aws s3api put-object \
+            --bucket "$BUCKET" \
+            --key index.html \
+            --body build/index.html \
+            --cache-control "max-age=300, public" \
+            --content-type text/html
+        env:
+          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'seat.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'seat.stg.sonarmd.com' || 'seat.sonarmd.com' }}
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed RAT ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
+            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true

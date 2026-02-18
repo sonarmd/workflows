@@ -2,72 +2,63 @@
 
 ## Overview
 
-SonarMD CI/CD uses GitHub Actions with reusable workflows from this central repository. All workflows are tag-triggered for deployments, with CI running on every push/PR.
+SonarMD CI/CD uses GitHub Actions as a drop-in replacement for CircleCI. Deployments are branch-triggered (same as CircleCI). Reusable workflows and composite actions live in this central repository.
 
 ## Repository Map
 
 | Repository | Purpose | CI | Deploy Mechanism |
 |-----------|---------|-----|-----------------|
-| `sonarmd/workflows` | Central reusable workflows, actions, Terraform | — | — |
-| `sonarmd/frontend` | React monorepo (4 apps + shared lib) | Lint + test + build per app | S3 sync + CloudFront invalidation |
-| `sonarmd/triggr_api` | Express.js API | Lint + test (4 shards) + build | Artifact → S3 → SSM → EC2 |
-| `sonarmd/frontend-patient-app` | React Native mobile app | Lint + typecheck + test | EAS Build + App Store/Play Store |
-| `sonarmd/triggr_misc` | Ansible playbooks | Syntax check | (legacy — SSM replaces Ansible deploys) |
+| `sonarmd/workflows` | Central reusable workflows + actions | — | — |
+| `sonarmd/frontend` | React monorepo (4 apps + shared lib) | Lint + test + build per app | S3 sync (GHA) |
+| `sonarmd/triggr_api` | Express.js API | Lint + test (4 shards) + build | Slack → Hubot → Ansible (unchanged) |
+| `sonarmd/frontend-patient-app` | React Native mobile app | Lint + typecheck + test | EAS Build (tag-triggered) |
+| `sonarmd/triggr_misc` | Ansible playbooks | Syntax check | N/A |
 
 ## Deployment Flow
 
+### Frontend
+
 ```
-PR → CI (lint + test + build) → Merge to staging → auto-tag → tag triggers deploy
+Push to dev/staging/master → GHA detects changed apps → builds → S3 sync → Slack notification
 ```
 
-### Tag Naming Convention
+### API
 
-`{env}-{repo}-{version}[-b{build}]`
+```
+Push to dev/staging/master → GHA builds + tests → Slack message "@r2-d2 deploy {env} {sha} {url}" → Hubot → Ansible → EC2
+```
 
-- **Staging**: `stg-fe-1.2.3-b42` (auto-created on merge)
-- **Production**: `prd-api-2.5.0` (manually created, requires approval)
-- **Dev**: `dev-fe-1.2.3-b10` (auto-created on merge to dev)
-- **Mobile**: `stg-mobile-1.1.0-b7`
+The API deploy chain (Hubot → Ansible → EC2) is unchanged. GHA replaces only the CI + artifact build + Slack notification that CircleCI previously handled.
 
-## Secrets Management
+### Mobile
 
-All secrets live in 1Password (`smd_cicd` vault). A single GitHub org secret (`OP_SERVICE_ACCOUNT_TOKEN`) gives workflows access to resolve `op://` references at runtime. No other secrets are stored in GitHub.
+```
+Push tag stg-mobile-* → EAS preview build → Slack notification
+Push tag prd-mobile-* → EAS production build + auto-submit → Slack notification
+```
 
-## AWS Authentication
+## Secrets
 
-GitHub Actions authenticates to AWS via OIDC (OpenID Connect). No AWS access keys are stored anywhere. The IAM role `github-actions-deploy` is assumed by any workflow in the `sonarmd` org.
+Stored as GitHub repository secrets (same values as CircleCI's `DevOps` context):
 
-## Environments
+| Secret | Purpose |
+|--------|---------|
+| `AWS_ACCESS_KEY_ID` | S3 deploy for frontend |
+| `AWS_SECRET_ACCESS_KEY` | S3 deploy for frontend |
+| `SLACK_TOKEN` | Slack webhook for notifications |
+| `EXPO_TOKEN` | EAS CLI authentication for mobile |
 
-| Environment | Approval Required | Instance Tags |
-|------------|-------------------|---------------|
-| dev | No | `APIDev` |
-| stg | No | `APIStaging` |
-| prd | Yes (1 reviewer) | `APIProduction` |
+## Frontend S3 Bucket Mapping
 
-## Frontend Deploy (S3 + CloudFront)
+| App | Dev | Stg | Prd |
+|-----|-----|-----|-----|
+| admin | admin.dev.sonarmd.com | admin.stg.sonarmd.com | admin.sonarmd.com |
+| patient | my.dev.sonarmd.com | my.stg.sonarmd.com | my.sonarmd.com |
+| provider | care.dev.sonarmd.com | care.stg.sonarmd.com | care.sonarmd.com |
+| seat | seat.dev.sonarmd.com | seat.stg.sonarmd.com | seat.sonarmd.com |
 
-1. Build all 4 apps with environment-specific `REACT_APP_ENV`
-2. `aws s3 sync` static assets (7-day cache)
-3. `aws s3api put-object` for `index.html` (5-min cache)
-4. `aws cloudfront create-invalidation` for `/index.html` and `/asset-manifest.json`
+## S3 Cache Strategy
 
-## API Deploy (SSM)
-
-1. Build TypeScript → `dist/`
-2. Package `tar.gz` (dist + node_modules + package.json)
-3. Upload artifact + generated `configuration.json` to S3
-4. SSM RunCommand on each EC2 instance (serial):
-   - Download from S3
-   - Extract
-   - Place config
-   - Swap directories (keep `.old`)
-   - Restart systemd
-   - Health check (6 retries)
-   - Auto-rollback on failure
-
-## Mobile Deploy (EAS)
-
-1. `eas build --profile preview` for staging
-2. `eas build --profile production --auto-submit` for production
-3. Auto-submits to App Store Connect + Google Play internal tracks
+- Static assets (JS, CSS, images): `max-age=604800` (7 days) — content-hashed filenames
+- `index.html`: `max-age=300` (5 minutes) — references change on each deploy
+- `asset-manifest.json`: `max-age=300` (5 minutes)

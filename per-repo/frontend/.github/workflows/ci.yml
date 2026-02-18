@@ -14,25 +14,6 @@ env:
   NODE_OPTIONS: --openssl-legacy-provider
 
 jobs:
-  deps:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '18'
-
-      - name: Build shared library
-        run: yarn build-shared
-
-      - name: Cache workspace
-        uses: actions/cache/save@v4
-        with:
-          path: .
-          key: workspace-${{ github.sha }}
-
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
@@ -44,182 +25,115 @@ jobs:
       any: ${{ steps.filter.outputs.any }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Detect changed apps
+      - uses: sonarmd/workflows/actions/detect-changed-apps@main
         id: filter
-        uses: sonarmd/workflows/actions/detect-changed-apps@main
 
-  lint:
-    needs: [deps, detect-changes]
+  deps:
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.any == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Restore workspace
-        uses: actions/cache/restore@v4
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - uses: actions/cache/save@v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Lint
-        run: yarn lint
 
   test-shared:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.shared == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Restore workspace
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
-
-      - name: Test shared
-        run: cd shared && yarn test
+      - run: cd shared && yarn test
 
   test-admin:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.admin == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Restore workspace
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
-
-      - name: Unit tests
-        run: cd admin && yarn test
-
-      - name: Cypress tests
-        run: cd admin && yarn cypress
+      - run: cd admin && yarn test
+      - run: cd admin && yarn cypress
 
   test-patient:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.patient == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Restore workspace
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
-
-      - name: Unit tests
-        run: cd patient && yarn test
-
-      - name: Cypress tests
-        run: cd patient && yarn cypress
+      - run: cd patient && yarn test
+      - run: cd patient && yarn cypress
 
   test-provider:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.provider == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Restore workspace
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
-
-      - name: Unit tests
-        run: cd provider && yarn test
-
-      - name: Cypress tests
-        run: cd provider && yarn cypress
+      - run: cd provider && yarn test
+      - run: cd provider && yarn cypress
 
   test-seat:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.seat == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Restore workspace
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
+      - run: cd seat && yarn test
+      - run: cd seat && yarn cypress
 
-      - name: Unit tests
-        run: cd seat && yarn test
-
-      - name: Cypress tests
-        run: cd seat && yarn cypress
-
-  build-check:
-    needs: [deps, detect-changes, lint]
-    if: |
-      always() &&
-      needs.detect-changes.outputs.any == 'true' &&
-      (needs.lint.result == 'success' || needs.lint.result == 'skipped')
+  lint:
+    needs: [deps, detect-changes]
+    if: needs.detect-changes.outputs.any == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - app: admin
-            changed: ${{ needs.detect-changes.outputs.admin }}
-          - app: patient
-            changed: ${{ needs.detect-changes.outputs.patient }}
-          - app: provider
-            changed: ${{ needs.detect-changes.outputs.provider }}
-          - app: seat
-            changed: ${{ needs.detect-changes.outputs.seat }}
     steps:
-      - name: Skip if unchanged
-        if: matrix.changed != 'true'
-        run: echo "Skipping ${{ matrix.app }} — no changes detected"
-
-      - name: Restore workspace
-        if: matrix.changed == 'true'
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-
-      - name: Setup Node.js
-        if: matrix.changed == 'true'
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
-
-      - name: Build ${{ matrix.app }}
-        if: matrix.changed == 'true'
-        run: |
-          yarn build-shared
-          REACT_APP_VERSION=${{ github.sha }} yarn build-${{ matrix.app }}-dev
+      - run: yarn lint
 
   bypass:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.any != 'true'
     runs-on: ubuntu-latest
     steps:
-      - run: echo "No frontend changes detected. Skipping CI."
+      - run: echo "No changes detected in the frontend codebase. Skipping CI."

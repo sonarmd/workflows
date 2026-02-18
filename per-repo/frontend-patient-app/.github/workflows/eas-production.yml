@@ -9,14 +9,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  started:
-    runs-on: ubuntu-latest
-    outputs:
-      timestamp: ${{ steps.ts.outputs.timestamp }}
-    steps:
-      - id: ts
-        run: echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
   build:
     uses: sonarmd/workflows/.github/workflows/deploy-eas-build.yml@main
     with:
@@ -25,12 +17,11 @@ jobs:
       auto-submit: true
       environment: prd
       node-version: '22'
-      deploy-tag: ${{ github.ref_name }}
     secrets:
-      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
   notify:
-    needs: [build, started]
+    needs: [build]
     if: always()
     uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
     with:
@@ -39,19 +30,4 @@ jobs:
       app-name: patient-mobile
       tag: ${{ github.ref_name }}
     secrets:
-      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-
-  metrics:
-    needs: [build, started]
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main
-    with:
-      repo: sonarmd/frontend-patient-app
-      environment: prd
-      tag: ${{ github.ref_name }}
-      status: ${{ needs.build.result }}
-      started: ${{ needs.started.outputs.timestamp }}
-      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-    permissions:
-      id-token: write
-      contents: read
+      SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
