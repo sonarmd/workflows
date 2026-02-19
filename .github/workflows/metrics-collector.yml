@@ -1,0 +1,89 @@
+name: Metrics Collector
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: Repository name (e.g., sonarmd/frontend)
+        type: string
+        required: true
+      environment:
+        description: Target environment (dev, stg, prd)
+        type: string
+        required: true
+      tag:
+        description: Deployment tag
+        type: string
+        required: true
+      status:
+        description: Deploy status (success, failure)
+        type: string
+        required: true
+      started:
+        description: Deploy start time (ISO 8601)
+        type: string
+        required: true
+      rollback:
+        description: Whether this was a rollback deploy
+        type: boolean
+        default: false
+      aws-region:
+        description: AWS region
+        type: string
+        default: 'us-east-2'
+      aws-role-arn:
+        description: IAM role ARN for OIDC
+        type: string
+        required: true
+      metrics-bucket:
+        description: S3 bucket for metrics
+        type: string
+        default: 'sonarmd-deploy-metrics'
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Write deploy metrics
+        run: |
+          FINISHED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          STARTED="${{ inputs.started }}"
+          DATE_PATH=$(date -u +%Y/%m/%d)
+          UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+          # Calculate duration
+          START_EPOCH=$(date -d "$STARTED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED" +%s 2>/dev/null || echo 0)
+          END_EPOCH=$(date +%s)
+          DURATION=$((END_EPOCH - START_EPOCH))
+
+          cat > /tmp/deploy-metric.json << EOJSON
+          {
+            "repo": "${{ inputs.repo }}",
+            "env": "${{ inputs.environment }}",
+            "tag": "${{ inputs.tag }}",
+            "status": "${{ inputs.status }}",
+            "started": "$STARTED",
+            "finished": "$FINISHED",
+            "duration_seconds": $DURATION,
+            "run_id": "${{ github.run_id }}",
+            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "actor": "${{ github.actor }}",
+            "rollback": ${{ inputs.rollback }}
+          }
+          EOJSON
+
+          aws s3 cp /tmp/deploy-metric.json \
+            "s3://${{ inputs.metrics-bucket }}/${DATE_PATH}/${UUID}.json" \
+            --content-type application/json
+
+          echo "Metrics written to s3://${{ inputs.metrics-bucket }}/${DATE_PATH}/${UUID}.json"
+          rm -f /tmp/deploy-metric.json

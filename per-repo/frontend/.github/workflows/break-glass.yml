@@ -1,0 +1,128 @@
+name: Break-Glass Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - stg
+          - prd
+      tag_override:
+        description: Specific tag or SHA to deploy (optional, defaults to HEAD)
+        required: false
+        type: string
+      skip_tests:
+        description: Skip test suite (emergency only)
+        required: false
+        type: boolean
+        default: false
+      reason:
+        description: Reason for break-glass deploy (required for audit trail)
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-${{ inputs.environment }}-frontend
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --openssl-legacy-provider
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log break-glass event
+        run: |
+          echo "### Break-Glass Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Actor**: ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment**: ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag/SHA**: ${{ inputs.tag_override || github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip Tests**: ${{ inputs.skip_tests }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Reason**: ${{ inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+
+  tests:
+    if: inputs.skip_tests != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_override || github.sha }}
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - run: yarn lint
+      - run: yarn just-test
+
+  build:
+    needs: [audit, tests]
+    if: always() && needs.audit.result == 'success' && (needs.tests.result == 'success' || needs.tests.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment == 'prd' && 'production' || '' }}
+    strategy:
+      matrix:
+        app: [admin, patient, provider, seat]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_override || github.sha }}
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - run: REACT_APP_VERSION=${{ inputs.tag_override || github.sha }} yarn build-${{ matrix.app }}-${{ inputs.environment }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-build
+          path: ${{ matrix.app }}/build/
+          retention-days: 7
+
+  deploy:
+    needs: [build]
+    strategy:
+      matrix:
+        include:
+          - app: admin
+            bucket_dev: admin.dev.sonarmd.com
+            bucket_stg: admin.stg.sonarmd.com
+            bucket_prd: admin.sonarmd.com
+          - app: patient
+            bucket_dev: my.dev.sonarmd.com
+            bucket_stg: my.stg.sonarmd.com
+            bucket_prd: my.sonarmd.com
+          - app: provider
+            bucket_dev: care.dev.sonarmd.com
+            bucket_stg: care.stg.sonarmd.com
+            bucket_prd: care.sonarmd.com
+          - app: seat
+            bucket_dev: seat.dev.sonarmd.com
+            bucket_stg: seat.stg.sonarmd.com
+            bucket_prd: seat.sonarmd.com
+    uses: sonarmd/workflows/.github/workflows/deploy-s3-cloudfront.yml@main
+    with:
+      app-name: ${{ matrix.app }}
+      bucket: ${{ inputs.environment == 'dev' && matrix.bucket_dev || inputs.environment == 'stg' && matrix.bucket_stg || matrix.bucket_prd }}
+      build-artifact-name: ${{ matrix.app }}-build
+      environment: ${{ inputs.environment }}
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  notify:
+    needs: [deploy]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status: ${{ contains(needs.deploy.result, 'failure') && 'failure' || 'success' }}
+      environment: ${{ inputs.environment }}
+      app-name: frontend (break-glass)
+      tag: ${{ inputs.tag_override || github.sha }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

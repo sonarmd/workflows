@@ -1,0 +1,124 @@
+{
+  "schemaVersion": "2.2",
+  "description": "SonarMD API deployment via S3 artifact download, extract, swap, and restart",
+  "parameters": {
+    "S3Bucket": {
+      "type": "String",
+      "description": "S3 bucket containing the deployment artifact",
+      "default": "sonarmd-deploy-artifacts"
+    },
+    "S3ArtifactKey": {
+      "type": "String",
+      "description": "S3 key for the API tarball (e.g., api/stg/stg-api-1.0.0-b42/api.tar.gz)"
+    },
+    "S3ConfigKey": {
+      "type": "String",
+      "description": "S3 key for configuration.json (e.g., api/stg/stg-api-1.0.0-b42/configuration.json)"
+    },
+    "DeployTag": {
+      "type": "String",
+      "description": "Deployment tag for logging and identification"
+    },
+    "InstallPath": {
+      "type": "String",
+      "description": "Installation directory for the API",
+      "default": "/var/www/triggr_api"
+    },
+    "ServiceName": {
+      "type": "String",
+      "description": "Systemd service name",
+      "default": "triggr-api"
+    },
+    "HealthCheckUrl": {
+      "type": "String",
+      "description": "URL to health check after deploy",
+      "default": "http://localhost:1337/health"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deploy",
+      "inputs": {
+        "timeoutSeconds": "300",
+        "runCommand": [
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "",
+          "INSTALL_PATH='{{ InstallPath }}'",
+          "S3_BUCKET='{{ S3Bucket }}'",
+          "ARTIFACT_KEY='{{ S3ArtifactKey }}'",
+          "CONFIG_KEY='{{ S3ConfigKey }}'",
+          "DEPLOY_TAG='{{ DeployTag }}'",
+          "SERVICE_NAME='{{ ServiceName }}'",
+          "HEALTH_URL='{{ HealthCheckUrl }}'",
+          "",
+          "echo \"=== SonarMD API Deploy: $DEPLOY_TAG ===\"",
+          "echo \"Instance: $(hostname)\"",
+          "echo \"Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+          "",
+          "# ── Download artifact and config from S3 ──",
+          "echo 'Downloading artifact...'",
+          "aws s3 cp \"s3://$S3_BUCKET/$ARTIFACT_KEY\" /tmp/api.tar.gz",
+          "aws s3 cp \"s3://$S3_BUCKET/$CONFIG_KEY\" /tmp/configuration.json",
+          "",
+          "# ── Extract artifact ──",
+          "echo 'Extracting artifact...'",
+          "rm -rf /tmp/api-deploy",
+          "mkdir -p /tmp/api-deploy",
+          "tar xzf /tmp/api.tar.gz -C /tmp/api-deploy",
+          "",
+          "# ── Place configuration ──",
+          "echo 'Placing configuration...'",
+          "cp /tmp/configuration.json /tmp/api-deploy/dist/configuration.json",
+          "chmod 400 /tmp/configuration.json",
+          "chmod 400 /tmp/api-deploy/dist/configuration.json",
+          "",
+          "# ── Swap directories (keep .old for rollback) ──",
+          "echo 'Swapping directories...'",
+          "if [ -d \"$INSTALL_PATH\" ]; then",
+          "  rm -rf \"${INSTALL_PATH}.old\"",
+          "  mv \"$INSTALL_PATH\" \"${INSTALL_PATH}.old\"",
+          "fi",
+          "mv /tmp/api-deploy \"$INSTALL_PATH\"",
+          "",
+          "# ── Set ownership ──",
+          "chown -R www-data:www-data \"$INSTALL_PATH\"",
+          "",
+          "# ── Restart service ──",
+          "echo 'Restarting service...'",
+          "systemctl restart \"$SERVICE_NAME\"",
+          "",
+          "# ── Health check with retries ──",
+          "echo 'Running health checks...'",
+          "MAX_RETRIES=6",
+          "DELAY=5",
+          "for i in $(seq 1 $MAX_RETRIES); do",
+          "  sleep $DELAY",
+          "  STATUS=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \"$HEALTH_URL\" 2>/dev/null || echo '000')",
+          "  if [ \"$STATUS\" = '200' ]; then",
+          "    echo \"Health check passed on attempt $i (HTTP $STATUS)\"",
+          "    echo \"Deploy $DEPLOY_TAG completed successfully\"",
+          "    rm -f /tmp/api.tar.gz /tmp/configuration.json",
+          "    exit 0",
+          "  fi",
+          "  echo \"Attempt $i/$MAX_RETRIES: HTTP $STATUS. Retrying in ${DELAY}s...\"",
+          "  DELAY=$((DELAY * 2))",
+          "done",
+          "",
+          "# ── Auto-rollback on failure ──",
+          "echo '::error::Health check failed — rolling back'",
+          "if [ -d \"${INSTALL_PATH}.old\" ]; then",
+          "  rm -rf \"$INSTALL_PATH\"",
+          "  mv \"${INSTALL_PATH}.old\" \"$INSTALL_PATH\"",
+          "  systemctl restart \"$SERVICE_NAME\"",
+          "  echo 'Rollback completed — previous version restored'",
+          "fi",
+          "",
+          "rm -f /tmp/api.tar.gz /tmp/configuration.json",
+          "exit 1"
+        ]
+      }
+    }
+  ]
+}

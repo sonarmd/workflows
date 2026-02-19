@@ -1,0 +1,134 @@
+name: Deploy — Dev
+
+on:
+  push:
+    tags: ['dev-fe-*']
+
+concurrency:
+  group: deploy-dev-frontend
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --openssl-legacy-provider
+
+jobs:
+  build-admin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-admin-dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admin-build
+          path: admin/build/
+          retention-days: 7
+
+  build-patient:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-patient-dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patient-build
+          path: patient/build/
+          retention-days: 7
+
+  build-provider:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-provider-dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: provider-build
+          path: provider/build/
+          retention-days: 7
+
+  build-seat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: yarn build-shared
+      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-seat-dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-build
+          path: seat/build/
+          retention-days: 7
+
+  deploy-admin:
+    needs: [build-admin]
+    uses: sonarmd/workflows/.github/workflows/deploy-s3-cloudfront.yml@main
+    with:
+      app-name: admin
+      bucket: admin.dev.sonarmd.com
+      build-artifact-name: admin-build
+      environment: dev
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  deploy-patient:
+    needs: [build-patient]
+    uses: sonarmd/workflows/.github/workflows/deploy-s3-cloudfront.yml@main
+    with:
+      app-name: patient
+      bucket: my.dev.sonarmd.com
+      build-artifact-name: patient-build
+      environment: dev
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  deploy-provider:
+    needs: [build-provider]
+    uses: sonarmd/workflows/.github/workflows/deploy-s3-cloudfront.yml@main
+    with:
+      app-name: provider
+      bucket: care.dev.sonarmd.com
+      build-artifact-name: provider-build
+      environment: dev
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  deploy-seat:
+    needs: [build-seat]
+    uses: sonarmd/workflows/.github/workflows/deploy-s3-cloudfront.yml@main
+    with:
+      app-name: seat
+      bucket: seat.dev.sonarmd.com
+      build-artifact-name: seat-build
+      environment: dev
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  notify:
+    needs: [deploy-admin, deploy-patient, deploy-provider, deploy-seat]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
+      environment: dev
+      app-name: frontend
+      tag: ${{ github.ref_name }}
+      channel: '#ops-dev'
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

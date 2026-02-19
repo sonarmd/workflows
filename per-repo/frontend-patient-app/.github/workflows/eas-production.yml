@@ -30,4 +30,4 @@ jobs:
       app-name: patient-mobile
       tag: ${{ github.ref_name }}
     secrets:
-      SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

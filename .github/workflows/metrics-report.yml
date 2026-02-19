@@ -1,0 +1,130 @@
+name: Weekly Deploy Metrics Report
+
+on:
+  schedule:
+    # Monday 9am ET (14:00 UTC, accounting for EDT)
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Number of days to report on
+        type: number
+        default: 7
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  METRICS_BUCKET: sonarmd-deploy-metrics
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Collect and analyze metrics
+        id: metrics
+        run: |
+          DAYS=${{ inputs.days || 7 }}
+          TMPDIR=$(mktemp -d)
+
+          echo "Collecting metrics for the last $DAYS days..."
+
+          # Download all metric files from the past N days
+          for i in $(seq 0 $((DAYS - 1))); do
+            DATE=$(date -u -d "$i days ago" +%Y/%m/%d 2>/dev/null || date -u -v-${i}d +%Y/%m/%d)
+            aws s3 sync "s3://$METRICS_BUCKET/$DATE/" "$TMPDIR/$DATE/" --quiet 2>/dev/null || true
+          done
+
+          # Aggregate metrics
+          TOTAL=$(find "$TMPDIR" -name '*.json' -type f | wc -l | tr -d ' ')
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "No deploy metrics found for the past $DAYS days."
+            echo "has_data=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_data=true" >> "$GITHUB_OUTPUT"
+
+          # Calculate KPIs
+          SUCCESS=$(find "$TMPDIR" -name '*.json' -exec grep -l '"status": "success"' {} \; | wc -l | tr -d ' ')
+          FAILURE=$((TOTAL - SUCCESS))
+          ROLLBACKS=$(find "$TMPDIR" -name '*.json' -exec grep -l '"rollback": true' {} \; | wc -l | tr -d ' ')
+
+          if [ "$TOTAL" -gt 0 ]; then
+            SUCCESS_RATE=$(echo "scale=1; $SUCCESS * 100 / $TOTAL" | bc)
+          else
+            SUCCESS_RATE="N/A"
+          fi
+
+          # Mean duration (successful deploys only)
+          DURATIONS=$(find "$TMPDIR" -name '*.json' -exec grep -l '"status": "success"' {} \; \
+            | xargs -I{} python3 -c "import json; print(json.load(open('{}'))['duration_seconds'])" 2>/dev/null \
+            | paste -sd+ | bc 2>/dev/null || echo 0)
+          if [ "$SUCCESS" -gt 0 ] && [ "$DURATIONS" -gt 0 ]; then
+            MEAN_DURATION=$((DURATIONS / SUCCESS))
+          else
+            MEAN_DURATION=0
+          fi
+
+          # Deploys per repo
+          REPO_COUNTS=$(find "$TMPDIR" -name '*.json' -exec python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['repo'])" {} \; 2>/dev/null \
+            | sort | uniq -c | sort -rn | head -10)
+
+          # Per-env breakdown
+          DEV_COUNT=$(find "$TMPDIR" -name '*.json' -exec grep -l '"env": "dev"' {} \; | wc -l | tr -d ' ')
+          STG_COUNT=$(find "$TMPDIR" -name '*.json' -exec grep -l '"env": "stg"' {} \; | wc -l | tr -d ' ')
+          PRD_COUNT=$(find "$TMPDIR" -name '*.json' -exec grep -l '"env": "prd"' {} \; | wc -l | tr -d ' ')
+
+          # Build Slack message
+          cat > /tmp/slack-report.json << EOJSON
+          {
+            "attachments": [{
+              "color": "#36a64f",
+              "title": ":bar_chart: Weekly Deploy Metrics",
+              "fields": [
+                {"title": "Total Deploys", "value": "$TOTAL", "short": true},
+                {"title": "Success Rate", "value": "${SUCCESS_RATE}%", "short": true},
+                {"title": "Failures", "value": "$FAILURE", "short": true},
+                {"title": "Rollbacks", "value": "$ROLLBACKS", "short": true},
+                {"title": "Mean Duration", "value": "${MEAN_DURATION}s", "short": true},
+                {"title": "By Env", "value": "dev: $DEV_COUNT | stg: $STG_COUNT | prd: $PRD_COUNT", "short": true}
+              ],
+              "footer": "SonarMD Deploy Metrics | Last $DAYS days"
+            }]
+          }
+          EOJSON
+
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "success_rate=$SUCCESS_RATE" >> "$GITHUB_OUTPUT"
+
+          rm -rf "$TMPDIR"
+
+      - name: Post to Slack
+        if: steps.metrics.outputs.has_data == 'true'
+        run: |
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data @/tmp/slack-report.json \
+            "${{ secrets.SLACK_METRICS_WEBHOOK_URL }}" \
+            || echo "::warning::Failed to post metrics to Slack"
+
+          rm -f /tmp/slack-report.json
+
+      - name: Summary
+        run: |
+          echo "### Weekly Deploy Metrics" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.metrics.outputs.has_data }}" = "true" ]; then
+            echo "- **Total Deploys**: ${{ steps.metrics.outputs.total }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Success Rate**: ${{ steps.metrics.outputs.success_rate }}%" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No deploy data available for the reporting period." >> "$GITHUB_STEP_SUMMARY"
+          fi

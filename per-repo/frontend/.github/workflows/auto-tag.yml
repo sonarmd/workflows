@@ -1,0 +1,14 @@
+name: Auto-Tag Release
+
+on:
+  push:
+    branches: [staging]
+
+jobs:
+  tag:
+    uses: sonarmd/workflows/.github/workflows/tag-release.yml@main
+    with:
+      repo-short: fe
+      environment: stg
+    permissions:
+      contents: write

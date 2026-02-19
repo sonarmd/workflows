@@ -1,0 +1,99 @@
+name: Deploy — Dev
+
+on:
+  push:
+    tags: ['dev-api-*']
+
+concurrency:
+  group: deploy-dev-api
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+      - run: sudo apt-get update && sudo apt-get install -y graphicsmagick
+      - run: yarn build
+
+      - name: Package artifact
+        run: tar czf api.tar.gz dist/ node_modules/ package.json
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload artifact to S3
+        run: |
+          aws s3 cp api.tar.gz \
+            "s3://sonarmd-deploy-artifacts/api/dev/${{ github.ref_name }}/api.tar.gz"
+
+  generate-config:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        with:
+          export-env: true
+
+      - uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          sparse-checkout: templates/
+          path: _workflows
+
+      - name: Render configuration.json
+        run: |
+          export DEPLOY_TAG="${{ github.ref_name }}"
+          export DEPLOY_ENV="dev"
+          export SERVER_TYPE="Server"
+          envsubst < _workflows/templates/configuration.json.tpl > configuration.json
+          python3 -c "import json; json.load(open('configuration.json'))"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload config to S3
+        run: |
+          aws s3 cp configuration.json \
+            "s3://sonarmd-deploy-artifacts/api/dev/${{ github.ref_name }}/configuration.json"
+
+  deploy:
+    needs: [build, generate-config]
+    uses: sonarmd/workflows/.github/workflows/deploy-api-ssm.yml@main
+    with:
+      environment: dev
+      artifact-s3-key: api/dev/${{ github.ref_name }}/api.tar.gz
+      config-s3-key: api/dev/${{ github.ref_name }}/configuration.json
+      deploy-tag: ${{ github.ref_name }}
+      instance-tag-value: APIDev
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+
+  notify:
+    needs: [deploy]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status: ${{ needs.deploy.result }}
+      environment: dev
+      app-name: triggr_api
+      tag: ${{ github.ref_name }}
+      channel: '#ops-dev'
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

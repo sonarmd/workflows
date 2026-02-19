@@ -1,0 +1,66 @@
+name: Health Check
+description: HTTP health check with exponential backoff
+
+inputs:
+  url:
+    description: URL to health check
+    required: true
+  expected-status:
+    description: Expected HTTP status code
+    required: false
+    default: '200'
+  max-retries:
+    description: Maximum number of retries
+    required: false
+    default: '6'
+  initial-delay:
+    description: Initial delay between retries in seconds
+    required: false
+    default: '5'
+  timeout:
+    description: HTTP request timeout in seconds
+    required: false
+    default: '10'
+
+outputs:
+  status:
+    description: Final HTTP status code
+    value: ${{ steps.check.outputs.status }}
+  healthy:
+    description: Whether the health check passed (true/false)
+    value: ${{ steps.check.outputs.healthy }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run health check
+      id: check
+      shell: bash
+      run: |
+        URL="${{ inputs.url }}"
+        EXPECTED="${{ inputs.expected-status }}"
+        MAX_RETRIES=${{ inputs.max-retries }}
+        DELAY=${{ inputs.initial-delay }}
+        TIMEOUT=${{ inputs.timeout }}
+
+        echo "Health checking: $URL (expecting $EXPECTED)"
+
+        for i in $(seq 1 "$MAX_RETRIES"); do
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" "$URL" 2>/dev/null || echo "000")
+
+          if [ "$STATUS" = "$EXPECTED" ]; then
+            echo "Health check passed on attempt $i (HTTP $STATUS)"
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Attempt $i/$MAX_RETRIES: HTTP $STATUS (expected $EXPECTED). Retrying in ${DELAY}s..."
+          sleep "$DELAY"
+          DELAY=$((DELAY * 2))
+        done
+
+        echo "::error::Health check failed after $MAX_RETRIES attempts. Last status: $STATUS"
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "healthy=false" >> "$GITHUB_OUTPUT"
+        exit 1
