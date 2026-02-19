@@ -1,162 +1,96 @@
-# System Diagrams — SonarMD ECS Architecture
+# CI/CD Pipeline — triggr_api
 
-## System Architecture + CI/CD Pipeline
+How code gets from a developer's laptop into a running container in AWS.
 
 ```mermaid
 flowchart TD
-    subgraph DEV["Developer Workstation"]
-        code["git push"]
+    subgraph DEVELOPER["1. Developer Workstation"]
+        main["main branch\n= production\nsource of truth"]
+        release["Branch: release/v4.5\nbranched from main\nshared integration branch"]
+        feature["Branch: feature/SONMD-1234\nbranched from release\none branch per ticket"]
+        work["Write code\ncommit, push"]
+
+        main -. "branch off for\nnew release cycle" .-> release
+        release -. "branch off for\neach ticket" .-> feature
+        work --> feature
     end
 
-    subgraph GITHUB["GitHub — sonarmd/triggr_api"]
-        pr["PR to staging"]
-        merge["Merge to staging"]
+    subgraph GITHUB["2. GitHub — sonarmd/triggr_api"]
+        pr["Open PR\nfeature → release branch"]
+        checks{"All gates pass?"}
+        review{"Peer review\n2 approvals?"}
+        merge["Merge PR\ninto release branch"]
+
+        pr --> checks
+        checks -- "fail" --> fix["Fix and re-push"]
+        fix --> checks
+        checks -- "pass" --> review
+        review -- "approved" --> merge
     end
 
-    subgraph CI["GitHub Actions Runner"]
-        lint["yarn lint"]
-        test["yarn test\n4 shards + MongoDB sidecars"]
-        docker_build["docker build\nmulti-stage node:18-alpine"]
-        docker_push["docker push to ECR"]
+    subgraph GHA["3. GitHub Actions — CI Runner"]
+        direction TB
+        ci_trigger["Triggered by: PR opened/updated"]
+        lint["yarn lint\nyarn typecheck"]
+        test["yarn test\n4 parallel shards\neach with its own\nMongoDB 8.0 sidecar"]
+        build["yarn build\ntsc → dist/"]
+        docker["docker build\nmulti-stage\nnode:18-alpine\nResult: Docker image\ntagged with commit SHA"]
+        push_ghcr["Push image to\nGitHub Container Registry\nghcr.io/sonarmd/triggr-api:SHA"]
+
+        ci_trigger --> lint & test
+        lint & test --> build --> docker --> push_ghcr
     end
 
-    subgraph CONTROL["Ansible Control Node"]
-        vault["Ansible Vault\n32 secrets per env"]
-        playbook["ecs_provision.yml\n-e env=dev|stg|prd"]
-        taskdef["Renders Task Definition\n85 env vars + 32 secrets\ninjected into environment array"]
+    subgraph ANSIBLE["4. Ansible Deploy Server — The Bridge"]
+        direction TB
+        pull_trigger["Triggered by:\ntag push on release branch\nstg-api-4.5.0-b1"]
+        pull_image["Pull image from GHCR\nghcr.io/sonarmd/triggr-api:SHA\n\nAnsible reaches OUT to GitHub\nGitHub does not reach IN to AWS"]
+        push_ecr["Push image to ECR\naws ecr get-login-password\ndocker tag → docker push\n\nImage is now inside AWS\nidentical bytes, new address"]
+        secrets["Load secrets\nfrom Ansible Vault\n32 secrets per environment\n\nmongo_password\nsession_secret\ntwilio_auth_token\nredis_auth_token\n..."]
+        env_vars["Load env vars\nfrom group_vars\n85 cleartext config values\n\nMONGO_URI\nAPI_URL\nITERABLE_CUSTOM_SMS_CAMPAIGN\n..."]
+        taskdef["Build ECS Task Definition\n\nWhich image to run:\n  ECR image URI + SHA tag\nWhat env vars to inject:\n  85 cleartext + 32 secrets\nHow much compute:\n  512 CPU / 1024 MB (dev/stg)\n  1024 CPU / 2048 MB (prd)\nWhere to log:\n  CloudWatch /ecs/triggr-api-ENV"]
+        register["Register task definition\nwith ECS\n\naws ecs register-task-definition"]
+        update_svc["Update ECS service\nto use new task definition\n\naws ecs update-service\n  --force-new-deployment"]
+
+        pull_trigger --> pull_image --> push_ecr
+        secrets & env_vars --> taskdef
+        push_ecr --> taskdef
+        taskdef --> register --> update_svc
     end
 
-    subgraph AWS["AWS — us-east-2 — Single Account"]
-        ecr[("ECR\nsonarmd/triggr-api")]
-        cw["CloudWatch Logs\n/ecs/triggr-api-ENV"]
-        s3_img[("S3\nimages.ENV.sonarmd.com")]
-        s3_rpt[("S3\ndoc-storage-reports")]
-        r53["Route 53\n*.sonarmd.com"]
+    subgraph ECR_DETAIL["5. ECR — Elastic Container Registry"]
+        direction TB
+        ecr_repo["Repository: sonarmd/triggr-api\n\nA private Docker registry\ninside your AWS account.\nImages stored encrypted.\nOnly accessible from within AWS."]
+        ecr_tags["Image tags:\n  :latest\n  :abc123f  ← commit SHA\n  :stg-api-4.5.0-b1\n\nEach tag points to the\nsame image layers.\nLayers are deduplicated."]
+        ecr_lifecycle["Lifecycle policy:\nKeep last 20 images\nOlder images auto-expire\nScan on push for CVEs"]
 
-        subgraph VPC_DETAIL["VPC — one per env: dev / stg / prd"]
-            subgraph PUB["Public Subnets"]
-                alb["ALB — HTTPS :443\nhost-header routing\napi.ENV.sonarmd.com"]
-                nat["NAT Gateway"]
-            end
-            subgraph PRIV["Private Subnets"]
-                fargate["ECS Fargate Tasks\ndocker-entrypoint.sh\n> generate-config.js\n> configuration.json\n> node dist/server.js :1337"]
-                redis["ElastiCache Redis\n:6379"]
-            end
-        end
+        ecr_repo --- ecr_tags --- ecr_lifecycle
     end
 
-    subgraph ATLAS["MongoDB Atlas — VPC Peered — Private"]
-        mongo[("MongoDB 8.0\nsonarmd DB\n:27017")]
+    subgraph ECS_BOOT["6. ECS Fargate — Container Startup"]
+        direction TB
+        ecs_svc["ECS Service receives\nnew task definition\n\nStarts new task(s)\nbefore stopping old ones\n(rolling deployment)"]
+        ecs_pull["Fargate pulls image\nfrom ECR\n\nECR → Fargate is internal\nNo internet required\nVPC endpoint or private link"]
+        ecs_env["Container starts with\nall 117 env vars injected\nby ECS from the task definition\n\nThese are in memory only.\nNot on disk. Not in the image."]
+        entrypoint["docker-entrypoint.sh runs:\n\n1. node generate-config.js\n   reads all env vars\n   writes configuration.json\n   to /app/configuration.json\n\n2. exec node dist/server.js\n   app starts on :1337\n   reads configuration.json"]
+        health["ALB health check\nGET /health every 30s\n\nFirst check after 60s grace\n3 consecutive passes = healthy\nTraffic starts flowing"]
+
+        ecs_svc --> ecs_pull --> ecs_env --> entrypoint --> health
     end
 
-    subgraph EXTERNAL["External APIs — Outbound HTTPS :443 via NAT"]
-        twilio["Twilio\nSMS + Voice + IVR"]
-        sendgrid["SendGrid\nEmail"]
-        iterable["Iterable\nCampaigns"]
-        slack["Slack\nWebhooks + Bot"]
-        firebase["Firebase\nPush Notifications"]
-        others["BriteVerify\nChange Healthcare\nMixpanel\nPagerDuty\nSageMaker"]
+    subgraph PROD["7. Production Promotion"]
+        stg_valid["Staging validated\nmanual testing complete"]
+        merge_main["Merge release → main\nmain stays in sync with prod"]
+        tag_prd["Create tag:\nprd-api-4.5.0\n\nRequires GitHub\nEnvironment approval"]
+        same_image["SAME Docker image\nSAME bytes, SAME SHA\nDifferent env vars only\n\nNo rebuild. No new artifact.\nJust promote."]
+
+        stg_valid --> merge_main --> tag_prd --> same_image
     end
 
-    subgraph CLIENTS["Clients"]
-        web["Web Apps\nadmin / care / my / seat\n.sonarmd.com"]
-        mobile["Mobile App\niOS + Android"]
-    end
-
-    code --> pr --> merge
-    merge --> lint & test
-    lint & test --> docker_build --> docker_push --> ecr
-
-    vault --> playbook --> taskdef
-    taskdef -- "creates ECS service +\ntask definition" --> fargate
-
-    ecr -- "image pull" --> fargate
-    fargate --> cw
-    fargate --> s3_img & s3_rpt
-    fargate -- ":27017 VPC peering" --> mongo
-    fargate -- ":6379 private" --> redis
-    fargate -- ":443 via NAT" --> nat
-    nat --> twilio & sendgrid & iterable & slack & firebase & others
-
-    web & mobile --> r53
-    r53 -- "A record alias" --> alb
-    alb -- "health: /health\nforward :1337" --> fargate
-```
-
-## Data Flow Diagram
-
-```mermaid
-flowchart LR
-    subgraph USERS["End Users"]
-        provider["Provider\ncare.sonarmd.com"]
-        admin["Admin\nadmin.sonarmd.com"]
-        patient_web["Patient Web\nmy.sonarmd.com"]
-        patient_app["Patient Mobile\niOS / Android"]
-    end
-
-    subgraph EDGE["Edge — Public"]
-        cf["CloudFront CDN\nStatic Assets"]
-        s3_fe[("S3\nFrontend Bundles\nJS / CSS / HTML")]
-        r53["Route 53 DNS"]
-        alb["ALB :443\nTLS Termination\nHost-Header Routing"]
-    end
-
-    subgraph COMPUTE["Compute — Private Subnet"]
-        ecs["ECS Fargate\ntriggr-api :1337\nNode.js + Express"]
-        entrypoint["Container Boot\ngenerate-config.js\nenv vars to configuration.json"]
-    end
-
-    subgraph DATA["Data Layer — Private"]
-        mongo[("MongoDB Atlas\nVPC Peered :27017\n---\nsonarmd DB\nPHI: patients, claims,\nmessages, activities")]
-        mongo_ro[("MongoDB Read Replica\nVPC Peered :27017\n---\nRead-only jobs,\nreports, analytics")]
-        redis[("ElastiCache Redis\nPrivate :6379\n---\nSessions, rate limits,\njob queues, cache")]
-    end
-
-    subgraph STORAGE["Object Storage"]
-        s3_img[("S3 — Images\nimages.*.sonarmd.com\n---\nPatient photos,\nprofile images")]
-        s3_rpt[("S3 — Reports\ndoc-storage-reports\n---\nGenerated reports,\nclaim documents")]
-    end
-
-    subgraph OUTBOUND["Outbound Services — via NAT :443"]
-        twilio["Twilio\n---\nSMS to patients\nVoice calls\nIVR flows"]
-        sendgrid["SendGrid\n---\nTransactional email\nPassword resets"]
-        iterable["Iterable\n---\nCampaign emails\nSMS campaigns\nWebhook ingest"]
-        slack["Slack\n---\nOps alerts\nClaim notifications\nGrowth alerts"]
-        firebase["Firebase\n---\nMobile push\nnotifications"]
-        sagemaker["SageMaker\n---\nEnrollment\npredictions"]
-        pagerduty["PagerDuty\n---\nHigh/low priority\nincident alerts"]
-        change_hc["Change Healthcare\n---\nEligibility checks\nClaim status"]
-    end
-
-    subgraph SECRETS["Secrets Injection — Provisioning Time"]
-        vault["Ansible Vault\n32 secrets/env"]
-        taskdef["ECS Task Definition\nenvironment array"]
-    end
-
-    provider & admin & patient_web --> r53
-    patient_app --> r53
-    r53 -- "static assets" --> cf --> s3_fe
-    r53 -- "api.*" --> alb
-    alb -- "HTTP :1337\nhealth: /health" --> ecs
-
-    entrypoint -. "boot sequence" .-> ecs
-
-    ecs -- "read/write PHI\npatients, claims,\nmessages" --> mongo
-    ecs -- "read-only\nreports, analytics" --> mongo_ro
-    ecs -- "sessions\ncache\njob queues" --> redis
-
-    ecs -- "upload/download\nimages" --> s3_img
-    ecs -- "generate/serve\nreports" --> s3_rpt
-
-    ecs -- "patient SMS\nvoice, IVR" --> twilio
-    ecs -- "email" --> sendgrid
-    ecs -- "campaigns\nwebhooks" --> iterable
-    ecs -- "alerts" --> slack
-    ecs -- "push notif" --> firebase
-    ecs -- "ML predict" --> sagemaker
-    ecs -- "incidents" --> pagerduty
-    ecs -- "eligibility\nclaims" --> change_hc
-
-    vault -- "decrypt + inject" --> taskdef
-    taskdef -. "env vars at\ncontainer start" .-> entrypoint
-```
+    feature --> pr
+    merge --> ci_trigger
+    push_ghcr --> pull_trigger
+    update_svc --> ecs_svc
+    push_ecr --> ecr_repo
+    ecr_repo --> ecs_pull
+    same_image --> pull_trigger
