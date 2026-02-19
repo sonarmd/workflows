@@ -1,0 +1,57 @@
+---
+# Provision ECS Fargate infrastructure for triggr_api
+#
+# This playbook creates all AWS resources needed to run the API on ECS:
+#   - ECR repository
+#   - ECS cluster (Fargate)
+#   - IAM roles (execution + task)
+#   - Security group
+#   - ALB target group + listener rule
+#   - ECS task definition + service
+#
+# Prerequisites:
+#   1. AWS credentials configured (SSO or env vars)
+#   2. amazon.aws collection installed: ansible-galaxy collection install amazon.aws
+#   3. Existing VPC, subnets, and ALB with HTTPS listener
+#   4. Ansible Vault password for secrets (used in task definition env vars)
+#
+# Usage:
+#   # From sonarmd-workflows/per-repo/triggr_api/ansible/
+#   ansible-playbook playbooks/ecs_provision.yml -e env=dev
+#   ansible-playbook playbooks/ecs_provision.yml -e env=stg
+#   ansible-playbook playbooks/ecs_provision.yml -e env=prd --vault-password-file ~/triggr-vault-password.txt
+#
+# The playbook runs from localhost — no SSH to remote hosts needed.
+
+- name: Provision ECS infrastructure for triggr_api
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - "../group_vars/{{ env }}.yml"
+
+  vars:
+    # Map short env name to Ansible deploy_env (can be overridden by vars_files)
+    deploy_env: "{{ env }}"
+    environment_name: "{{ {'dev': 'Development', 'stg': 'Staging', 'prd': 'Production'}[env] }}"
+
+  pre_tasks:
+    - name: Validate env parameter
+      ansible.builtin.assert:
+        that:
+          - env is defined
+          - env in ['dev', 'stg', 'prd']
+        fail_msg: "Pass -e env=dev|stg|prd"
+
+    - name: Validate required networking vars
+      ansible.builtin.assert:
+        that:
+          - ecs_vpc_id is defined and ecs_vpc_id | length > 0
+          - ecs_subnets is defined and ecs_subnets | length > 0
+        fail_msg: >
+          Missing required networking variables.
+          Set ecs_vpc_id and ecs_subnets in your env-specific vars file.
+
+  roles:
+    - role: ecs_api

@@ -1,0 +1,230 @@
+---
+# Provision ECS infrastructure for triggr_api
+# Run from localhost (control node), not remote hosts.
+#
+# Usage:
+#   ansible-playbook playbooks/ecs_provision.yml -e env=dev
+
+- name: Create ECR repository
+  amazon.aws.ecr_repository:
+    name: "{{ ecr_repository }}"
+    region: "{{ ec2_region }}"
+    image_tag_mutability: mutable
+    image_scanning_configuration:
+      scanOnPush: true
+    lifecycle_policy:
+      rules:
+        - rulePriority: 1
+          description: "Keep last 20 images"
+          selection:
+            tagStatus: any
+            countType: imageCountMoreThan
+            countNumber: 20
+          action:
+            type: expire
+  register: ecr_repo
+
+- name: Create CloudWatch log group
+  amazon.aws.cloudwatchlogs_log_group:
+    log_group_name: "{{ ecs_log_group }}"
+    retention: "{{ ecs_log_retention_days }}"
+    region: "{{ ec2_region }}"
+    state: present
+
+- name: Create ECS task execution IAM role
+  amazon.aws.iam_role:
+    name: "{{ ecs_execution_role_name }}"
+    assume_role_policy_document: "{{ lookup('template', 'ecs-trust-policy.json.j2') }}"
+    managed_policies:
+      - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+    inline_policies:
+      ecr-and-logs: "{{ lookup('template', 'execution-role-policy.json.j2') }}"
+    state: present
+  register: execution_role
+
+- name: Create ECS task IAM role
+  amazon.aws.iam_role:
+    name: "{{ ecs_task_role_name }}"
+    assume_role_policy_document: "{{ lookup('template', 'ecs-trust-policy.json.j2') }}"
+    inline_policies:
+      app-permissions: "{{ lookup('template', 'task-role-policy.json.j2') }}"
+    state: present
+  register: task_role
+
+- name: Create security group for ECS tasks
+  amazon.aws.ec2_security_group:
+    name: "{{ ecs_sg_name }}"
+    description: "ECS triggr-api {{ deploy_env }}"
+    vpc_id: "{{ ecs_vpc_id }}"
+    region: "{{ ec2_region }}"
+    rules:
+      - proto: tcp
+        from_port: "{{ ecs_container_port }}"
+        to_port: "{{ ecs_container_port }}"
+        cidr_ip: 10.0.0.0/8
+        rule_desc: "ALB health checks + traffic"
+    rules_egress: "{{ ecs_sg_egress }}"
+    state: present
+  register: ecs_sg
+
+- name: Create ECS cluster
+  amazon.aws.ecs_cluster:
+    name: "{{ ecs_cluster_name }}"
+    region: "{{ ec2_region }}"
+    state: present
+    capacity_providers:
+      - FARGATE
+      - FARGATE_SPOT
+    capacity_provider_strategy:
+      - capacity_provider: FARGATE
+        weight: 1
+        base: "{{ ecs_desired_count }}"
+      - capacity_provider: FARGATE_SPOT
+        weight: 0
+    configuration:
+      execute_command:
+        logging: DEFAULT
+    settings:
+      - name: containerInsights
+        value: enabled
+  register: ecs_cluster
+
+- name: Create ALB target group
+  amazon.aws.elb_target_group:
+    name: "{{ ecs_target_group_name }}"
+    protocol: HTTP
+    port: "{{ ecs_container_port }}"
+    vpc_id: "{{ ecs_vpc_id }}"
+    target_type: ip
+    health_check_protocol: HTTP
+    health_check_path: "{{ ecs_health_check_path }}"
+    health_check_interval: "{{ ecs_health_check_interval }}"
+    health_check_timeout: "{{ ecs_health_check_timeout }}"
+    healthy_threshold_count: "{{ ecs_healthy_threshold }}"
+    unhealthy_threshold_count: "{{ ecs_unhealthy_threshold }}"
+    region: "{{ ec2_region }}"
+    state: present
+  register: target_group
+
+- name: Look up existing ALB listener ARN
+  ansible.builtin.command: >
+    aws elbv2 describe-listeners
+      --load-balancer-arn {{ ecs_alb_listener_arn }}
+      --query "Listeners[?Port==`443`].ListenerArn | [0]"
+      --output text --region {{ ec2_region }}
+  register: alb_listener_lookup
+  changed_when: false
+  when: ecs_alb_listener_arn == "" and ecs_alb_name | default('') | length > 0
+
+- name: Look up ALB ARN by name
+  ansible.builtin.command: >
+    aws elbv2 describe-load-balancers
+      --names {{ ecs_alb_name }}
+      --query "LoadBalancers[0].LoadBalancerArn"
+      --output text --region {{ ec2_region }}
+  register: alb_arn_lookup
+  changed_when: false
+  when: ecs_alb_listener_arn == ""
+
+- name: Look up HTTPS listener on ALB
+  ansible.builtin.command: >
+    aws elbv2 describe-listeners
+      --load-balancer-arn {{ alb_arn_lookup.stdout }}
+      --query "Listeners[?Port==`443`].ListenerArn | [0]"
+      --output text --region {{ ec2_region }}
+  register: alb_listener_lookup
+  changed_when: false
+  when: ecs_alb_listener_arn == "" and alb_arn_lookup is not skipped
+
+- name: Set listener ARN fact
+  ansible.builtin.set_fact:
+    _listener_arn: "{{ ecs_alb_listener_arn if ecs_alb_listener_arn | length > 0 else (alb_listener_lookup.stdout | default('')) }}"
+
+- name: Add listener rule for API hostname
+  amazon.aws.elb_application_lb_listener_rule:
+    listener_arn: "{{ _listener_arn }}"
+    priority: 10
+    conditions:
+      - Field: host-header
+        Values:
+          - "{{ ecs_api_hostname }}"
+    actions:
+      - Type: forward
+        TargetGroupArn: "{{ target_group.target_group_arn }}"
+    region: "{{ ec2_region }}"
+    state: present
+  when: _listener_arn | length > 0
+
+- name: Register ECS task definition
+  amazon.aws.ecs_taskdefinition:
+    family: "{{ ecs_task_family }}"
+    task_role_arn: "{{ task_role.arn }}"
+    execution_role_arn: "{{ execution_role.arn }}"
+    network_mode: awsvpc
+    requires_compatibilities:
+      - FARGATE
+    cpu: "{{ ecs_cpu }}"
+    memory: "{{ ecs_memory }}"
+    region: "{{ ec2_region }}"
+    containers:
+      - name: "{{ ecs_container_name }}"
+        image: "{{ ecr_repo.repository.repositoryUri }}:latest"
+        essential: true
+        portMappings:
+          - containerPort: "{{ ecs_container_port }}"
+            protocol: tcp
+        healthCheck:
+          command:
+            - CMD-SHELL
+            - "wget --spider http://localhost:{{ ecs_container_port }}/health || exit 1"
+          interval: 30
+          timeout: 5
+          retries: 3
+          startPeriod: 60
+        logConfiguration:
+          logDriver: awslogs
+          options:
+            awslogs-group: "{{ ecs_log_group }}"
+            awslogs-region: "{{ ec2_region }}"
+            awslogs-stream-prefix: api
+        environment: "{{ (lookup('template', 'task-env-vars.json.j2') | from_json) + (lookup('template', 'task-secrets.json.j2') | from_json) }}"
+    state: present
+  register: task_def
+
+- name: Create ECS service
+  amazon.aws.ecs_service:
+    cluster: "{{ ecs_cluster_name }}"
+    name: "{{ ecs_service_name }}"
+    task_definition: "{{ task_def.taskdefinition.taskDefinitionArn }}"
+    desired_count: "{{ ecs_desired_count }}"
+    launch_type: FARGATE
+    network_configuration:
+      subnets: "{{ ecs_subnets }}"
+      security_groups:
+        - "{{ ecs_sg.group_id }}"
+      assign_public_ip: "{{ ecs_assign_public_ip }}"
+    load_balancers:
+      - targetGroupArn: "{{ target_group.target_group_arn }}"
+        containerName: "{{ ecs_container_name }}"
+        containerPort: "{{ ecs_container_port }}"
+    deployment_configuration:
+      minimum_healthy_percent: "{{ ecs_min_healthy_percent }}"
+      maximum_percent: "{{ ecs_max_percent }}"
+    health_check_grace_period_seconds: 120
+    enable_execute_command: true
+    region: "{{ ec2_region }}"
+    state: present
+  register: ecs_service
+
+- name: Print deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ECS Infrastructure Provisioned for {{ deploy_env }}
+      ─────────────────────────────────────────────────
+      ECR:       {{ ecr_repo.repository.repositoryUri }}
+      Cluster:   {{ ecs_cluster_name }}
+      Service:   {{ ecs_service_name }}
+      Task:      {{ task_def.taskdefinition.taskDefinitionArn }}
+      Target:    {{ target_group.target_group_arn }}
+      SG:        {{ ecs_sg.group_id }}
+      Log Group: {{ ecs_log_group }}

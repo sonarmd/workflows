@@ -1,0 +1,80 @@
+---
+# ECS API role defaults
+# Override per-environment in group_vars/tag_Group_{Development,Staging,Production}/vars.yml
+
+# ── Region ─────────────────────────────────────────────────────
+ec2_region: us-east-2
+
+# ── ECR ──────────────────────────────────────────────────────
+ecr_repository: sonarmd/triggr-api
+
+# ── ECS Cluster ──────────────────────────────────────────────
+ecs_cluster_name: "sonarmd-{{ deploy_env }}"
+
+# ── ECS Service ──────────────────────────────────────────────
+ecs_service_name: triggr-api
+ecs_desired_count: "{{ 2 if deploy_env == 'prd' else 1 }}"
+ecs_min_healthy_percent: 100
+ecs_max_percent: 200
+
+# ── Task Definition ──────────────────────────────────────────
+ecs_task_family: "triggr-api-{{ deploy_env }}"
+ecs_container_name: api
+ecs_container_port: 1337
+ecs_cpu: "{{ 1024 if deploy_env == 'prd' else 512 }}"
+ecs_memory: "{{ 2048 if deploy_env == 'prd' else 1024 }}"
+
+# ── Networking ───────────────────────────────────────────────
+ecs_subnets: []          # REQUIRED: private subnet IDs
+ecs_security_groups: []  # Will be created if empty
+ecs_assign_public_ip: false
+
+# ── ALB ──────────────────────────────────────────────────────
+ecs_alb_name: "api-{{ deploy_env }}"
+ecs_target_group_name: "api-{{ deploy_env }}-tg"
+ecs_health_check_path: /health
+ecs_health_check_interval: 30
+ecs_health_check_timeout: 5
+ecs_healthy_threshold: 2
+ecs_unhealthy_threshold: 3
+
+# ── Existing infrastructure (must be set per-env) ───────────
+ecs_vpc_id: "{{ aws_vpc_id }}"
+ecs_alb_listener_arn: ""          # REQUIRED: existing HTTPS listener ARN
+ecs_alb_certificate_arn: ""       # REQUIRED: ACM cert for api.*.sonarmd.com
+ecs_api_hostname: "{{ api_url }}"
+
+# ── CloudWatch ───────────────────────────────────────────────
+ecs_log_group: "/ecs/triggr-api-{{ deploy_env }}"
+ecs_log_retention_days: 30
+
+# ── Security Group Rules ─────────────────────────────────────
+ecs_sg_name: "ecs-api-{{ deploy_env }}"
+
+# Outbound: Atlas (27017), ElastiCache (6379), HTTPS (443)
+ecs_sg_egress:
+  - proto: tcp
+    from_port: 27017
+    to_port: 27017
+    cidr_ip: 0.0.0.0/0
+    description: MongoDB Atlas
+  - proto: tcp
+    from_port: 6379
+    to_port: 6379
+    cidr_ip: 0.0.0.0/0
+    description: ElastiCache Redis
+  - proto: tcp
+    from_port: 443
+    to_port: 443
+    cidr_ip: 0.0.0.0/0
+    description: HTTPS (external APIs)
+
+# ── IAM ──────────────────────────────────────────────────────
+ecs_execution_role_name: "ecs-api-execution-{{ deploy_env }}"
+ecs_task_role_name: "ecs-api-task-{{ deploy_env }}"
+
+# ── S3 buckets the task role needs access to ─────────────────
+ecs_s3_buckets:
+  - "{{ images_s3_bucket }}"
+  - "{{ reports_s3_bucket_name | default('') }}"
+  - "internal.triggrhealth.com"
