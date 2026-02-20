@@ -43,10 +43,8 @@ on:
         description: IAM role ARN to assume via OIDC
         type: string
         required: true
-      health-check-url-pattern:
-        description: Health check URL pattern ({host} replaced per instance)
-        type: string
-        default: 'http://localhost:1337/health'
+
+permissions: {}
 
 jobs:
   deploy:
@@ -56,27 +54,29 @@ jobs:
       contents: read
     steps:
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Discover EC2 instances
         id: instances
+        env:
+          TAG_KEY: ${{ inputs.instance-tag-key }}
+          TAG_VALUE: ${{ inputs.instance-tag-value }}
         run: |
           INSTANCES=$(aws ec2 describe-instances \
             --filters \
-              "Name=tag:${{ inputs.instance-tag-key }},Values=${{ inputs.instance-tag-value }}" \
+              "Name=tag:${TAG_KEY},Values=${TAG_VALUE}" \
               "Name=instance-state-name,Values=running" \
             --query 'Reservations[].Instances[].InstanceId' \
             --output text)
 
           if [ -z "$INSTANCES" ]; then
-            echo "::error::No running instances found with tag ${{ inputs.instance-tag-key }}=${{ inputs.instance-tag-value }}"
+            echo "::error::No running instances found with tag ${TAG_KEY}=${TAG_VALUE}"
             exit 1
           fi
 
-          # Convert whitespace-separated to comma-separated
           INSTANCE_LIST=$(echo "$INSTANCES" | tr '\t\n' ',' | sed 's/,$//')
           INSTANCE_COUNT=$(echo "$INSTANCES" | wc -w | tr -d ' ')
 
@@ -85,8 +85,16 @@ jobs:
           echo "Found $INSTANCE_COUNT instances: $INSTANCE_LIST"
 
       - name: Deploy serially to each instance
+        env:
+          INSTANCE_LIST: ${{ steps.instances.outputs.instances }}
+          SSM_DOCUMENT: ${{ inputs.ssm-document }}
+          S3_BUCKET: ${{ inputs.s3-bucket }}
+          ARTIFACT_KEY: ${{ inputs.artifact-s3-key }}
+          CONFIG_KEY: ${{ inputs.config-s3-key }}
+          DEPLOY_TAG: ${{ inputs.deploy-tag }}
+          DEPLOY_ENV: ${{ inputs.environment }}
         run: |
-          IFS=',' read -ra INSTANCES <<< "${{ steps.instances.outputs.instances }}"
+          IFS=',' read -ra INSTANCES <<< "$INSTANCE_LIST"
           TOTAL=${#INSTANCES[@]}
           CURRENT=0
 
@@ -94,24 +102,22 @@ jobs:
             CURRENT=$((CURRENT + 1))
             echo "=== Deploying to $INSTANCE_ID ($CURRENT/$TOTAL) ==="
 
-            # Send SSM command
             COMMAND_ID=$(aws ssm send-command \
-              --document-name "${{ inputs.ssm-document }}" \
+              --document-name "$SSM_DOCUMENT" \
               --targets "Key=instanceids,Values=$INSTANCE_ID" \
-              --parameters '{
-                "S3Bucket": ["${{ inputs.s3-bucket }}"],
-                "S3ArtifactKey": ["${{ inputs.artifact-s3-key }}"],
-                "S3ConfigKey": ["${{ inputs.config-s3-key }}"],
-                "DeployTag": ["${{ inputs.deploy-tag }}"]
-              }' \
+              --parameters "{
+                \"S3Bucket\": [\"$S3_BUCKET\"],
+                \"S3ArtifactKey\": [\"$ARTIFACT_KEY\"],
+                \"S3ConfigKey\": [\"$CONFIG_KEY\"],
+                \"DeployTag\": [\"$DEPLOY_TAG\"]
+              }" \
               --timeout-seconds 300 \
-              --comment "Deploy ${{ inputs.deploy-tag }} to ${{ inputs.environment }}" \
+              --comment "Deploy $DEPLOY_TAG to $DEPLOY_ENV" \
               --query 'Command.CommandId' \
               --output text)
 
             echo "SSM Command ID: $COMMAND_ID"
 
-            # Poll for completion
             MAX_WAIT=60
             WAITED=0
             while [ $WAITED -lt $MAX_WAIT ]; do
@@ -133,14 +139,11 @@ jobs:
                   ;;
                 Failed|TimedOut|Cancelled)
                   echo "::error::Deploy to $INSTANCE_ID failed with status: $STATUS"
-
-                  # Print command output for debugging
                   aws ssm get-command-invocation \
                     --command-id "$COMMAND_ID" \
                     --instance-id "$INSTANCE_ID" \
                     --query '[StandardOutputContent, StandardErrorContent]' \
                     --output text || true
-
                   exit 1
                   ;;
               esac
@@ -155,10 +158,15 @@ jobs:
           echo "All $TOTAL instances deployed successfully"
 
       - name: Deployment summary
+        env:
+          DEPLOY_TAG: ${{ inputs.deploy-tag }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+          INSTANCE_COUNT: ${{ steps.instances.outputs.count }}
+          ARTIFACT_KEY: ${{ inputs.artifact-s3-key }}
         run: |
           echo "### API Deploy Complete" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag**: \`${{ inputs.deploy-tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Environment**: ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Instances**: ${{ steps.instances.outputs.count }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **S3 Artifact**: \`${{ inputs.artifact-s3-key }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag**: \`$DEPLOY_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment**: $DEPLOY_ENV" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Instances**: $INSTANCE_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **S3 Artifact**: \`$ARTIFACT_KEY\`" >> "$GITHUB_STEP_SUMMARY"

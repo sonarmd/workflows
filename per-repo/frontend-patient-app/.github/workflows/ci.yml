@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [staging, master, main]
 
+permissions: {}
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -13,8 +15,10 @@ concurrency:
 jobs:
   lint-and-typecheck:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Setup Node.js
         uses: sonarmd/workflows/actions/setup-node@main
@@ -29,8 +33,10 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Setup Node.js
         uses: sonarmd/workflows/actions/setup-node@main

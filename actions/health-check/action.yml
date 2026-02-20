@@ -36,31 +36,32 @@ runs:
     - name: Run health check
       id: check
       shell: bash
+      env:
+        HC_URL: ${{ inputs.url }}
+        HC_EXPECTED: ${{ inputs.expected-status }}
+        HC_MAX_RETRIES: ${{ inputs.max-retries }}
+        HC_DELAY: ${{ inputs.initial-delay }}
+        HC_TIMEOUT: ${{ inputs.timeout }}
       run: |
-        URL="${{ inputs.url }}"
-        EXPECTED="${{ inputs.expected-status }}"
-        MAX_RETRIES=${{ inputs.max-retries }}
-        DELAY=${{ inputs.initial-delay }}
-        TIMEOUT=${{ inputs.timeout }}
+        echo "Health checking: $HC_URL (expecting $HC_EXPECTED)"
 
-        echo "Health checking: $URL (expecting $EXPECTED)"
+        DELAY="$HC_DELAY"
+        for i in $(seq 1 "$HC_MAX_RETRIES"); do
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout "$HC_TIMEOUT" --max-time "$HC_TIMEOUT" "$HC_URL" 2>/dev/null || echo "000")
 
-        for i in $(seq 1 "$MAX_RETRIES"); do
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" "$URL" 2>/dev/null || echo "000")
-
-          if [ "$STATUS" = "$EXPECTED" ]; then
+          if [ "$STATUS" = "$HC_EXPECTED" ]; then
             echo "Health check passed on attempt $i (HTTP $STATUS)"
             echo "status=$STATUS" >> "$GITHUB_OUTPUT"
             echo "healthy=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Attempt $i/$MAX_RETRIES: HTTP $STATUS (expected $EXPECTED). Retrying in ${DELAY}s..."
+          echo "Attempt $i/$HC_MAX_RETRIES: HTTP $STATUS (expected $HC_EXPECTED). Retrying in ${DELAY}s..."
           sleep "$DELAY"
           DELAY=$((DELAY * 2))
         done
 
-        echo "::error::Health check failed after $MAX_RETRIES attempts. Last status: $STATUS"
+        echo "::error::Health check failed after $HC_MAX_RETRIES attempts. Last status: $STATUS"
         echo "status=$STATUS" >> "$GITHUB_OUTPUT"
         echo "healthy=false" >> "$GITHUB_OUTPUT"
         exit 1

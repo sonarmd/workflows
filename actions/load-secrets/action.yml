@@ -14,10 +14,10 @@ runs:
   using: composite
   steps:
     - name: Install 1Password CLI
-      uses: 1password/install-cli-action@v1
+      uses: 1password/install-cli-action@143a85f84a90555d121cde2ff5872e393a47ab9f # v1
 
     - name: Load secrets
-      uses: 1password/load-secrets-action@v2
+      uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0 # v2
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ inputs.op-service-account-token }}
       with:

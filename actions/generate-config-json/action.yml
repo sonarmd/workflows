@@ -25,7 +25,7 @@ runs:
   steps:
     - name: Checkout workflows repo for template
       if: inputs.template-path == ''
-      uses: actions/checkout@v4
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       with:
         repository: sonarmd/workflows
         path: _workflows
@@ -33,11 +33,15 @@ runs:
 
     - name: Render configuration.json
       shell: bash
+      env:
+        INPUT_TEMPLATE_PATH: ${{ inputs.template-path }}
+        INPUT_TEMPLATE_REPO_PATH: ${{ inputs.template-repo-path }}
+        INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
       run: |
-        if [ -n "${{ inputs.template-path }}" ]; then
-          TEMPLATE="${{ inputs.template-path }}"
+        if [ -n "$INPUT_TEMPLATE_PATH" ]; then
+          TEMPLATE="$INPUT_TEMPLATE_PATH"
         else
-          TEMPLATE="_workflows/${{ inputs.template-repo-path }}"
+          TEMPLATE="_workflows/$INPUT_TEMPLATE_REPO_PATH"
         fi
 
         if [ ! -f "$TEMPLATE" ]; then
@@ -46,15 +50,15 @@ runs:
         fi
 
         echo "Rendering config from: $TEMPLATE"
-        envsubst < "$TEMPLATE" > "${{ inputs.output-path }}"
+        envsubst < "$TEMPLATE" > "$INPUT_OUTPUT_PATH"
 
         # Validate JSON
-        if ! python3 -c "import json; json.load(open('${{ inputs.output-path }}'))"; then
+        if ! python3 -c "import json; json.load(open('$INPUT_OUTPUT_PATH'))"; then
           echo "::error::Generated configuration.json is not valid JSON"
           exit 1
         fi
 
-        echo "Configuration generated at: ${{ inputs.output-path }}"
+        echo "Configuration generated at: $INPUT_OUTPUT_PATH"
 
     - name: Clean up workflows checkout
       if: inputs.template-path == ''

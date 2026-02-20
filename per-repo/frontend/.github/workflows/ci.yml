@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [staging, master]
 
+permissions: {}
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -16,6 +18,8 @@ env:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       admin: ${{ steps.filter.outputs.admin }}
       patient: ${{ steps.filter.outputs.patient }}
@@ -24,7 +28,7 @@ jobs:
       shared: ${{ steps.filter.outputs.shared }}
       any: ${{ steps.filter.outputs.any }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/detect-changed-apps@main
         id: filter
 
@@ -32,13 +36,15 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.any == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
@@ -47,12 +53,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.shared == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd shared && yarn test
@@ -61,12 +69,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.admin == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd admin && yarn test
@@ -76,12 +86,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.patient == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd patient && yarn test
@@ -91,12 +103,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.provider == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd provider && yarn test
@@ -106,12 +120,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.seat == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd seat && yarn test
@@ -121,12 +137,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.any == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: yarn lint
@@ -135,5 +153,6 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.any != 'true'
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - run: echo "No changes detected in the frontend codebase. Skipping CI."

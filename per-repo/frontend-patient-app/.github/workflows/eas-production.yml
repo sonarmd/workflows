@@ -4,6 +4,8 @@ on:
   push:
     tags: ['prd-mobile-*']
 
+permissions: {}
+
 concurrency:
   group: eas-production
   cancel-in-progress: false

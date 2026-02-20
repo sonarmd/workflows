@@ -4,6 +4,8 @@ on:
   push:
     branches: [staging]
 
+permissions: {}
+
 jobs:
   tag:
     uses: sonarmd/workflows/.github/workflows/tag-release.yml@main

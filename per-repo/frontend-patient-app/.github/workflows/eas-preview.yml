@@ -4,6 +4,8 @@ on:
   push:
     tags: ['stg-mobile-*']
 
+permissions: {}
+
 concurrency:
   group: eas-preview
   cancel-in-progress: false

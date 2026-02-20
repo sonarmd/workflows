@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [staging, master]
 
+permissions: {}
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -13,8 +15,10 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
@@ -23,6 +27,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +44,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
@@ -46,10 +52,11 @@ jobs:
 
       - name: Split test files
         id: tests
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           ALL_FILES=$(find test -name '*.ts' -type f | sort)
           TOTAL=$(echo "$ALL_FILES" | wc -l)
-          SHARD=${{ matrix.shard }}
           SHARD_SIZE=$(( (TOTAL + 3) / 4 ))
           START=$(( SHARD * SHARD_SIZE + 1 ))
           TEST_FILES=$(echo "$ALL_FILES" | sed -n "${START},$(( START + SHARD_SIZE - 1 ))p" | tr '\n' ' ')
@@ -59,18 +66,21 @@ jobs:
         env:
           LOG_LEVEL: none
           TZ: utc
+          TEST_FILES: ${{ steps.tests.outputs.files }}
         run: |
           ./node_modules/.bin/mocha \
             --require @swc-node/register \
             --exit \
             --timeout 10000 \
-            ${{ steps.tests.outputs.files }}
+            $TEST_FILES
 
   build:
     needs: [lint, test]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'

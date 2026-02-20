@@ -4,11 +4,13 @@ on:
   push:
     branches: [staging]
 
+permissions: {}
+
 jobs:
   tag:
+    permissions:
+      contents: write
     uses: sonarmd/workflows/.github/workflows/tag-release.yml@main
     with:
       repo-short: fe
       environment: stg
-    permissions:
-      contents: write

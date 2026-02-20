@@ -28,12 +28,21 @@ on:
       SLACK_WEBHOOK_URL:
         required: true
 
+permissions: {}
+
 jobs:
   notify:
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: sonarmd/workflows
+          sparse-checkout: actions/slack-notify/
+          path: _actions
+
       - name: Send Slack notification
-        uses: sonarmd/workflows/actions/slack-notify@main
+        uses: ./_actions/actions/slack-notify
         with:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           status: ${{ inputs.status }}

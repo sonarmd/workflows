@@ -4,6 +4,8 @@ on:
   push:
     tags: ['dev-fe-*']
 
+permissions: {}
+
 concurrency:
   group: deploy-dev-frontend
   cancel-in-progress: false
@@ -14,14 +16,19 @@ env:
 jobs:
   build-admin:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-admin-dev
-      - uses: actions/upload-artifact@v4
+      - name: Build admin app
+        env:
+          REACT_APP_VERSION: ${{ github.ref_name }}
+        run: REACT_APP_VERSION="$REACT_APP_VERSION" yarn build-admin-dev
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: admin-build
           path: admin/build/
@@ -29,14 +36,19 @@ jobs:
 
   build-patient:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-patient-dev
-      - uses: actions/upload-artifact@v4
+      - name: Build patient app
+        env:
+          REACT_APP_VERSION: ${{ github.ref_name }}
+        run: REACT_APP_VERSION="$REACT_APP_VERSION" yarn build-patient-dev
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: patient-build
           path: patient/build/
@@ -44,14 +56,19 @@ jobs:
 
   build-provider:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-provider-dev
-      - uses: actions/upload-artifact@v4
+      - name: Build provider app
+        env:
+          REACT_APP_VERSION: ${{ github.ref_name }}
+        run: REACT_APP_VERSION="$REACT_APP_VERSION" yarn build-provider-dev
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: provider-build
           path: provider/build/
@@ -59,14 +76,19 @@ jobs:
 
   build-seat:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - run: REACT_APP_VERSION=${{ github.ref_name }} yarn build-seat-dev
-      - uses: actions/upload-artifact@v4
+      - name: Build seat app
+        env:
+          REACT_APP_VERSION: ${{ github.ref_name }}
+        run: REACT_APP_VERSION="$REACT_APP_VERSION" yarn build-seat-dev
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: seat-build
           path: seat/build/
