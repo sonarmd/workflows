@@ -1,149 +1,184 @@
 name: Deploy
 
+# Single deploy workflow for all environments.
+# Environment is derived from the tag prefix — no separate files per env.
+#
+# Tag format:
+#   dev-api-<version>   →  deploy to dev
+#   stg-api-<version>   →  deploy to staging
+#   prd-api-<version>   →  deploy to production (requires GitHub Environment approval)
+#
+# The same build, config generation, and deployment steps run for every
+# environment. Only the values differ — resolved in the setup job below.
+
 on:
   push:
-    branches: [dev, staging, master]
+    tags:
+      - 'dev-api-*'
+      - 'stg-api-*'
+      - 'prd-api-*'
+
+permissions: {}
 
 concurrency:
-  group: deploy-${{ github.ref_name }}
+  group: deploy-api-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  # Parses the tag prefix and emits environment-specific values as outputs.
+  # Every downstream job consumes these — no env logic lives anywhere else.
+  setup:
+    name: Resolve environment
     runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      env:            ${{ steps.parse.outputs.env }}
+      s3-prefix:      ${{ steps.parse.outputs.s3-prefix }}
+      instance-tag:   ${{ steps.parse.outputs.instance-tag }}
+      slack-channel:  ${{ steps.parse.outputs.slack-channel }}
+      collect-metrics: ${{ steps.parse.outputs.collect-metrics }}
     steps:
-      - uses: actions/checkout@v4
+      - id: parse
+        name: Parse tag → environment
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          case "$TAG" in
+            dev-api-*)
+              echo "env=dev"                         >> "$GITHUB_OUTPUT"
+              echo "s3-prefix=api/dev"               >> "$GITHUB_OUTPUT"
+              echo "instance-tag=APIDev"             >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops-dev"          >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=false"           >> "$GITHUB_OUTPUT"
+              ;;
+            stg-api-*)
+              echo "env=stg"                         >> "$GITHUB_OUTPUT"
+              echo "s3-prefix=api/stg"               >> "$GITHUB_OUTPUT"
+              echo "instance-tag=APIStaging"         >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops"              >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=true"            >> "$GITHUB_OUTPUT"
+              ;;
+            prd-api-*)
+              echo "env=prd"                         >> "$GITHUB_OUTPUT"
+              echo "s3-prefix=api/prd"               >> "$GITHUB_OUTPUT"
+              echo "instance-tag=APIPrd"             >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops"              >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=true"            >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unrecognized tag format: $TAG"
+              exit 1
+              ;;
+          esac
+          echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
+
+  build:
+    needs: setup
+    runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.env }}  # GitHub Environment — gates production with approval
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
-      - run: sudo apt-get update && sudo apt-get install -y graphicsmagick
-      - run: yarn build
+
+      - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
+
+      - name: Build
+        run: yarn build
 
       - name: Package artifact
-        run: tar czf /tmp/api.tar.gz ./
+        run: tar czf api.tar.gz dist/ node_modules/ package.json
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
         with:
-          name: api-${{ github.sha }}
-          path: /tmp/api.tar.gz
-          retention-days: 30
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
 
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '18'
-      - run: sudo apt-get update && sudo apt-get install -y graphicsmagick
-      - run: yarn lint
-
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    services:
-      mongo:
-        image: mongo:8.0
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval 'db.adminCommand({ping:1})'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '18'
-      - run: sudo apt-get update && sudo apt-get install -y graphicsmagick
-
-      - name: Split test files
-        id: tests
+      - name: Upload artifact to S3
         run: |
-          ALL_FILES=$(find test -name '*.ts' -type f | sort)
-          TOTAL=$(echo "$ALL_FILES" | wc -l)
-          SHARD=${{ matrix.shard }}
-          SHARD_SIZE=$(( (TOTAL + 3) / 4 ))
-          START=$(( SHARD * SHARD_SIZE + 1 ))
-          TEST_FILES=$(echo "$ALL_FILES" | sed -n "${START},$(( START + SHARD_SIZE - 1 ))p" | tr '\n' ' ')
-          echo "files=$TEST_FILES" >> "$GITHUB_OUTPUT"
+          aws s3 cp api.tar.gz \
+            "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/api.tar.gz"
 
-      - name: Run tests (shard ${{ matrix.shard }})
+  generate-config:
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
         env:
-          LOG_LEVEL: none
-          TZ: utc
-        run: |
-          ./node_modules/.bin/mocha \
-            --require @swc-node/register \
-            --exit \
-            --timeout 10000 \
-            ${{ steps.tests.outputs.files }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        with:
+          export-env: true
 
-  # Skip-test deploy (matches CircleCI's deploy-dev-2 for branches matching *skip-test*)
-  deploy-skip-test:
-    needs: [build]
-    if: contains(github.ref_name, 'skip-test')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Notify Slack (@r2-d2)
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: sonarmd/workflows
+          sparse-checkout: templates/
+          path: _workflows
+
+      - name: Render configuration.json
         run: |
-          ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sf -d "{\"channel\": \"#ops-dev\", \"text\": \"@r2-d2 deploy dev ${{ github.sha }} $ARTIFACT_URL\"}" \
-            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
+          export DEPLOY_TAG="${{ github.ref_name }}"
+          export DEPLOY_ENV="${{ needs.setup.outputs.env }}"
+          export SERVER_TYPE="Server"
+          envsubst < _workflows/templates/configuration.json.tpl > configuration.json
+          python3 -c "import json; json.load(open('configuration.json'))"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload config to S3
+        run: |
+          aws s3 cp configuration.json \
+            "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/configuration.json"
 
   deploy:
-    needs: [lint, test, build]
-    if: github.ref_name == 'dev' || github.ref_name == 'staging' || github.ref_name == 'master'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Determine environment
-        id: env
-        run: |
-          case "${{ github.ref_name }}" in
-            dev)     echo "env=dev" >> "$GITHUB_OUTPUT"; echo "channel=#ops-dev" >> "$GITHUB_OUTPUT" ;;
-            staging) echo "env=stg" >> "$GITHUB_OUTPUT"; echo "channel=#ops" >> "$GITHUB_OUTPUT" ;;
-            master)  echo "env=prd" >> "$GITHUB_OUTPUT"; echo "channel=#ops" >> "$GITHUB_OUTPUT" ;;
-          esac
+    needs: [setup, build, generate-config]
+    uses: sonarmd/workflows/.github/workflows/deploy-api-ssm.yml@main
+    with:
+      environment:        ${{ needs.setup.outputs.env }}
+      artifact-s3-key:   ${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/api.tar.gz
+      config-s3-key:     ${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/configuration.json
+      deploy-tag:        ${{ github.ref_name }}
+      instance-tag-value: ${{ needs.setup.outputs.instance-tag }}
+      aws-role-arn:      ${{ vars.AWS_DEPLOY_ROLE_ARN }}
 
-      - name: Notify Slack (@r2-d2)
-        run: |
-          ENV="${{ steps.env.outputs.env }}"
-          CHANNEL="${{ steps.env.outputs.channel }}"
-          ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+  notify:
+    needs: [setup, deploy]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status:      ${{ needs.deploy.result }}
+      environment: ${{ needs.setup.outputs.env }}
+      app-name:    triggr_api
+      tag:         ${{ github.ref_name }}
+      channel:     ${{ needs.setup.outputs.slack-channel }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-          curl -sf -d "{\"channel\": \"$CHANNEL\", \"text\": \"@r2-d2 deploy $ENV ${{ github.sha }} $ARTIFACT_URL\"}" \
-            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
-
-  ## ── ECS Deploy (future — uncomment when Fargate is ready) ──────
-  #
-  # deploy-ecs:
-  #   needs: [lint, test]
-  #   if: github.ref_name == 'dev' || github.ref_name == 'staging' || github.ref_name == 'master'
-  #   uses: sonarmd/workflows/.github/workflows/deploy-ecs.yml@main
-  #   with:
-  #     ecr-repository: sonarmd/triggr-api
-  #     ecs-cluster: sonarmd-${{ github.ref_name == 'dev' && 'dev' || github.ref_name == 'staging' && 'stg' || 'prd' }}
-  #     ecs-service: triggr-api
-  #     task-definition-family: triggr-api-${{ github.ref_name == 'dev' && 'dev' || github.ref_name == 'staging' && 'stg' || 'prd' }}
-  #     container-name: api
-  #     image-tag: ${{ github.sha }}
-  #   secrets:
-  #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  #
-  # notify:
-  #   needs: [deploy-ecs]
-  #   if: always()
-  #   uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
-  #   with:
-  #     status: ${{ needs.deploy-ecs.result }}
-  #     environment: ${{ github.ref_name == 'dev' && 'dev' || github.ref_name == 'staging' && 'stg' || 'prd' }}
-  #     app-name: triggr_api
-  #     tag: ${{ github.sha }}
-  #   secrets:
-  #     SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+  metrics:
+    needs: [setup, deploy]
+    if: always() && needs.setup.outputs.collect-metrics == 'true'
+    uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      repo:        sonarmd/triggr_api
+      environment: ${{ needs.setup.outputs.env }}
+      tag:         ${{ github.ref_name }}
+      status:      ${{ needs.deploy.result }}
+      started:     ${{ github.event.head_commit.timestamp }}
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}

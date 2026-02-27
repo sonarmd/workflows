@@ -1,15 +1,29 @@
 name: CI
 
+# triggr_misc CI — Ansible infrastructure-as-code.
+#
+# For an infra repo, "lint" and "test" both map to ansible syntax validation.
+# There is no build artifact. The gate accepts this as a valid CI contract:
+# lint=pass, test=pass, build=skipped, typecheck=skipped.
+#
+# Note: removed '|| true' from the original syntax check — failures should
+# fail CI. A broken playbook is a broken deployment.
+#
+# CODEOWNERS protects this file — changes require @sonarmd/platform-eng approval.
+
 on:
   push:
     branches: ['**']
   pull_request:
-    branches: [master]
+    branches: [master, 'release/**']
+  merge_group:
+    branches: [master, 'release/**']
 
 permissions: {}
 
 jobs:
-  syntax-check:
+  validate:
+    name: Ansible syntax check
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -19,12 +33,31 @@ jobs:
       - name: Install Ansible
         run: pip3 install ansible
 
-      - name: Ansible syntax check
+      - name: Syntax check all playbooks
         run: |
           cd Ansible
+          FAILED=false
           for playbook in *.yml; do
             if [ -f "$playbook" ]; then
               echo "Checking $playbook..."
-              ansible-playbook --syntax-check "$playbook" || true
+              ansible-playbook --syntax-check "$playbook" || FAILED=true
             fi
           done
+          if [[ "$FAILED" == "true" ]]; then
+            echo "::error::One or more Ansible playbooks failed syntax check."
+            exit 1
+          fi
+
+  # Central gate — validates the CI contract and produces the "gate" check.
+  # Branch protection requires this check. Do not remove or skip this job.
+  #
+  # For this infra repo, the validate job serves as both "lint" and "test".
+  # Build and typecheck are not applicable — gate accepts 'skipped' for both.
+  gate:
+    needs: validate
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/gate.yml@main
+    with:
+      lint_result: ${{ needs.validate.result }}
+      test_result: ${{ needs.validate.result }}
+      # build and typecheck not applicable for an infra repo — gate accepts skipped
