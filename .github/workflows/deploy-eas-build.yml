@@ -28,15 +28,19 @@ on:
       EXPO_TOKEN:
         required: true
 
+permissions: {}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ inputs.node-version }}
 
@@ -44,15 +48,19 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Setup EAS
-        uses: expo/expo-github-action@v8
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Run EAS Build
+        env:
+          EAS_PROFILE: ${{ inputs.profile }}
+          EAS_PLATFORM: ${{ inputs.platform }}
+          EAS_AUTO_SUBMIT: ${{ inputs.auto-submit }}
         run: |
-          BUILD_CMD="eas build --profile ${{ inputs.profile }} --platform ${{ inputs.platform }} --non-interactive"
-          if [ "${{ inputs.auto-submit }}" = "true" ]; then
+          BUILD_CMD="eas build --profile $EAS_PROFILE --platform $EAS_PLATFORM --non-interactive"
+          if [ "$EAS_AUTO_SUBMIT" = "true" ]; then
             BUILD_CMD="$BUILD_CMD --auto-submit"
           fi
           $BUILD_CMD

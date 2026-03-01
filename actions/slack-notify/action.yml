@@ -32,16 +32,17 @@ runs:
   steps:
     - name: Send Slack notification
       shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ inputs.webhook-url }}
+        INPUT_STATUS: ${{ inputs.status }}
+        INPUT_ENV: ${{ inputs.environment }}
+        INPUT_APP: ${{ inputs.app-name }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_RUN_URL: ${{ inputs.run-url }}
+        INPUT_ACTOR: ${{ inputs.actor }}
       run: |
-        STATUS="${{ inputs.status }}"
-        ENV="${{ inputs.environment }}"
-        APP="${{ inputs.app-name }}"
-        TAG="${{ inputs.tag }}"
-        RUN_URL="${{ inputs.run-url }}"
-        ACTOR="${{ inputs.actor }}"
-
         # Color coding
-        case "$STATUS" in
+        case "$INPUT_STATUS" in
           success)  COLOR="#36a64f"; EMOJI=":white_check_mark:" ;;
           failure)  COLOR="#dc3545"; EMOJI=":x:" ;;
           cancelled) COLOR="#ffc107"; EMOJI=":warning:" ;;
@@ -50,44 +51,50 @@ runs:
         esac
 
         # Environment label
-        case "$ENV" in
+        case "$INPUT_ENV" in
           dev) ENV_LABEL="Development" ;;
           stg) ENV_LABEL="Staging" ;;
           prd) ENV_LABEL="Production" ;;
-          *)   ENV_LABEL="$ENV" ;;
+          *)   ENV_LABEL="$INPUT_ENV" ;;
         esac
 
-        # Build fields
-        FIELDS="[{\"title\":\"App\",\"value\":\"$APP\",\"short\":true},{\"title\":\"Environment\",\"value\":\"$ENV_LABEL\",\"short\":true}"
-
-        if [ -n "$TAG" ]; then
-          FIELDS="$FIELDS,{\"title\":\"Version\",\"value\":\"\`$TAG\`\",\"short\":true}"
-        fi
-        if [ -n "$ACTOR" ]; then
-          FIELDS="$FIELDS,{\"title\":\"Triggered by\",\"value\":\"$ACTOR\",\"short\":true}"
-        fi
-
-        FIELDS="$FIELDS]"
+        # Build fields using jq for safe JSON construction
+        FIELDS=$(jq -n \
+          --arg app "$INPUT_APP" \
+          --arg env "$ENV_LABEL" \
+          --arg tag "$INPUT_TAG" \
+          --arg actor "$INPUT_ACTOR" \
+          '[
+            {title: "App", value: $app, short: true},
+            {title: "Environment", value: $env, short: true}
+          ] + (if $tag != "" then [{title: "Version", value: ("`" + $tag + "`"), short: true}] else [] end)
+            + (if $actor != "" then [{title: "Triggered by", value: $actor, short: true}] else [] end)')
 
         # Build action link
         ACTIONS=""
-        if [ -n "$RUN_URL" ]; then
-          ACTIONS=",\"actions\":[{\"type\":\"button\",\"text\":\"View Run\",\"url\":\"$RUN_URL\"}]"
+        if [ -n "$INPUT_RUN_URL" ]; then
+          ACTIONS=$(jq -n --arg url "$INPUT_RUN_URL" '[{type: "button", text: "View Run", url: $url}]')
         fi
 
-        PAYLOAD=$(cat <<EOJSON
-        {
-          "attachments": [{
-            "color": "$COLOR",
-            "fallback": "$EMOJI Deploy $STATUS: $APP $TAG to $ENV_LABEL",
-            "title": "$EMOJI Deploy $STATUS",
-            "fields": $FIELDS
-            $ACTIONS
-          }]
-        }
-        EOJSON
-        )
+        # Construct payload safely with jq
+        PAYLOAD=$(jq -n \
+          --arg color "$COLOR" \
+          --arg emoji "$EMOJI" \
+          --arg status "$INPUT_STATUS" \
+          --arg app "$INPUT_APP" \
+          --arg tag "$INPUT_TAG" \
+          --arg env_label "$ENV_LABEL" \
+          --argjson fields "$FIELDS" \
+          --argjson actions "${ACTIONS:-null}" \
+          '{
+            attachments: [{
+              color: $color,
+              fallback: ($emoji + " Deploy " + $status + ": " + $app + " " + $tag + " to " + $env_label),
+              title: ($emoji + " Deploy " + $status),
+              fields: $fields
+            } + (if $actions != null then {actions: $actions} else {} end)]
+          }')
 
         curl -sf -X POST -H 'Content-type: application/json' \
           --data "$PAYLOAD" \
-          "${{ inputs.webhook-url }}" || echo "::warning::Slack notification failed"
+          "$SLACK_WEBHOOK_URL" || echo "::warning::Slack notification failed"

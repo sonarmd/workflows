@@ -1,41 +1,33 @@
 name: CI
 
+# frontend-patient-app CI — React Native / Expo app.
+#
+# Delegates entirely to ci-universal. This project has no CI build step:
+# production builds are handled by EAS on tag push (see eas-preview.yml,
+# eas-production.yml). The gate accepts build_result='skipped' for mobile repos.
+#
+# CODEOWNERS protects this file — changes require @sonarmd/platform-eng approval.
+
 on:
   push:
     branches: ['**']
   pull_request:
-    branches: [staging, master, main]
+    branches: [master, 'release/**']
+  merge_group:
+    branches: [master, 'release/**']
+
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint-and-typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '22'
-
-      - name: Lint
-        run: yarn lint
-
-      - name: Typecheck
-        run: npx tsc --noEmit
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '22'
-
-      - name: Test
-        run: yarn test --ci --passWithNoTests
+  ci:
+    uses: sonarmd/workflows/.github/workflows/ci-universal.yml@main
+    with:
+      node_version:      '22'
+      lint_command:      yarn lint
+      typecheck_command: npx tsc --noEmit
+      test_command:      yarn test --ci --passWithNoTests
+      # build_command omitted — EAS handles builds on tag push

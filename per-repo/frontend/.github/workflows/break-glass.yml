@@ -25,6 +25,8 @@ on:
         required: true
         type: string
 
+permissions: {}
+
 concurrency:
   group: deploy-${{ inputs.environment }}-frontend
   cancel-in-progress: false
@@ -35,23 +37,32 @@ env:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Log break-glass event
+        env:
+          BG_ACTOR: ${{ github.actor }}
+          BG_ENVIRONMENT: ${{ inputs.environment }}
+          BG_REF: ${{ inputs.tag_override || github.sha }}
+          BG_SKIP_TESTS: ${{ inputs.skip_tests }}
+          BG_REASON: ${{ inputs.reason }}
         run: |
           echo "### Break-Glass Deploy" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Actor**: ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Environment**: ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag/SHA**: ${{ inputs.tag_override || github.sha }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Skip Tests**: ${{ inputs.skip_tests }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Reason**: ${{ inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Actor**: $BG_ACTOR" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment**: $BG_ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag/SHA**: $BG_REF" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip Tests**: $BG_SKIP_TESTS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Reason**: $BG_REASON" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
 
   tests:
     if: inputs.skip_tests != true
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           ref: ${{ inputs.tag_override || github.sha }}
       - uses: sonarmd/workflows/actions/setup-node@main
@@ -65,20 +76,27 @@ jobs:
     needs: [audit, tests]
     if: always() && needs.audit.result == 'success' && (needs.tests.result == 'success' || needs.tests.result == 'skipped')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     environment: ${{ inputs.environment == 'prd' && 'production' || '' }}
     strategy:
       matrix:
         app: [admin, patient, provider, seat]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           ref: ${{ inputs.tag_override || github.sha }}
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - run: REACT_APP_VERSION=${{ inputs.tag_override || github.sha }} yarn build-${{ matrix.app }}-${{ inputs.environment }}
-      - uses: actions/upload-artifact@v4
+      - name: Build app
+        env:
+          REACT_APP_VERSION: ${{ inputs.tag_override || github.sha }}
+          BUILD_APP: ${{ matrix.app }}
+          BUILD_ENV: ${{ inputs.environment }}
+        run: REACT_APP_VERSION="$REACT_APP_VERSION" yarn "build-${BUILD_APP}-${BUILD_ENV}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ${{ matrix.app }}-build
           path: ${{ matrix.app }}/build/

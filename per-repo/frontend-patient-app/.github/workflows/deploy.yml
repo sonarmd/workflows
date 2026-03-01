@@ -1,0 +1,81 @@
+name: Deploy
+
+# Single deploy workflow for all environments — frontend-patient-app (React Native / Expo).
+# Environment and EAS build profile are derived from the tag prefix.
+#
+# Tag format:
+#   stg-mobile-<version>   →  EAS preview build (staging, no auto-submit)
+#   prd-mobile-<version>   →  EAS production build + auto-submit to app stores
+#
+# No dev environment for mobile — preview builds serve as the dev/test artifact.
+
+on:
+  push:
+    tags:
+      - 'stg-mobile-*'
+      - 'prd-mobile-*'
+
+permissions: {}
+
+concurrency:
+  group: deploy-mobile-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # Parses tag prefix → all env-specific values in one place.
+  setup:
+    name: Resolve environment
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      env:         ${{ steps.parse.outputs.env }}
+      eas-profile: ${{ steps.parse.outputs.eas-profile }}
+      auto-submit: ${{ steps.parse.outputs.auto-submit }}
+    steps:
+      - id: parse
+        name: Parse tag → environment
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          case "$TAG" in
+            stg-mobile-*)
+              echo "env=stg"          >> "$GITHUB_OUTPUT"
+              echo "eas-profile=preview"  >> "$GITHUB_OUTPUT"
+              echo "auto-submit=false"    >> "$GITHUB_OUTPUT"
+              ;;
+            prd-mobile-*)
+              echo "env=prd"          >> "$GITHUB_OUTPUT"
+              echo "eas-profile=production" >> "$GITHUB_OUTPUT"
+              echo "auto-submit=true"      >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unrecognized tag format: $TAG"
+              exit 1
+              ;;
+          esac
+          echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
+
+  build:
+    needs: setup
+    environment: ${{ needs.setup.outputs.env }}
+    uses: sonarmd/workflows/.github/workflows/deploy-eas-build.yml@main
+    with:
+      profile:      ${{ needs.setup.outputs.eas-profile }}
+      platform:     all
+      auto-submit:  ${{ needs.setup.outputs.auto-submit == 'true' }}
+      environment:  ${{ needs.setup.outputs.env }}
+      node-version: '22'
+    secrets:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+  notify:
+    needs: [setup, build]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status:      ${{ needs.build.result }}
+      environment: ${{ needs.setup.outputs.env }}
+      app-name:    patient-mobile
+      tag:         ${{ github.ref_name }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

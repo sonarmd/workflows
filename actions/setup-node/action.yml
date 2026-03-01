@@ -18,16 +18,18 @@ runs:
       id: detect
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_NODE_VERSION: ${{ inputs.node-version }}
       run: |
-        if [ -n "${{ inputs.node-version }}" ]; then
-          echo "version=${{ inputs.node-version }}" >> "$GITHUB_OUTPUT"
+        if [ -n "$INPUT_NODE_VERSION" ]; then
+          echo "version=$INPUT_NODE_VERSION" >> "$GITHUB_OUTPUT"
         else
           VERSION=$(node -p "require('./package.json').volta?.node || require('./package.json').engines?.node || '18'" | tr -d '^~>=x ')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: ${{ steps.detect.outputs.version }}
 
@@ -37,7 +39,7 @@ runs:
       run: echo "dir=$(yarn cache dir)" >> "$GITHUB_OUTPUT"
 
     - name: Cache yarn dependencies
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: |
           ${{ steps.yarn-cache.outputs.dir }}

@@ -5,34 +5,41 @@
     "S3Bucket": {
       "type": "String",
       "description": "S3 bucket containing the deployment artifact",
-      "default": "sonarmd-deploy-artifacts"
+      "default": "sonarmd-deploy-artifacts",
+      "allowedPattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
     },
     "S3ArtifactKey": {
       "type": "String",
-      "description": "S3 key for the API tarball (e.g., api/stg/stg-api-1.0.0-b42/api.tar.gz)"
+      "description": "S3 key for the API tarball (e.g., api/stg/stg-api-1.0.0-b42/api.tar.gz)",
+      "allowedPattern": "^api/(dev|stg|prd)/[a-zA-Z0-9._-]+/api\\.tar\\.gz$"
     },
     "S3ConfigKey": {
       "type": "String",
-      "description": "S3 key for configuration.json (e.g., api/stg/stg-api-1.0.0-b42/configuration.json)"
+      "description": "S3 key for configuration.json (e.g., api/stg/stg-api-1.0.0-b42/configuration.json)",
+      "allowedPattern": "^api/(dev|stg|prd)/[a-zA-Z0-9._-]+/configuration\\.json$"
     },
     "DeployTag": {
       "type": "String",
-      "description": "Deployment tag for logging and identification"
+      "description": "Deployment tag for logging and identification",
+      "allowedPattern": "^[a-zA-Z0-9._-]{1,128}$"
     },
     "InstallPath": {
       "type": "String",
       "description": "Installation directory for the API",
-      "default": "/var/www/triggr_api"
+      "default": "/var/www/triggr_api",
+      "allowedPattern": "^/var/www/triggr_api$"
     },
     "ServiceName": {
       "type": "String",
       "description": "Systemd service name",
-      "default": "triggr-api"
+      "default": "triggr-api",
+      "allowedPattern": "^triggr-api$"
     },
     "HealthCheckUrl": {
       "type": "String",
       "description": "URL to health check after deploy",
-      "default": "http://localhost:1337/health"
+      "default": "http://localhost:1337/health",
+      "allowedPattern": "^http://localhost:[0-9]{1,5}/health$"
     }
   },
   "mainSteps": [
@@ -45,6 +52,7 @@
           "#!/bin/bash",
           "set -euo pipefail",
           "",
+          "# ── Parameter assignment ──",
           "INSTALL_PATH='{{ InstallPath }}'",
           "S3_BUCKET='{{ S3Bucket }}'",
           "ARTIFACT_KEY='{{ S3ArtifactKey }}'",
@@ -53,26 +61,48 @@
           "SERVICE_NAME='{{ ServiceName }}'",
           "HEALTH_URL='{{ HealthCheckUrl }}'",
           "",
+          "# ── Secure temp directory (per-deploy, restricted permissions) ──",
+          "DEPLOY_TMP=$(mktemp -d /tmp/sonarmd-deploy-XXXXXX)",
+          "chmod 700 \"$DEPLOY_TMP\"",
+          "cleanup() { rm -rf \"$DEPLOY_TMP\"; }",
+          "trap cleanup EXIT",
+          "",
           "echo \"=== SonarMD API Deploy: $DEPLOY_TAG ===\"",
           "echo \"Instance: $(hostname)\"",
           "echo \"Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
           "",
           "# ── Download artifact and config from S3 ──",
           "echo 'Downloading artifact...'",
-          "aws s3 cp \"s3://$S3_BUCKET/$ARTIFACT_KEY\" /tmp/api.tar.gz",
-          "aws s3 cp \"s3://$S3_BUCKET/$CONFIG_KEY\" /tmp/configuration.json",
+          "aws s3 cp \"s3://$S3_BUCKET/$ARTIFACT_KEY\" \"$DEPLOY_TMP/api.tar.gz\"",
+          "aws s3 cp \"s3://$S3_BUCKET/$CONFIG_KEY\" \"$DEPLOY_TMP/configuration.json\"",
           "",
-          "# ── Extract artifact ──",
+          "# ── Validate artifact is a gzip file ──",
+          "if ! file \"$DEPLOY_TMP/api.tar.gz\" | grep -q 'gzip compressed'; then",
+          "  echo '::error::Downloaded artifact is not a valid gzip file'",
+          "  exit 1",
+          "fi",
+          "",
+          "# ── Validate config is valid JSON ──",
+          "if ! python3 -c \"import json; json.load(open('$DEPLOY_TMP/configuration.json'))\"; then",
+          "  echo '::error::Downloaded configuration.json is not valid JSON'",
+          "  exit 1",
+          "fi",
+          "",
+          "# ── Extract artifact (no path traversal — strip leading components) ──",
           "echo 'Extracting artifact...'",
-          "rm -rf /tmp/api-deploy",
-          "mkdir -p /tmp/api-deploy",
-          "tar xzf /tmp/api.tar.gz -C /tmp/api-deploy",
+          "mkdir -p \"$DEPLOY_TMP/app\"",
+          "tar xzf \"$DEPLOY_TMP/api.tar.gz\" -C \"$DEPLOY_TMP/app\" --no-same-owner --no-same-permissions",
           "",
-          "# ── Place configuration ──",
+          "# ── Verify expected structure ──",
+          "if [ ! -d \"$DEPLOY_TMP/app/dist\" ] || [ ! -f \"$DEPLOY_TMP/app/package.json\" ]; then",
+          "  echo '::error::Artifact missing expected dist/ directory or package.json'",
+          "  exit 1",
+          "fi",
+          "",
+          "# ── Place configuration (restricted permissions) ──",
           "echo 'Placing configuration...'",
-          "cp /tmp/configuration.json /tmp/api-deploy/dist/configuration.json",
-          "chmod 400 /tmp/configuration.json",
-          "chmod 400 /tmp/api-deploy/dist/configuration.json",
+          "cp \"$DEPLOY_TMP/configuration.json\" \"$DEPLOY_TMP/app/dist/configuration.json\"",
+          "chmod 400 \"$DEPLOY_TMP/app/dist/configuration.json\"",
           "",
           "# ── Swap directories (keep .old for rollback) ──",
           "echo 'Swapping directories...'",
@@ -80,7 +110,7 @@
           "  rm -rf \"${INSTALL_PATH}.old\"",
           "  mv \"$INSTALL_PATH\" \"${INSTALL_PATH}.old\"",
           "fi",
-          "mv /tmp/api-deploy \"$INSTALL_PATH\"",
+          "mv \"$DEPLOY_TMP/app\" \"$INSTALL_PATH\"",
           "",
           "# ── Set ownership ──",
           "chown -R www-data:www-data \"$INSTALL_PATH\"",
@@ -89,7 +119,7 @@
           "echo 'Restarting service...'",
           "systemctl restart \"$SERVICE_NAME\"",
           "",
-          "# ── Health check with retries ──",
+          "# ── Health check with exponential backoff ──",
           "echo 'Running health checks...'",
           "MAX_RETRIES=6",
           "DELAY=5",
@@ -98,8 +128,7 @@
           "  STATUS=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \"$HEALTH_URL\" 2>/dev/null || echo '000')",
           "  if [ \"$STATUS\" = '200' ]; then",
           "    echo \"Health check passed on attempt $i (HTTP $STATUS)\"",
-          "    echo \"Deploy $DEPLOY_TAG completed successfully\"",
-          "    rm -f /tmp/api.tar.gz /tmp/configuration.json",
+          "    echo \"Deploy $DEPLOY_TAG completed successfully at $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
           "    exit 0",
           "  fi",
           "  echo \"Attempt $i/$MAX_RETRIES: HTTP $STATUS. Retrying in ${DELAY}s...\"",
@@ -107,15 +136,17 @@
           "done",
           "",
           "# ── Auto-rollback on failure ──",
-          "echo '::error::Health check failed — rolling back'",
+          "echo '::error::Health check failed after all retries — rolling back'",
           "if [ -d \"${INSTALL_PATH}.old\" ]; then",
           "  rm -rf \"$INSTALL_PATH\"",
           "  mv \"${INSTALL_PATH}.old\" \"$INSTALL_PATH\"",
+          "  chown -R www-data:www-data \"$INSTALL_PATH\"",
           "  systemctl restart \"$SERVICE_NAME\"",
           "  echo 'Rollback completed — previous version restored'",
+          "else",
+          "  echo '::error::No .old directory available for rollback'",
           "fi",
           "",
-          "rm -f /tmp/api.tar.gz /tmp/configuration.json",
           "exit 1"
         ]
       }

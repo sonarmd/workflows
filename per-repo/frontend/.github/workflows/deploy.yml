@@ -1,210 +1,368 @@
 name: Deploy
 
+# Single deploy workflow for all environments — frontend monorepo.
+# Environment is derived from the tag prefix. All 4 apps build and deploy
+# every time — no path filtering on deploy (consistency across all apps matters).
+#
+# Tag format:
+#   dev-fe-<version>   →  deploy to dev     (S3, no CloudFront)
+#   stg-fe-<version>   →  deploy to staging (S3 + CloudFront)
+#   prd-fe-<version>   →  deploy to production (GitHub Environment approval)
+
 on:
   push:
-    branches: [dev, staging, master]
+    tags:
+      - 'dev-fe-*'
+      - 'stg-fe-*'
+      - 'prd-fe-*'
+
+permissions: {}
 
 concurrency:
-  group: deploy-${{ github.ref_name }}
+  group: deploy-frontend-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
   NODE_OPTIONS: --openssl-legacy-provider
 
 jobs:
-  detect-changes:
+  # Parses tag prefix → all env-specific values in one place.
+  # Every downstream job consumes these outputs — no env logic anywhere else.
+  setup:
+    name: Resolve environment
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
-      admin: ${{ steps.filter.outputs.admin }}
-      patient: ${{ steps.filter.outputs.patient }}
-      provider: ${{ steps.filter.outputs.provider }}
-      seat: ${{ steps.filter.outputs.seat }}
+      env:             ${{ steps.parse.outputs.env }}
+      build-suffix:    ${{ steps.parse.outputs.build-suffix }}
+      slack-channel:   ${{ steps.parse.outputs.slack-channel }}
+      collect-metrics: ${{ steps.parse.outputs.collect-metrics }}
+      bucket-admin:    ${{ steps.parse.outputs.bucket-admin }}
+      bucket-patient:  ${{ steps.parse.outputs.bucket-patient }}
+      bucket-provider: ${{ steps.parse.outputs.bucket-provider }}
+      bucket-seat:     ${{ steps.parse.outputs.bucket-seat }}
+      cf-admin:        ${{ steps.parse.outputs.cf-admin }}
+      cf-patient:      ${{ steps.parse.outputs.cf-patient }}
+      cf-provider:     ${{ steps.parse.outputs.cf-provider }}
+      cf-seat:         ${{ steps.parse.outputs.cf-seat }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: sonarmd/workflows/actions/detect-changed-apps@main
-        id: filter
-
-  # Determine environment from branch name
-  env:
-    runs-on: ubuntu-latest
-    outputs:
-      env: ${{ steps.env.outputs.env }}
-      slack-channel: ${{ steps.env.outputs.slack_channel }}
-    steps:
-      - id: env
+      - id: parse
+        name: Parse tag → environment
+        env:
+          # CloudFront IDs live in GitHub repo variables — injected here once.
+          CF_ADMIN_STG:    ${{ vars.CF_DIST_ADMIN_STG }}
+          CF_ADMIN_PRD:    ${{ vars.CF_DIST_ADMIN_PRD }}
+          CF_PATIENT_STG:  ${{ vars.CF_DIST_PATIENT_STG }}
+          CF_PATIENT_PRD:  ${{ vars.CF_DIST_PATIENT_PRD }}
+          CF_PROVIDER_STG: ${{ vars.CF_DIST_PROVIDER_STG }}
+          CF_PROVIDER_PRD: ${{ vars.CF_DIST_PROVIDER_PRD }}
+          CF_SEAT_STG:     ${{ vars.CF_DIST_SEAT_STG }}
+          CF_SEAT_PRD:     ${{ vars.CF_DIST_SEAT_PRD }}
         run: |
-          case "${{ github.ref_name }}" in
-            dev)     echo "env=dev" >> "$GITHUB_OUTPUT"; echo "slack_channel=#ops-dev" >> "$GITHUB_OUTPUT" ;;
-            staging) echo "env=stg" >> "$GITHUB_OUTPUT"; echo "slack_channel=#ops" >> "$GITHUB_OUTPUT" ;;
-            master)  echo "env=prd" >> "$GITHUB_OUTPUT"; echo "slack_channel=#ops" >> "$GITHUB_OUTPUT" ;;
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          case "$TAG" in
+            dev-fe-*)
+              echo "env=dev"                              >> "$GITHUB_OUTPUT"
+              echo "build-suffix=dev"                     >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops-dev"               >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=false"                >> "$GITHUB_OUTPUT"
+              echo "bucket-admin=admin.dev.sonarmd.com"   >> "$GITHUB_OUTPUT"
+              echo "bucket-patient=my.dev.sonarmd.com"    >> "$GITHUB_OUTPUT"
+              echo "bucket-provider=care.dev.sonarmd.com" >> "$GITHUB_OUTPUT"
+              echo "bucket-seat=seat.dev.sonarmd.com"     >> "$GITHUB_OUTPUT"
+              echo "cf-admin="    >> "$GITHUB_OUTPUT"
+              echo "cf-patient="  >> "$GITHUB_OUTPUT"
+              echo "cf-provider=" >> "$GITHUB_OUTPUT"
+              echo "cf-seat="     >> "$GITHUB_OUTPUT"
+              ;;
+            stg-fe-*)
+              echo "env=stg"                              >> "$GITHUB_OUTPUT"
+              echo "build-suffix=stg"                     >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops"                   >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=true"                 >> "$GITHUB_OUTPUT"
+              echo "bucket-admin=admin.stg.sonarmd.com"   >> "$GITHUB_OUTPUT"
+              echo "bucket-patient=my.stg.sonarmd.com"    >> "$GITHUB_OUTPUT"
+              echo "bucket-provider=care.stg.sonarmd.com" >> "$GITHUB_OUTPUT"
+              echo "bucket-seat=seat.stg.sonarmd.com"     >> "$GITHUB_OUTPUT"
+              echo "cf-admin=$CF_ADMIN_STG"       >> "$GITHUB_OUTPUT"
+              echo "cf-patient=$CF_PATIENT_STG"   >> "$GITHUB_OUTPUT"
+              echo "cf-provider=$CF_PROVIDER_STG" >> "$GITHUB_OUTPUT"
+              echo "cf-seat=$CF_SEAT_STG"         >> "$GITHUB_OUTPUT"
+              ;;
+            prd-fe-*)
+              echo "env=prd"                              >> "$GITHUB_OUTPUT"
+              echo "build-suffix=prd"                     >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops"                   >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=true"                 >> "$GITHUB_OUTPUT"
+              echo "bucket-admin=admin.sonarmd.com"       >> "$GITHUB_OUTPUT"
+              echo "bucket-patient=my.sonarmd.com"        >> "$GITHUB_OUTPUT"
+              echo "bucket-provider=care.sonarmd.com"     >> "$GITHUB_OUTPUT"
+              echo "bucket-seat=seat.sonarmd.com"         >> "$GITHUB_OUTPUT"
+              echo "cf-admin=$CF_ADMIN_PRD"       >> "$GITHUB_OUTPUT"
+              echo "cf-patient=$CF_PATIENT_PRD"   >> "$GITHUB_OUTPUT"
+              echo "cf-provider=$CF_PROVIDER_PRD" >> "$GITHUB_OUTPUT"
+              echo "cf-seat=$CF_SEAT_PRD"         >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unrecognized tag format: $TAG"
+              exit 1
+              ;;
           esac
+          echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
 
-  # ── Build + Deploy per app ────────────────────────────────────
+  # ── Build all 4 apps in parallel ──────────────────────────────────────────
+  # Build script name is derived: yarn build-admin-dev, yarn build-admin-stg, etc.
+  # GitHub Environment gates production deploys with approval.
 
-  admin:
-    needs: [detect-changes, env]
-    if: needs.detect-changes.outputs.admin == 'true'
+  build-admin:
+    needs: setup
     runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.env }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - name: Build
-        run: REACT_APP_VERSION=${{ github.sha }} yarn build-admin-${{ needs.env.outputs.env }}
-
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
+      - run: REACT_APP_VERSION="${{ github.ref_name }}" yarn build-admin-${{ needs.setup.outputs.build-suffix }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
+          name: admin-build
+          path: admin/build/
+          retention-days: 7
 
-      - name: Deploy to S3
-        working-directory: admin
-        run: |
-          aws s3 sync build/ "s3://$BUCKET" \
-            --cache-control "max-age=604800, public" \
-            --exclude index.html
-
-          aws s3api put-object \
-            --bucket "$BUCKET" \
-            --key index.html \
-            --body build/index.html \
-            --cache-control "max-age=300, public" \
-            --content-type text/html
-        env:
-          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'admin.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'admin.stg.sonarmd.com' || 'admin.sonarmd.com' }}
-
-      - name: Notify Slack
-        if: always()
-        run: |
-          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed Admin Tool ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
-            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
-
-  patient:
-    needs: [detect-changes, env]
-    if: needs.detect-changes.outputs.patient == 'true'
+  build-patient:
+    needs: setup
     runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.env }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - name: Build
-        run: REACT_APP_VERSION=${{ github.sha }} yarn build-patient-${{ needs.env.outputs.env }}
-
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
+      - run: REACT_APP_VERSION="${{ github.ref_name }}" yarn build-patient-${{ needs.setup.outputs.build-suffix }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
+          name: patient-build
+          path: patient/build/
+          retention-days: 7
 
-      - name: Deploy to S3
-        working-directory: patient
-        run: |
-          aws s3 sync build/ "s3://$BUCKET" \
-            --cache-control "max-age=604800, public" \
-            --exclude index.html
-
-          aws s3api put-object \
-            --bucket "$BUCKET" \
-            --key index.html \
-            --body build/index.html \
-            --cache-control "max-age=300, public" \
-            --content-type text/html
-        env:
-          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'my.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'my.stg.sonarmd.com' || 'my.sonarmd.com' }}
-
-      - name: Notify Slack
-        if: always()
-        run: |
-          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed Patient ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
-            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
-
-  provider:
-    needs: [detect-changes, env]
-    if: needs.detect-changes.outputs.provider == 'true'
+  build-provider:
+    needs: setup
     runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.env }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - name: Build
-        run: REACT_APP_VERSION=${{ github.sha }} yarn build-provider-${{ needs.env.outputs.env }}
-
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
+      - run: REACT_APP_VERSION="${{ github.ref_name }}" yarn build-provider-${{ needs.setup.outputs.build-suffix }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
+          name: provider-build
+          path: provider/build/
+          retention-days: 7
 
-      - name: Deploy to S3
-        working-directory: provider
-        run: |
-          aws s3 sync build/ "s3://$BUCKET" \
-            --cache-control "max-age=604800, public" \
-            --exclude index.html
-
-          aws s3api put-object \
-            --bucket "$BUCKET" \
-            --key index.html \
-            --body build/index.html \
-            --cache-control "max-age=300, public" \
-            --content-type text/html
-        env:
-          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'care.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'care.stg.sonarmd.com' || 'care.sonarmd.com' }}
-
-      - name: Notify Slack
-        if: always()
-        run: |
-          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed Provider Dashboard ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
-            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
-
-  seat:
-    needs: [detect-changes, env]
-    if: needs.detect-changes.outputs.seat == 'true'
+  build-seat:
+    needs: setup
     runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.env }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - name: Build
-        run: REACT_APP_VERSION=${{ github.sha }} yarn build-seat-${{ needs.env.outputs.env }}
-
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
+      - run: REACT_APP_VERSION="${{ github.ref_name }}" yarn build-seat-${{ needs.setup.outputs.build-suffix }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          name: seat-build
+          path: seat/build/
+          retention-days: 7
+
+  # ── Deploy all 4 apps in parallel ─────────────────────────────────────────
+  # Same S3 sync pattern for every app. CloudFront invalidation runs only
+  # when a distribution ID is set (empty string = skip = dev environment).
+
+  deploy-admin:
+    needs: [setup, build-admin]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: admin-build
+          path: build/
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-2
-
-      - name: Deploy to S3
-        working-directory: seat
+      - name: Sync to S3
+        env:
+          BUCKET: ${{ needs.setup.outputs.bucket-admin }}
         run: |
           aws s3 sync build/ "s3://$BUCKET" \
             --cache-control "max-age=604800, public" \
-            --exclude index.html
-
-          aws s3api put-object \
-            --bucket "$BUCKET" \
-            --key index.html \
+            --exclude "index.html" --exclude "asset-manifest.json"
+          aws s3api put-object --bucket "$BUCKET" --key index.html \
             --body build/index.html \
-            --cache-control "max-age=300, public" \
-            --content-type text/html
-        env:
-          BUCKET: ${{ needs.env.outputs.env == 'dev' && 'seat.dev.sonarmd.com' || needs.env.outputs.env == 'stg' && 'seat.stg.sonarmd.com' || 'seat.sonarmd.com' }}
-
-      - name: Notify Slack
-        if: always()
+            --cache-control "max-age=300, public" --content-type text/html
+          aws s3api put-object --bucket "$BUCKET" --key asset-manifest.json \
+            --body build/asset-manifest.json \
+            --cache-control "max-age=300, public" --content-type application/json
+      - name: Invalidate CloudFront
+        if: needs.setup.outputs.cf-admin != ''
         run: |
-          curl -sf -d "{\"channel\": \"${{ needs.env.outputs.slack-channel }}\", \"text\": \"Deployed RAT ${{ github.sha }} to ${{ needs.env.outputs.env }}\"}" \
-            "https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}" || true
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ needs.setup.outputs.cf-admin }}" \
+            --paths "/index.html" "/asset-manifest.json"
+
+  deploy-patient:
+    needs: [setup, build-patient]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: patient-build
+          path: build/
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+      - name: Sync to S3
+        env:
+          BUCKET: ${{ needs.setup.outputs.bucket-patient }}
+        run: |
+          aws s3 sync build/ "s3://$BUCKET" \
+            --cache-control "max-age=604800, public" \
+            --exclude "index.html" --exclude "asset-manifest.json"
+          aws s3api put-object --bucket "$BUCKET" --key index.html \
+            --body build/index.html \
+            --cache-control "max-age=300, public" --content-type text/html
+          aws s3api put-object --bucket "$BUCKET" --key asset-manifest.json \
+            --body build/asset-manifest.json \
+            --cache-control "max-age=300, public" --content-type application/json
+      - name: Invalidate CloudFront
+        if: needs.setup.outputs.cf-patient != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ needs.setup.outputs.cf-patient }}" \
+            --paths "/index.html" "/asset-manifest.json"
+
+  deploy-provider:
+    needs: [setup, build-provider]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: provider-build
+          path: build/
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+      - name: Sync to S3
+        env:
+          BUCKET: ${{ needs.setup.outputs.bucket-provider }}
+        run: |
+          aws s3 sync build/ "s3://$BUCKET" \
+            --cache-control "max-age=604800, public" \
+            --exclude "index.html" --exclude "asset-manifest.json"
+          aws s3api put-object --bucket "$BUCKET" --key index.html \
+            --body build/index.html \
+            --cache-control "max-age=300, public" --content-type text/html
+          aws s3api put-object --bucket "$BUCKET" --key asset-manifest.json \
+            --body build/asset-manifest.json \
+            --cache-control "max-age=300, public" --content-type application/json
+      - name: Invalidate CloudFront
+        if: needs.setup.outputs.cf-provider != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ needs.setup.outputs.cf-provider }}" \
+            --paths "/index.html" "/asset-manifest.json"
+
+  deploy-seat:
+    needs: [setup, build-seat]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-build
+          path: build/
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+      - name: Sync to S3
+        env:
+          BUCKET: ${{ needs.setup.outputs.bucket-seat }}
+        run: |
+          aws s3 sync build/ "s3://$BUCKET" \
+            --cache-control "max-age=604800, public" \
+            --exclude "index.html" --exclude "asset-manifest.json"
+          aws s3api put-object --bucket "$BUCKET" --key index.html \
+            --body build/index.html \
+            --cache-control "max-age=300, public" --content-type text/html
+          aws s3api put-object --bucket "$BUCKET" --key asset-manifest.json \
+            --body build/asset-manifest.json \
+            --cache-control "max-age=300, public" --content-type application/json
+      - name: Invalidate CloudFront
+        if: needs.setup.outputs.cf-seat != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ needs.setup.outputs.cf-seat }}" \
+            --paths "/index.html" "/asset-manifest.json"
+
+  notify:
+    needs: [setup, deploy-admin, deploy-patient, deploy-provider, deploy-seat]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status:      ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
+      environment: ${{ needs.setup.outputs.env }}
+      app-name:    frontend
+      tag:         ${{ github.ref_name }}
+      channel:     ${{ needs.setup.outputs.slack-channel }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  metrics:
+    needs: [setup, deploy-admin, deploy-patient, deploy-provider, deploy-seat]
+    if: always() && needs.setup.outputs.collect-metrics == 'true'
+    uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      repo:        sonarmd/frontend
+      environment: ${{ needs.setup.outputs.env }}
+      tag:         ${{ github.ref_name }}
+      status:      ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
+      started:     ${{ github.event.head_commit.timestamp }}
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}

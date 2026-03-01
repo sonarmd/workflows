@@ -1,14 +1,50 @@
 name: Auto-Tag Release
 
+# Fires on merge to release/** (→ stg tag) and master (→ prd tag).
+# The created tag triggers deploy.yml immediately — no manual step required.
+#
+#   release/** merge  →  stg-api-<version>-b<N>  →  staging deploy
+#   master     merge  →  prd-api-<version>-b<N>  →  production deploy
+
 on:
   push:
-    branches: [staging]
+    branches:
+      - master
+      - 'release/**'
+
+permissions: {}
 
 jobs:
+  setup:
+    name: Resolve environment
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      env: ${{ steps.parse.outputs.env }}
+    steps:
+      - id: parse
+        name: Map branch → environment
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          case "$BRANCH" in
+            release/*)
+              echo "env=stg" >> "$GITHUB_OUTPUT"
+              ;;
+            master)
+              echo "env=prd" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unexpected branch: $BRANCH"
+              exit 1
+              ;;
+          esac
+
   tag:
+    needs: setup
+    permissions:
+      contents: write
     uses: sonarmd/workflows/.github/workflows/tag-release.yml@main
     with:
       repo-short: api
-      environment: stg
-    permissions:
-      contents: write
+      environment: ${{ needs.setup.outputs.env }}

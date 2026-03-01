@@ -47,16 +47,20 @@ on:
         description: Full ECR image URI
         value: ${{ jobs.deploy.outputs.image }}
 
+permissions: {}
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       image: ${{ steps.push.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -64,26 +68,29 @@ jobs:
 
       - name: Login to ECR
         id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2
 
       - name: Build and push Docker image
         id: push
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          ECR_REPO: ${{ inputs.ecr-repository }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
-          IMAGE="${{ steps.ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ inputs.image-tag }}"
-
+          IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
-
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Download current task definition
+        env:
+          TASK_FAMILY: ${{ inputs.task-definition-family }}
         run: |
           aws ecs describe-task-definition \
-            --task-definition "${{ inputs.task-definition-family }}" \
+            --task-definition "$TASK_FAMILY" \
             --query 'taskDefinition' \
             --output json > task-def.json
 
-          # Remove fields that can't be included in register-task-definition
           python3 -c "
           import json
           with open('task-def.json') as f:
@@ -97,14 +104,14 @@ jobs:
 
       - name: Update task definition with new image
         id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        uses: aws-actions/amazon-ecs-render-task-definition@6b89923a897d41e9ad789181d8865b532ecf973c # v1
         with:
           task-definition: task-def.json
           container-name: ${{ inputs.container-name }}
           image: ${{ steps.push.outputs.image }}
 
       - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        uses: aws-actions/amazon-ecs-deploy-task-definition@cbf54ec46642b86ff78c2f5793da6746954cf8ff # v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ inputs.ecs-service }}

@@ -1,0 +1,218 @@
+name: CI
+
+# Technology-agnostic CI workflow. Works for any project that can express
+# its quality gates as shell commands: Node, Python, Ruby, Go, shell scripts,
+# or anything else.
+#
+# The caller provides the commands. This workflow enforces that they run
+# in the correct order and that nothing is skipped. The gate job validates
+# the contract and produces the "gate" check that branch protection requires.
+#
+# For projects with complex requirements that can't be expressed as simple
+# commands (e.g. service containers like MongoDB, matrix sharding, monorepo
+# path filtering), write a custom per-repo CI and call gate.yml directly.
+#
+# Usage — minimal (Node project):
+#
+#   jobs:
+#     ci:
+#       uses: sonarmd/workflows/.github/workflows/ci-universal.yml@main
+#       with:
+#         node_version: '18'
+#         lint_command:      yarn lint
+#         test_command:      yarn test
+#         typecheck_command: yarn tsc --noEmit
+#         build_command:     yarn build
+#
+# Usage — Python project:
+#
+#   jobs:
+#     ci:
+#       uses: sonarmd/workflows/.github/workflows/ci-universal.yml@main
+#       with:
+#         python_version:    '3.13'
+#         install_command:   pip install -r requirements.txt
+#         lint_command:      flake8 .
+#         test_command:      pytest
+#         typecheck_command: mypy .
+#
+# Usage — no build (mobile app, infra repo, etc.):
+#
+#   jobs:
+#     ci:
+#       uses: sonarmd/workflows/.github/workflows/ci-universal.yml@main
+#       with:
+#         node_version:      '22'
+#         lint_command:      yarn lint
+#         typecheck_command: npx tsc --noEmit
+#         test_command:      yarn test --ci --passWithNoTests
+#         # build_command omitted — gate accepts 'skipped' for build
+
+on:
+  workflow_call:
+    inputs:
+      # ── Required ──────────────────────────────────────────────────────────
+      lint_command:
+        description: 'Command to lint the codebase (e.g. yarn lint, flake8 ., shellcheck scripts/)'
+        required: true
+        type: string
+
+      test_command:
+        description: 'Command to run the test suite (e.g. yarn test, pytest, bash run_tests.sh)'
+        required: true
+        type: string
+
+      # ── Optional quality gates ─────────────────────────────────────────
+      typecheck_command:
+        description: |
+          Static type checking command. Leave empty for projects without a type
+          system (e.g. plain JS, shell scripts).
+          Examples: yarn tsc --noEmit | mypy . | npx tsc --noEmit
+        required: false
+        type: string
+        default: ''
+
+      build_command:
+        description: |
+          Command to produce a build artifact. Leave empty for projects where
+          CI doesn't build (mobile apps built via EAS, infra repos, etc.).
+          Examples: yarn build | python setup.py bdist_wheel | make
+        required: false
+        type: string
+        default: ''
+
+      # ── Runtime setup ──────────────────────────────────────────────────
+      node_version:
+        description: |
+          Node.js version to install. When set, enables the setup-node composite
+          action which installs Node, runs yarn install --frozen-lockfile, and
+          caches node_modules. Leave empty for non-Node projects.
+        required: false
+        type: string
+        default: ''
+
+      python_version:
+        description: |
+          Python version to install. When set, enables setup-python.
+          Leave empty for non-Python projects.
+        required: false
+        type: string
+        default: ''
+
+      # ── Dependency install ─────────────────────────────────────────────
+      pre_install_command:
+        description: |
+          Command to run before dependency install. Use for system packages or
+          other prerequisites. Example: sudo apt-get install -y graphicsmagick
+        required: false
+        type: string
+        default: ''
+
+      install_command:
+        description: |
+          Dependency install command. For Node projects using node_version, omit
+          this — setup-node handles yarn install automatically. Use this for
+          non-Node installs (pip, gem, etc.) or when you need a custom install step.
+        required: false
+        type: string
+        default: ''
+
+      # ── Runner config ──────────────────────────────────────────────────
+      working_directory:
+        description: 'Working directory for all commands. Defaults to repo root.'
+        required: false
+        type: string
+        default: '.'
+
+      runs_on:
+        description: 'GitHub Actions runner. Defaults to ubuntu-latest.'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+      timeout_minutes:
+        description: 'Timeout for the CI job in minutes.'
+        required: false
+        type: number
+        default: 30
+
+permissions: {}
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    # Expose per-step outcomes so the gate job can report which stage failed.
+    outputs:
+      lint_result:      ${{ steps.lint.outcome }}
+      test_result:      ${{ steps.test.outcome }}
+      typecheck_result: ${{ steps.typecheck.outcome }}
+      build_result:     ${{ steps.build.outcome }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      # Node.js — setup-node composite action handles install + caching.
+      - name: Setup Node.js
+        if: inputs.node_version != ''
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: ${{ inputs.node_version }}
+          working-directory: ${{ inputs.working_directory }}
+
+      # Python — setup-python handles install + caching.
+      - name: Setup Python
+        if: inputs.python_version != ''
+        uses: actions/setup-python@v5  # TODO: pin to full commit SHA
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: 'pip'
+
+      # System or pre-build dependencies (e.g. apt packages).
+      - name: Pre-install
+        if: inputs.pre_install_command != ''
+        run: ${{ inputs.pre_install_command }}
+
+      # Explicit install step — for non-Node projects or custom install needs.
+      # Skipped for Node projects since setup-node already ran yarn install.
+      - name: Install dependencies
+        if: inputs.install_command != ''
+        run: ${{ inputs.install_command }}
+
+      # ── Quality gates (sequential — each must pass before the next runs) ──
+
+      - id: lint
+        name: Lint
+        run: ${{ inputs.lint_command }}
+
+      - id: typecheck
+        name: Typecheck
+        if: inputs.typecheck_command != ''
+        run: ${{ inputs.typecheck_command }}
+
+      - id: test
+        name: Test
+        run: ${{ inputs.test_command }}
+
+      - id: build
+        name: Build
+        if: inputs.build_command != ''
+        run: ${{ inputs.build_command }}
+
+  # The gate validates that all required stages passed and produces the
+  # "gate" check that branch protection requires. Runs even if ci fails
+  # so the check is always present (skipped checks don't satisfy branch protection).
+  gate:
+    needs: ci
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/gate.yml@main
+    with:
+      lint_result:      ${{ needs.ci.outputs.lint_result }}
+      test_result:      ${{ needs.ci.outputs.test_result }}
+      typecheck_result: ${{ needs.ci.outputs.typecheck_result }}
+      build_result:     ${{ needs.ci.outputs.build_result }}

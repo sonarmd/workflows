@@ -1,0 +1,137 @@
+name: CI Gate
+
+# The central enforcement point for the CI contract.
+#
+# Every project's CI — regardless of language, framework, or test runner —
+# must call this workflow before merging. It validates that the required
+# stages (lint, test) ran and passed. Typecheck and build are optional but
+# must not fail if configured.
+#
+# Branch protection should require the "gate" check produced by this workflow.
+# CODEOWNERS should protect .github/workflows/ in each repo so teams can't
+# remove the gate call without platform-eng approval.
+#
+# Usage (from a per-repo CI workflow):
+#
+#   gate:
+#     needs: [lint, test, build]
+#     if: always()
+#     uses: sonarmd/workflows/.github/workflows/gate.yml@main
+#     with:
+#       lint_result:      ${{ needs.lint.result }}
+#       test_result:      ${{ needs.test.result }}
+#       build_result:     ${{ needs.build.result }}
+#       typecheck_result: ${{ needs.typecheck.result }}
+
+on:
+  workflow_call:
+    inputs:
+      lint_result:
+        description: |
+          Result of the lint stage. Must be 'success'. Cannot be skipped.
+          Accepts: 'success' | 'failure' | 'skipped' | 'cancelled'
+        required: true
+        type: string
+
+      test_result:
+        description: |
+          Result of the test stage. Must be 'success'. Cannot be skipped.
+          Accepts: 'success' | 'failure' | 'skipped' | 'cancelled'
+        required: true
+        type: string
+
+      typecheck_result:
+        description: |
+          Result of the typecheck stage. Pass 'skipped' if the project has no
+          type system (shell scripts, plain JS, etc.). Must not be 'failure'.
+          Accepts: 'success' | 'failure' | 'skipped' | 'cancelled' | ''
+        required: false
+        type: string
+        default: 'skipped'
+
+      build_result:
+        description: |
+          Result of the build stage. Pass 'skipped' for repos with no CI build
+          artifact (mobile apps built via EAS, pure infra repos, etc.).
+          Must not be 'failure'.
+          Accepts: 'success' | 'failure' | 'skipped' | 'cancelled' | ''
+        required: false
+        type: string
+        default: 'skipped'
+
+permissions: {}
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Evaluate CI gate
+        env:
+          LINT_RESULT:      ${{ inputs.lint_result }}
+          TEST_RESULT:      ${{ inputs.test_result }}
+          TYPECHECK_RESULT: ${{ inputs.typecheck_result }}
+          BUILD_RESULT:     ${{ inputs.build_result }}
+        run: |
+          set -euo pipefail
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  CI Gate"
+          echo "  repo:   ${{ github.repository }}"
+          echo "  sha:    ${{ github.sha }}"
+          echo "  run:    ${{ github.run_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          FAILED=false
+
+          # Required stages — must be 'success', no exceptions.
+          check_required() {
+            local stage="$1" result="$2"
+            case "$result" in
+              success)
+                printf "  ✓  %-12s  %s\n" "$stage" "passed"
+                ;;
+              skipped|'')
+                printf "  ✗  %-12s  BLOCKED — this stage cannot be skipped\n" "$stage"
+                FAILED=true
+                ;;
+              *)
+                printf "  ✗  %-12s  %s\n" "$stage" "$result"
+                FAILED=true
+                ;;
+            esac
+          }
+
+          # Optional stages — 'skipped' is accepted; 'failure' is not.
+          check_optional() {
+            local stage="$1" result="$2"
+            case "$result" in
+              success)
+                printf "  ✓  %-12s  %s\n" "$stage" "passed"
+                ;;
+              skipped|'')
+                printf "  ○  %-12s  %s\n" "$stage" "not configured"
+                ;;
+              *)
+                printf "  ✗  %-12s  %s\n" "$stage" "$result"
+                FAILED=true
+                ;;
+            esac
+          }
+
+          check_required "lint"      "$LINT_RESULT"
+          check_required "test"      "$TEST_RESULT"
+          check_optional "typecheck" "$TYPECHECK_RESULT"
+          check_optional "build"     "$BUILD_RESULT"
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if [[ "$FAILED" == "true" ]]; then
+            echo "::error::CI gate blocked — required stages did not pass. See above."
+            exit 1
+          fi
+
+          echo "  Gate passed — SHA ${{ github.sha }} is verified"

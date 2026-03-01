@@ -54,6 +54,34 @@ resource "aws_s3_bucket_public_access_block" "deploy_artifacts" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_policy" "deploy_artifacts_tls" {
+  bucket = aws_s3_bucket.deploy_artifacts.id
+
+  # Ensure public access block is applied first
+  depends_on = [aws_s3_bucket_public_access_block.deploy_artifacts]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.deploy_artifacts.arn,
+          "${aws_s3_bucket.deploy_artifacts.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
 # S3 Bucket: sonarmd-deploy-metrics
 # Stores deploy event JSON logs for KPI reporting
 
@@ -91,6 +119,33 @@ resource "aws_s3_bucket_public_access_block" "deploy_metrics" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_policy" "deploy_metrics_tls" {
+  bucket = aws_s3_bucket.deploy_metrics.id
+
+  depends_on = [aws_s3_bucket_public_access_block.deploy_metrics]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.deploy_metrics.arn,
+          "${aws_s3_bucket.deploy_metrics.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
 }
 
 # ── Outputs ──

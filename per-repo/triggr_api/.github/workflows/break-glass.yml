@@ -25,6 +25,8 @@ on:
         required: true
         type: string
 
+permissions: {}
+
 concurrency:
   group: deploy-${{ inputs.environment }}-api
   cancel-in-progress: false
@@ -32,21 +34,31 @@ concurrency:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Log break-glass event
+        env:
+          ACTOR: ${{ github.actor }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          TAG_OR_SHA: ${{ inputs.tag_override || github.sha }}
+          SKIP_TESTS: ${{ inputs.skip_tests }}
+          REASON: ${{ inputs.reason }}
         run: |
           echo "### Break-Glass Deploy" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Actor**: ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Environment**: ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag/SHA**: ${{ inputs.tag_override || github.sha }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Skip Tests**: ${{ inputs.skip_tests }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Reason**: ${{ inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Actor**: $ACTOR" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment**: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag/SHA**: $TAG_OR_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip Tests**: $SKIP_TESTS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Reason**: $REASON" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
 
   tests:
     if: inputs.skip_tests != true
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +74,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           ref: ${{ inputs.tag_override || github.sha }}
       - uses: sonarmd/workflows/actions/setup-node@main
@@ -72,10 +84,11 @@ jobs:
 
       - name: Split test files
         id: tests
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           ALL_FILES=$(find test -name '*.ts' -type f | sort)
           TOTAL=$(echo "$ALL_FILES" | wc -l)
-          SHARD=${{ matrix.shard }}
           SHARD_SIZE=$(( (TOTAL + 3) / 4 ))
           START=$(( SHARD * SHARD_SIZE + 1 ))
           TEST_FILES=$(echo "$ALL_FILES" | sed -n "${START},$(( START + SHARD_SIZE - 1 ))p" | tr '\n' ' ')
@@ -85,12 +98,13 @@ jobs:
         env:
           LOG_LEVEL: none
           TZ: utc
+          TEST_FILES: ${{ steps.tests.outputs.files }}
         run: |
           ./node_modules/.bin/mocha \
             --require @swc-node/register \
             --exit \
             --timeout 10000 \
-            ${{ steps.tests.outputs.files }}
+            $TEST_FILES
 
   build:
     needs: [audit, tests]
@@ -101,7 +115,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           ref: ${{ inputs.tag_override || github.sha }}
       - uses: sonarmd/workflows/actions/setup-node@main
@@ -114,15 +128,16 @@ jobs:
         run: tar czf api.tar.gz dist/ node_modules/ package.json
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-2
 
       - name: Upload artifact to S3
+        env:
+          TAG: ${{ inputs.tag_override || github.sha }}
+          ENV: ${{ inputs.environment }}
         run: |
-          TAG="${{ inputs.tag_override || github.sha }}"
-          ENV="${{ inputs.environment }}"
           aws s3 cp api.tar.gz \
             "s3://sonarmd-deploy-artifacts/api/$ENV/break-glass-$TAG/api.tar.gz"
 
@@ -135,37 +150,40 @@ jobs:
       contents: read
     steps:
       - name: Load secrets from 1Password
-        uses: 1password/load-secrets-action@v2
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         with:
           export-env: true
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: sonarmd/workflows
           sparse-checkout: templates/
           path: _workflows
 
       - name: Render configuration.json
+        env:
+          TAG: ${{ inputs.tag_override || github.sha }}
+          DEPLOY_ENV_INPUT: ${{ inputs.environment }}
         run: |
-          TAG="${{ inputs.tag_override || github.sha }}"
           export DEPLOY_TAG="break-glass-$TAG"
-          export DEPLOY_ENV="${{ inputs.environment }}"
+          export DEPLOY_ENV="$DEPLOY_ENV_INPUT"
           export SERVER_TYPE="Server"
           envsubst < _workflows/templates/configuration.json.tpl > configuration.json
           python3 -c "import json; json.load(open('configuration.json'))"
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-2
 
       - name: Upload config to S3
+        env:
+          TAG: ${{ inputs.tag_override || github.sha }}
+          ENV: ${{ inputs.environment }}
         run: |
-          TAG="${{ inputs.tag_override || github.sha }}"
-          ENV="${{ inputs.environment }}"
           aws s3 cp configuration.json \
             "s3://sonarmd-deploy-artifacts/api/$ENV/break-glass-$TAG/configuration.json"
 

@@ -1,10 +1,25 @@
 name: CI
 
+# frontend monorepo requires custom CI because:
+#   - Path filtering: only test apps that actually changed
+#   - Workspace caching: build shared lib once, restore across 5 app test jobs
+#   - NODE_OPTIONS: --openssl-legacy-provider (legacy React build compatibility)
+#
+# The gate job handles two cases:
+#   - Changes detected: validates lint + tests passed
+#   - No changes detected: auto-passes (nothing to verify)
+#
+# CODEOWNERS protects this file — changes require @sonarmd/platform-eng approval.
+
 on:
   push:
     branches: ['**']
   pull_request:
-    branches: [staging, master]
+    branches: [master, 'release/**']
+  merge_group:
+    branches: [master, 'release/**']
+
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,15 +31,17 @@ env:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
-      admin: ${{ steps.filter.outputs.admin }}
+      admin:   ${{ steps.filter.outputs.admin }}
       patient: ${{ steps.filter.outputs.patient }}
       provider: ${{ steps.filter.outputs.provider }}
-      seat: ${{ steps.filter.outputs.seat }}
-      shared: ${{ steps.filter.outputs.shared }}
-      any: ${{ steps.filter.outputs.any }}
+      seat:    ${{ steps.filter.outputs.seat }}
+      shared:  ${{ steps.filter.outputs.shared }}
+      any:     ${{ steps.filter.outputs.any }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/detect-changed-apps@main
         id: filter
 
@@ -32,13 +49,15 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.any == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: yarn build-shared
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
@@ -47,12 +66,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.shared == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd shared && yarn test
@@ -61,12 +82,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.admin == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd admin && yarn test
@@ -76,12 +99,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.patient == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd patient && yarn test
@@ -91,12 +116,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.provider == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd provider && yarn test
@@ -106,12 +133,14 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.seat == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: cd seat && yarn test
@@ -121,19 +150,90 @@ jobs:
     needs: [deps, detect-changes]
     if: needs.detect-changes.outputs.any == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .
           key: workspace-${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '18'
       - run: yarn lint
 
-  bypass:
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.any != 'true'
+  # Central gate — validates the CI contract and produces the "gate" check.
+  # Branch protection requires this check. Do not remove or skip this job.
+  #
+  # Two paths:
+  #   - No changes detected → auto-passes (nothing to verify is still a valid state)
+  #   - Changes detected    → validates lint passed AND all test jobs passed or were
+  #                           legitimately skipped (i.e. that app didn't change)
+  gate:
+    name: gate
+    needs: [detect-changes, lint, test-shared, test-admin, test-patient, test-provider, test-seat]
+    if: always()
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
-      - run: echo "No changes detected in the frontend codebase. Skipping CI."
+      - name: Evaluate CI gate
+        env:
+          ANY_CHANGES:    ${{ needs.detect-changes.outputs.any }}
+          LINT_RESULT:    ${{ needs.lint.result }}
+          SHARED_RESULT:  ${{ needs.test-shared.result }}
+          ADMIN_RESULT:   ${{ needs.test-admin.result }}
+          PATIENT_RESULT: ${{ needs.test-patient.result }}
+          PROVIDER_RESULT: ${{ needs.test-provider.result }}
+          SEAT_RESULT:    ${{ needs.test-seat.result }}
+        run: |
+          set -euo pipefail
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  CI Gate — frontend"
+          echo "  sha: ${{ github.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # No changes to any frontend app — nothing to validate.
+          if [[ "$ANY_CHANGES" != "true" ]]; then
+            echo "  ○  No frontend changes detected — gate auto-passes"
+            exit 0
+          fi
+
+          FAILED=false
+
+          # Lint is required when changes were detected.
+          if [[ "$LINT_RESULT" == "success" ]]; then
+            echo "  ✓  lint"
+          else
+            echo "  ✗  lint  [$LINT_RESULT]"
+            FAILED=true
+          fi
+
+          # Tests: each app job is conditional (only runs if that app changed).
+          # 'skipped' = app didn't change (legitimate). 'failure' = blocked.
+          echo ""
+          echo "  Test jobs:"
+          for entry in \
+            "shared:$SHARED_RESULT" \
+            "admin:$ADMIN_RESULT" \
+            "patient:$PATIENT_RESULT" \
+            "provider:$PROVIDER_RESULT" \
+            "seat:$SEAT_RESULT"; do
+            name="${entry%%:*}"
+            result="${entry##*:}"
+            case "$result" in
+              success) printf "  ✓  test-%-10s  passed\n"  "$name" ;;
+              skipped) printf "  ○  test-%-10s  no changes\n" "$name" ;;
+              *)       printf "  ✗  test-%-10s  %s\n" "$name" "$result"; FAILED=true ;;
+            esac
+          done
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if [[ "$FAILED" == "true" ]]; then
+            echo "::error::CI gate blocked — required stages did not pass. See above."
+            exit 1
+          fi
+
+          echo "  Gate passed — SHA ${{ github.sha }} is verified"

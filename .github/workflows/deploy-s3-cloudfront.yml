@@ -38,6 +38,8 @@ on:
       AWS_SECRET_ACCESS_KEY:
         required: false
 
+permissions: {}
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -46,47 +48,53 @@ jobs:
       contents: read
     steps:
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ inputs.build-artifact-name }}
           path: build/
 
       - name: Configure AWS credentials (OIDC)
         if: inputs.aws-role-arn != ''
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Configure AWS credentials (static keys)
         if: inputs.aws-role-arn == ''
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Sync static assets to S3
+        env:
+          S3_BUCKET: ${{ inputs.bucket }}
         run: |
-          aws s3 sync build/ "s3://${{ inputs.bucket }}" \
+          aws s3 sync build/ "s3://${S3_BUCKET}" \
             --cache-control "max-age=604800, public" \
             --exclude index.html \
             --exclude asset-manifest.json
 
       - name: Upload index.html with short cache
+        env:
+          S3_BUCKET: ${{ inputs.bucket }}
         run: |
           aws s3api put-object \
-            --bucket "${{ inputs.bucket }}" \
+            --bucket "${S3_BUCKET}" \
             --key index.html \
             --body build/index.html \
             --cache-control "max-age=300, public" \
             --content-type text/html
 
       - name: Upload asset-manifest.json with short cache
+        env:
+          S3_BUCKET: ${{ inputs.bucket }}
         run: |
           if [ -f build/asset-manifest.json ]; then
             aws s3api put-object \
-              --bucket "${{ inputs.bucket }}" \
+              --bucket "${S3_BUCKET}" \
               --key asset-manifest.json \
               --body build/asset-manifest.json \
               --cache-control "max-age=300, public" \
@@ -95,7 +103,9 @@ jobs:
 
       - name: Invalidate CloudFront cache
         if: inputs.distribution-id != ''
+        env:
+          CF_DIST_ID: ${{ inputs.distribution-id }}
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id "${{ inputs.distribution-id }}" \
+            --distribution-id "${CF_DIST_ID}" \
             --paths "/index.html" "/asset-manifest.json"

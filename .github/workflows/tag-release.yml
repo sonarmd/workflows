@@ -24,6 +24,8 @@ on:
         description: The version from package.json
         value: ${{ jobs.tag.outputs.version }}
 
+permissions: {}
+
 jobs:
   tag:
     runs-on: ubuntu-latest
@@ -33,15 +35,20 @@ jobs:
       tag: ${{ steps.create-tag.outputs.tag }}
       version: ${{ steps.create-tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Create release tag
         id: create-tag
+        env:
+          REPO_SHORT: ${{ inputs.repo-short }}
+          TAG_ENV: ${{ inputs.environment }}
+          WORKING_DIR: ${{ inputs.working-directory }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          VERSION=$(node -p "require('./${{ inputs.working-directory }}/package.json').version")
-          TAG="${{ inputs.environment }}-${{ inputs.repo-short }}-${VERSION}-b${{ github.run_number }}"
+          VERSION=$(node -p "require('./${WORKING_DIR}/package.json').version")
+          TAG="${TAG_ENV}-${REPO_SHORT}-${VERSION}-b${RUN_NUMBER}"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -50,10 +57,10 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Auto-release $TAG from merge to ${{ inputs.environment }}"
+          git tag -a "$TAG" -m "Auto-release $TAG"
           git push origin "$TAG"
 
           echo "### Tag Created" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag**: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version**: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Build**: \`${{ github.run_number }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Build**: \`$RUN_NUMBER\`" >> "$GITHUB_STEP_SUMMARY"

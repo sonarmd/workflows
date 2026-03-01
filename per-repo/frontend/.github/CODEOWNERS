@@ -1,0 +1,9 @@
+# CODEOWNERS — frontend
+#
+# CI workflow files require @sonarmd/platform-eng review.
+# Teams own what their CI does (commands, services, tooling).
+# Platform eng ensures the gate contract is never removed or bypassed.
+#
+# To request a change to CI: open a PR and tag @sonarmd/platform-eng.
+
+.github/workflows/ @sonarmd/platform-eng
