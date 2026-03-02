@@ -1,0 +1,273 @@
+name: "Dike — PR Verification"
+
+# Reusable workflow for Dike zero-trust enforcement on pull requests.
+# Thin orchestrator: checks out agora, calls its parameterized scripts.
+#
+# Usage (from a governed repo):
+#
+#   verify:
+#     if: github.event_name == 'pull_request' && github.event.action != 'closed'
+#     uses: sonarmd/workflows/.github/workflows/dike-verify.yml@main
+#     with:
+#       namespace-mode: project
+#       jira-project: SONMD
+#     secrets:
+#       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_AGORA }}
+#
+# For agora itself (namespace-mode: agora), the checkout-agora step is skipped
+# and AGORA_GOVERNANCE_ROOT defaults to "." (the repo root).
+
+on:
+  workflow_call:
+    inputs:
+      agora-ref:
+        description: 'Git ref of sonarmd/agora to use for governance scripts'
+        type: string
+        default: 'main'
+      namespace-mode:
+        description: '"agora" for the agora repo itself, "project" for governed repos'
+        type: string
+        default: 'project'
+      jira-project:
+        description: 'Jira project key prefix for provenance check'
+        type: string
+        default: 'SONMD'
+      logs-path:
+        description: 'Path to engineer logs directory (relative to repo root)'
+        type: string
+        default: '.agora/engineers'
+      truth-path:
+        description: 'Path to truth directory (relative to repo root)'
+        type: string
+        default: '.agora/truth'
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: '1Password Service Account token for loading CI secrets'
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # ── Ledger Verification ─────────────────────────────────────────────
+  ledger-verify:
+    name: "Ledger Chain Verification"
+    runs-on: ubuntu-latest
+    outputs:
+      active_identities: ${{ steps.verify.outputs.active_identities }}
+      active_keys: ${{ steps.verify.outputs.active_keys }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Checkout agora governance
+        if: inputs.namespace-mode != 'agora'
+        id: agora
+        uses: ./actions/checkout-agora
+        with:
+          agora-ref: ${{ inputs.agora-ref }}
+          token: ${{ github.token }}
+      - name: Install OpenTimestamps
+        run: pip install opentimestamps-client
+      - name: Verify ledger chain
+        id: verify
+        run: |
+          OUTPUT=$(bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/verify-ledger.sh")
+          echo "$OUTPUT"
+          IDENTITIES=$(echo "$OUTPUT" | grep '^ACTIVE_IDENTITIES=' | cut -d= -f2-)
+          KEYS=$(echo "$OUTPUT" | grep '^ACTIVE_KEYS=' | cut -d= -f2-)
+          echo "active_identities=$IDENTITIES" >> $GITHUB_OUTPUT
+          echo "active_keys=$KEYS" >> $GITHUB_OUTPUT
+        env:
+          AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
+
+  # ── Nomos — Law Validator ───────────────────────────────────────────
+  nomos-validate:
+    name: "Nomos Validation"
+    runs-on: ubuntu-latest
+    outputs:
+      vetoed: ${{ steps.nomos.outputs.vetoed }}
+      veto_reason: ${{ steps.nomos.outputs.veto_reason }}
+      brain_digest: ${{ steps.nomos.outputs.brain_digest }}
+      nomos_hash: ${{ steps.nomos.outputs.nomos_hash }}
+      logos_entries: ${{ steps.nomos.outputs.logos_entries }}
+      rebuild: ${{ steps.nomos.outputs.rebuild }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }} --depth=100
+      - name: Checkout agora governance
+        if: inputs.namespace-mode != 'agora'
+        id: agora
+        uses: ./actions/checkout-agora
+        with:
+          agora-ref: ${{ inputs.agora-ref }}
+          token: ${{ github.token }}
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb # v3.1.0
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          AGORA_APP_ID: op://smd_agora_shared/agora-app-id/credential
+      - name: Load App private key
+        run: |
+          RAW=$(op read 'op://smd_agora_shared/agora-app-private-key/credential')
+          HEADER="-----BEGIN RSA PRIVATE KEY-----"
+          FOOTER="-----END RSA PRIVATE KEY-----"
+          BODY=$(printf '%s' "$RAW" | sed "s|$HEADER||;s|$FOOTER||" | tr -d ' \n' | fold -w 64)
+          DELIM="ghenv_$(openssl rand -hex 8)"
+          {
+            echo "AGORA_PRIVATE_KEY<<${DELIM}"
+            echo "$HEADER"
+            echo "$BODY"
+            echo "$FOOTER"
+            echo "${DELIM}"
+          } >> "$GITHUB_ENV"
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Generate Nomos app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ env.AGORA_APP_ID }}
+          private-key: ${{ env.AGORA_PRIVATE_KEY }}
+      - name: Nomos — validate law + synthesize brain
+        id: nomos
+        run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/nomos-validate.sh"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEAL_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
+          NAMESPACE_MODE: ${{ inputs.namespace-mode }}
+          TRUTH_ROOT: ${{ inputs.truth-path }}
+          LOGS_ROOT: ${{ inputs.logs-path }}
+          JIRA_PROJECT: ${{ inputs.jira-project }}
+
+  # ── Signature Verification ──────────────────────────────────────────
+  signature-check:
+    name: "Signature Verification"
+    if: needs.nomos-validate.outputs.vetoed != 'true'
+    needs: [ledger-verify, nomos-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }} --depth=100
+      - name: Checkout agora governance
+        if: inputs.namespace-mode != 'agora'
+        id: agora
+        uses: ./actions/checkout-agora
+        with:
+          agora-ref: ${{ inputs.agora-ref }}
+          token: ${{ github.token }}
+      - name: Verify commit signatures
+        run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/check-signatures.sh"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ACTIVE_IDENTITIES: ${{ needs.ledger-verify.outputs.active_identities }}
+          ACTIVE_KEYS: ${{ needs.ledger-verify.outputs.active_keys }}
+          AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
+
+  # ── Namespace Enforcement ───────────────────────────────────────────
+  namespace-check:
+    name: "Namespace Enforcement"
+    if: needs.nomos-validate.outputs.vetoed != 'true'
+    needs: [ledger-verify, nomos-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }} --depth=100
+      - name: Checkout agora governance
+        if: inputs.namespace-mode != 'agora'
+        id: agora
+        uses: ./actions/checkout-agora
+        with:
+          agora-ref: ${{ inputs.agora-ref }}
+          token: ${{ github.token }}
+      - name: Check namespace boundaries
+        run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/check-namespace.sh"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REBUILD_MODE: ${{ needs.nomos-validate.outputs.rebuild }}
+          AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
+          NAMESPACE_MODE: ${{ inputs.namespace-mode }}
+          TRUTH_ROOT: ${{ inputs.truth-path }}
+          LOGS_ROOT: ${{ inputs.logs-path }}
+
+  # ── Peer Review ─────────────────────────────────────────────────────
+  review-check:
+    name: "Peer Review"
+    if: needs.nomos-validate.outputs.vetoed != 'true'
+    needs: [ledger-verify, nomos-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Checkout agora governance
+        if: inputs.namespace-mode != 'agora'
+        id: agora
+        uses: ./actions/checkout-agora
+        with:
+          agora-ref: ${{ inputs.agora-ref }}
+          token: ${{ github.token }}
+      - name: Verify peer review
+        run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/check-reviews.sh"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
+
+  # ── Jira Provenance ─────────────────────────────────────────────────
+  provenance-check:
+    name: "Jira Provenance"
+    if: needs.nomos-validate.outputs.vetoed != 'true'
+    needs: [ledger-verify, nomos-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Checkout agora governance
+        if: inputs.namespace-mode != 'agora'
+        id: agora
+        uses: ./actions/checkout-agora
+        with:
+          agora-ref: ${{ inputs.agora-ref }}
+          token: ${{ github.token }}
+      - name: Load Jira credentials from 1Password
+        continue-on-error: true
+        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb # v3.1.0
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          JIRA_API_TOKEN: op://stg_smd_ci/jira-api-token/credential
+          JIRA_USER: op://stg_smd_ci/jira-api-token/username
+          JIRA_BASE_URL: op://stg_smd_ci/jira-api-token/website
+      - name: Verify Jira ticket reference
+        run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/check-provenance.sh"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          JIRA_API_TOKEN: ${{ env.JIRA_API_TOKEN }}
+          JIRA_USER: ${{ env.JIRA_USER }}
+          JIRA_BASE_URL: ${{ env.JIRA_BASE_URL }}
+          AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
+          JIRA_PROJECT: ${{ inputs.jira-project }}

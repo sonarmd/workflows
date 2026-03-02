@@ -22,6 +22,7 @@ name: CI Gate
 #       test_result:      ${{ needs.test.result }}
 #       build_result:     ${{ needs.build.result }}
 #       typecheck_result: ${{ needs.typecheck.result }}
+#       dike_result:      ${{ needs.verify.result }}
 
 on:
   workflow_call:
@@ -59,6 +60,15 @@ on:
         type: string
         default: 'skipped'
 
+      dike_result:
+        description: |
+          Result of the Dike governance verification stage. Pass 'skipped'
+          for repos not yet onboarded to governance. Must not be 'failure'.
+          Accepts: 'success' | 'failure' | 'skipped' | 'cancelled' | ''
+        required: false
+        type: string
+        default: 'skipped'
+
 permissions: {}
 
 jobs:
@@ -73,6 +83,7 @@ jobs:
           TEST_RESULT:      ${{ inputs.test_result }}
           TYPECHECK_RESULT: ${{ inputs.typecheck_result }}
           BUILD_RESULT:     ${{ inputs.build_result }}
+          DIKE_RESULT:      ${{ inputs.dike_result }}
         run: |
           set -euo pipefail
 
@@ -125,6 +136,7 @@ jobs:
           check_required "test"      "$TEST_RESULT"
           check_optional "typecheck" "$TYPECHECK_RESULT"
           check_optional "build"     "$BUILD_RESULT"
+          check_optional "dike"      "$DIKE_RESULT"
 
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
