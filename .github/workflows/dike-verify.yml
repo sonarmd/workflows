@@ -256,9 +256,8 @@ jobs:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          JIRA_API_TOKEN: op://stg_smd_ci/jira-api-token/credential
-          JIRA_USER: op://stg_smd_ci/jira-api-token/username
-          JIRA_BASE_URL: op://stg_smd_ci/jira-api-token/website
+          JIRA_API_TOKEN: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/credential
+          JIRA_USER: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/username
       - name: Verify Jira ticket reference
         run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/check-provenance.sh"
         env:
@@ -268,6 +267,6 @@ jobs:
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
           JIRA_API_TOKEN: ${{ env.JIRA_API_TOKEN }}
           JIRA_USER: ${{ env.JIRA_USER }}
-          JIRA_BASE_URL: ${{ env.JIRA_BASE_URL }}
+          JIRA_BASE_URL: https://sonarmd.atlassian.net
           AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
           JIRA_PROJECT: ${{ inputs.jira-project }}
