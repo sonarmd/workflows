@@ -105,6 +105,25 @@ jobs:
           aws s3 cp api.tar.gz \
             "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/api.tar.gz"
 
+  # Build gate — validates the build succeeded before proceeding.
+  build-gate:
+    needs: build
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/build-gate.yml@main
+    with:
+      build_result: ${{ needs.build.result }}
+
+  # Deploy gate — validates all prerequisites before deployment.
+  deploy-gate:
+    needs: build-gate
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
+    with:
+      # Deploy workflows are tag-triggered — CI gates already passed on the commit.
+      static_analysis_gate_result: success
+      test_gate_result:            success
+      build_gate_result:           ${{ needs.build-gate.outputs.gate_result }}
+
   generate-config:
     needs: setup
     runs-on: ubuntu-latest
@@ -145,7 +164,8 @@ jobs:
             "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/configuration.json"
 
   deploy:
-    needs: [setup, build, generate-config]
+    needs: [setup, build, generate-config, deploy-gate]
+    if: needs.deploy-gate.outputs.gate_result == 'success'
     uses: sonarmd/workflows/.github/workflows/deploy-api-ssm.yml@main
     with:
       environment:        ${{ needs.setup.outputs.env }}

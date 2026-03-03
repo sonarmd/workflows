@@ -55,8 +55,19 @@ jobs:
           esac
           echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
 
-  build:
+  # Deploy gate — EAS handles both build and deployment, so build-gate is skipped.
+  # CI gates already passed on the commit this tag points to.
+  deploy-gate:
     needs: setup
+    uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
+    with:
+      static_analysis_gate_result: success
+      test_gate_result:            success
+      build_gate_result:           skipped
+
+  build:
+    needs: [setup, deploy-gate]
+    if: needs.deploy-gate.outputs.gate_result == 'success'
     environment: ${{ needs.setup.outputs.env }}
     uses: sonarmd/workflows/.github/workflows/deploy-eas-build.yml@main
     with:

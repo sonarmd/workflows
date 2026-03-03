@@ -1,13 +1,14 @@
 name: CI
 
 # triggr_api requires custom CI because:
-#   - MongoDB 8.0 service container (can't be parameterized in ci-universal)
+#   - MongoDB 8.0 service container (can't be parameterized in ci wrapper)
 #   - 4-shard parallel test execution (can't be expressed as a single command)
 #   - graphicsmagick system dependency
 #
-# The gate job at the bottom calls the central gate.yml enforcer and produces
-# the "gate" check that branch protection requires. CODEOWNERS protects this
-# file — changes require @sonarmd/platform-eng approval.
+# The gate jobs at the bottom call static-analysis-gate.yml and test-gate.yml
+# to validate the CI contracts WITH EVIDENCE. Build validation is handled by
+# build-gate.yml in the deploy workflow.
+# CODEOWNERS protects this file — changes require @sonarmd/platform-eng approval.
 
 on:
   push:
@@ -28,13 +29,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      file_count: ${{ steps.run.outputs.file_count }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: sonarmd/workflows/actions/setup-node@main
         with:
           node-version: '18'
       - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
-      - run: yarn lint
+      - name: Lint
+        id: run
+        run: |
+          FILE_COUNT=$(find src -type f \( -name '*.ts' -o -name '*.js' \) | wc -l | tr -d ' ')
+          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
+          yarn lint
 
   test:
     runs-on: ubuntu-latest
@@ -83,7 +91,34 @@ jobs:
             --require @swc-node/register \
             --exit \
             --timeout 10000 \
-            $TEST_FILES
+            --reporter json \
+            $TEST_FILES | tee mocha-results.json
+
+      # Convert mocha JSON → JUnit XML for the test gate.
+      # No new dependencies — python3 is pre-installed on ubuntu runners.
+      - name: Generate JUnit XML from results
+        if: always()
+        run: |
+          python3 -c "
+          import json, html
+          d = json.load(open('mocha-results.json'))
+          lines = ['<?xml version=\"1.0\"?>', '<testsuites>']
+          lines.append('<testsuite tests=\"%d\" failures=\"%d\">' % (d['stats']['tests'], d['stats']['failures']))
+          for t in d.get('passes', []) + d.get('failures', []) + d.get('pending', []):
+              name = html.escape(t.get('fullTitle', ''))
+              cls = html.escape(t.get('file', ''))
+              lines.append('<testcase name=\"%s\" classname=\"%s\"/>' % (name, cls))
+          lines.append('</testsuite></testsuites>')
+          open('junit.xml', 'w').write('\n'.join(lines))
+          " 2>/dev/null || true
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-shard-${{ matrix.shard }}
+          path: junit.xml
+          if-no-files-found: warn
 
   build:
     needs: [lint, test]
@@ -98,13 +133,20 @@ jobs:
       - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
       - run: yarn build
 
-  # Central gate — validates the CI contract and produces the "gate" check.
-  # Branch protection requires this check. Do not remove or skip this job.
-  gate:
+  # Static analysis gate — validates lint passed with evidence.
+  static-analysis-gate:
     needs: [lint, test, build]
     if: always()
-    uses: sonarmd/workflows/.github/workflows/gate.yml@main
+    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
     with:
-      lint_result:  ${{ needs.lint.result }}
-      test_result:  ${{ needs.test.result }}
-      build_result: ${{ needs.build.result }}
+      lint_result:     ${{ needs.lint.result }}
+      lint_file_count: ${{ needs.lint.outputs.file_count }}
+
+  # Test gate — downloads JUnit XML from all 4 shards (test-report-shard-*),
+  # independently counts <testcase> elements. Does NOT trust caller counts.
+  test-gate:
+    needs: [lint, test, build]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
+    with:
+      test_result: ${{ needs.test.result }}

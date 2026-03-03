@@ -1,0 +1,125 @@
+name: Deploy Gate
+
+# Contract gate: validates that all prerequisites are met before deployment.
+#
+# This is the final checkpoint before any deploy job runs. It verifies that
+# static analysis, tests, and build all passed. Branch protection can require
+# the "deploy-gate" check before deploy tags fire.
+#
+# Usage (from a per-repo deploy workflow):
+#
+#   deploy-gate:
+#     needs: [static-analysis-gate, test-gate, build-gate]
+#     if: always()
+#     uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
+#     with:
+#       static_analysis_gate_result: ${{ needs.static-analysis-gate.outputs.gate_result }}
+#       test_gate_result:            ${{ needs.test-gate.outputs.gate_result }}
+#       build_gate_result:           ${{ needs.build-gate.outputs.gate_result }}
+
+on:
+  workflow_call:
+    inputs:
+      static_analysis_gate_result:
+        description: |
+          Result from the static analysis gate. Must be 'success'.
+          Pass the gate_result output from static-analysis-gate.yml.
+        required: true
+        type: string
+
+      test_gate_result:
+        description: |
+          Result from the test gate. Must be 'success'.
+          Pass the gate_result output from test-gate.yml.
+        required: true
+        type: string
+
+      build_gate_result:
+        description: |
+          Result from the build gate. Must be 'success' or 'skipped'.
+          Pass the gate_result output from build-gate.yml, or 'skipped'
+          for repos that don't use the build gate.
+        required: true
+        type: string
+
+    outputs:
+      gate_result:
+        description: 'success or failure'
+        value: ${{ jobs.validate.outputs.result }}
+
+permissions: {}
+
+jobs:
+  validate:
+    name: deploy-gate
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      result: ${{ steps.evaluate.outputs.result }}
+    steps:
+      - name: Evaluate deploy gate
+        id: evaluate
+        env:
+          SA_GATE:    ${{ inputs.static_analysis_gate_result }}
+          TEST_GATE:  ${{ inputs.test_gate_result }}
+          BUILD_GATE: ${{ inputs.build_gate_result }}
+        run: |
+          set -euo pipefail
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Deploy Gate"
+          echo "  repo:   ${{ github.repository }}"
+          echo "  sha:    ${{ github.sha }}"
+          echo "  run:    ${{ github.run_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          FAILED=false
+
+          # Static analysis gate must be 'success' — no exceptions.
+          case "$SA_GATE" in
+            success)
+              printf "  ✓  %-18s  %s\n" "static-analysis" "passed"
+              ;;
+            *)
+              printf "  ✗  %-18s  %s\n" "static-analysis" "${SA_GATE:-missing}"
+              FAILED=true
+              ;;
+          esac
+
+          # Test gate must be 'success' — no exceptions.
+          case "$TEST_GATE" in
+            success)
+              printf "  ✓  %-18s  %s\n" "test-gate" "passed"
+              ;;
+            *)
+              printf "  ✗  %-18s  %s\n" "test-gate" "${TEST_GATE:-missing}"
+              FAILED=true
+              ;;
+          esac
+
+          # Build gate can be 'success' or 'skipped'.
+          case "$BUILD_GATE" in
+            success)
+              printf "  ✓  %-18s  %s\n" "build-gate" "passed"
+              ;;
+            skipped|'')
+              printf "  ○  %-18s  %s\n" "build-gate" "skipped (no build gate configured)"
+              ;;
+            *)
+              printf "  ✗  %-18s  %s\n" "build-gate" "$BUILD_GATE"
+              FAILED=true
+              ;;
+          esac
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if [[ "$FAILED" == "true" ]]; then
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+            echo "::error::Deploy gate blocked — prerequisites not met. See above."
+            exit 1
+          fi
+
+          echo "result=success" >> "$GITHUB_OUTPUT"
+          echo "  Deploy gate passed — SHA ${{ github.sha }} is cleared for deployment"

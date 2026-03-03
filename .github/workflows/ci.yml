@@ -1,52 +1,37 @@
 name: CI
 
-# Technology-agnostic CI workflow. Works for any project that can express
-# its quality gates as shell commands: Node, Python, Ruby, Go, shell scripts,
-# or anything else.
+# Convenience CI wrapper for projects that can express their quality gates
+# as simple shell commands. Runs lint, typecheck, test, and build in sequence,
+# then calls the contract gates with evidence.
 #
-# The caller provides the commands. This workflow enforces that they run
-# in the correct order and that nothing is skipped. The gate job validates
-# the contract and produces the "gate" check that branch protection requires.
+# For projects with complex requirements (service containers, matrix sharding,
+# monorepo path filtering), write a custom per-repo CI and call the gates directly.
 #
-# For projects with complex requirements that can't be expressed as simple
-# commands (e.g. service containers like MongoDB, matrix sharding, monorepo
-# path filtering), write a custom per-repo CI and call gate.yml directly.
-#
-# Usage — minimal (Node project):
+# Usage — Node project:
 #
 #   jobs:
 #     ci:
-#       uses: sonarmd/workflows/.github/workflows/ci-universal.yml@main
+#       uses: sonarmd/workflows/.github/workflows/ci.yml@main
 #       with:
-#         node_version: '18'
+#         node_version:      '18'
 #         lint_command:      yarn lint
-#         test_command:      yarn test
+#         test_command:      yarn test --ci --reporters=default --reporters=jest-junit
 #         typecheck_command: yarn tsc --noEmit
 #         build_command:     yarn build
+#         lint_glob:         'src/**/*.{ts,tsx,js,jsx}'
 #
 # Usage — Python project:
 #
 #   jobs:
 #     ci:
-#       uses: sonarmd/workflows/.github/workflows/ci-universal.yml@main
+#       uses: sonarmd/workflows/.github/workflows/ci.yml@main
 #       with:
 #         python_version:    '3.13'
 #         install_command:   pip install -r requirements.txt
 #         lint_command:      flake8 .
-#         test_command:      pytest
+#         test_command:      pytest --junitxml=junit.xml --tb=short -q
 #         typecheck_command: mypy .
-#
-# Usage — no build (mobile app, infra repo, etc.):
-#
-#   jobs:
-#     ci:
-#       uses: sonarmd/workflows/.github/workflows/ci-universal.yml@main
-#       with:
-#         node_version:      '22'
-#         lint_command:      yarn lint
-#         typecheck_command: npx tsc --noEmit
-#         test_command:      yarn test --ci --passWithNoTests
-#         # build_command omitted — gate accepts 'skipped' for build
+#         lint_glob:         '**/*.py'
 
 on:
   workflow_call:
@@ -58,7 +43,21 @@ on:
         type: string
 
       test_command:
-        description: 'Command to run the test suite (e.g. yarn test, pytest, bash run_tests.sh)'
+        description: |
+          Command to run the test suite. Must produce a JUnit XML report at
+          the path specified by test_report_path. The test gate parses it
+          independently to verify tests actually ran.
+          For Jest:   yarn test --ci --reporters=default --reporters=jest-junit
+          For pytest: pytest --junitxml=junit.xml --tb=short -q
+          For Mocha:  mocha --reporter mocha-junit-reporter
+        required: true
+        type: string
+
+      lint_glob:
+        description: |
+          Glob pattern for files in scope for linting. Used to count lint targets
+          as evidence for the static analysis gate. Must match at least 1 file.
+          Examples: 'src/**/*.{ts,tsx}' | '**/*.py' | 'scripts/**/*.sh'
         required: true
         type: string
 
@@ -80,6 +79,18 @@ on:
         required: false
         type: string
         default: ''
+
+      test_report_path:
+        description: |
+          Path to the JUnit XML report produced by the test command.
+          Relative to working_directory. The test gate downloads this artifact
+          and parses it independently — this is the unfakeable evidence.
+          For Jest (jest-junit):  junit.xml
+          For pytest:             junit.xml (match --junitxml flag)
+          For Mocha:              test-results.xml
+        required: false
+        type: string
+        default: 'junit.xml'
 
       # ── Runtime setup ──────────────────────────────────────────────────
       node_version:
@@ -148,9 +159,9 @@ jobs:
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
-    # Expose per-step outcomes so the gate job can report which stage failed.
     outputs:
       lint_result:      ${{ steps.lint.outcome }}
+      lint_file_count:  ${{ steps.count-lint.outputs.file_count }}
       test_result:      ${{ steps.test.outcome }}
       typecheck_result: ${{ steps.typecheck.outcome }}
       build_result:     ${{ steps.build.outcome }}
@@ -179,12 +190,17 @@ jobs:
         run: ${{ inputs.pre_install_command }}
 
       # Explicit install step — for non-Node projects or custom install needs.
-      # Skipped for Node projects since setup-node already ran yarn install.
       - name: Install dependencies
         if: inputs.install_command != ''
         run: ${{ inputs.install_command }}
 
-      # ── Quality gates (sequential — each must pass before the next runs) ──
+      # ── Evidence collection + quality gates ──────────────────────────────
+
+      - name: Count lint targets
+        id: count-lint
+        run: |
+          FILE_COUNT=$(find . -path './.git' -prune -o -type f -name '*.ts' -print -o -name '*.tsx' -print -o -name '*.js' -print -o -name '*.jsx' -print -o -name '*.py' -print -o -name '*.sh' -print | wc -l | tr -d ' ')
+          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
 
       - id: lint
         name: Lint
@@ -199,20 +215,34 @@ jobs:
         name: Test
         run: ${{ inputs.test_command }}
 
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: ${{ inputs.working_directory }}/${{ inputs.test_report_path }}
+          if-no-files-found: warn
+
       - id: build
         name: Build
         if: inputs.build_command != ''
         run: ${{ inputs.build_command }}
 
-  # The gate validates that all required stages passed and produces the
-  # "gate" check that branch protection requires. Runs even if ci fails
-  # so the check is always present (skipped checks don't satisfy branch protection).
-  gate:
+  # Static analysis gate — validates lint + typecheck with evidence.
+  static-analysis-gate:
     needs: ci
     if: always()
-    uses: sonarmd/workflows/.github/workflows/gate.yml@main
+    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
     with:
       lint_result:      ${{ needs.ci.outputs.lint_result }}
-      test_result:      ${{ needs.ci.outputs.test_result }}
+      lint_file_count:  ${{ needs.ci.outputs.lint_file_count }}
       typecheck_result: ${{ needs.ci.outputs.typecheck_result }}
-      build_result:     ${{ needs.ci.outputs.build_result }}
+
+  # Test gate — downloads JUnit XML artifact, independently parses <testcase>
+  # elements. Does NOT trust caller-provided counts.
+  test-gate:
+    needs: ci
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
+    with:
+      test_result: ${{ needs.ci.outputs.test_result }}
