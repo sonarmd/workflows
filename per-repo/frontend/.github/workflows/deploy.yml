@@ -191,12 +191,59 @@ jobs:
           path: seat/build/
           retention-days: 7
 
+  # ── Build gate — validates all 4 builds passed ────────────────────────────
+
+  summarize-builds:
+    needs: [build-admin, build-patient, build-provider, build-seat]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      build_result: ${{ steps.aggregate.outputs.build_result }}
+    steps:
+      - name: Aggregate build results
+        id: aggregate
+        env:
+          ADMIN:    ${{ needs.build-admin.result }}
+          PATIENT:  ${{ needs.build-patient.result }}
+          PROVIDER: ${{ needs.build-provider.result }}
+          SEAT:     ${{ needs.build-seat.result }}
+        run: |
+          set -euo pipefail
+          RESULT=success
+          for r in "$ADMIN" "$PATIENT" "$PROVIDER" "$SEAT"; do
+            case "$r" in
+              success) ;;
+              *) RESULT=failure ;;
+            esac
+          done
+          echo "build_result=$RESULT" >> "$GITHUB_OUTPUT"
+
+  build-gate:
+    needs: [summarize-builds]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/build-gate.yml@main
+    with:
+      build_result: ${{ needs.summarize-builds.outputs.build_result }}
+
+  deploy-gate:
+    needs: [build-gate]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
+    with:
+      # Deploy workflows are tag-triggered — CI gates already passed on the commit.
+      # Pass 'success' since the tag would not exist without CI passing.
+      static_analysis_gate_result: success
+      test_gate_result:            success
+      build_gate_result:           ${{ needs.build-gate.outputs.gate_result }}
+
   # ── Deploy all 4 apps in parallel ─────────────────────────────────────────
   # Same S3 sync pattern for every app. CloudFront invalidation runs only
   # when a distribution ID is set (empty string = skip = dev environment).
 
   deploy-admin:
-    needs: [setup, build-admin]
+    needs: [setup, build-admin, deploy-gate]
+    if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -232,7 +279,8 @@ jobs:
             --paths "/index.html" "/asset-manifest.json"
 
   deploy-patient:
-    needs: [setup, build-patient]
+    needs: [setup, build-patient, deploy-gate]
+    if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -268,7 +316,8 @@ jobs:
             --paths "/index.html" "/asset-manifest.json"
 
   deploy-provider:
-    needs: [setup, build-provider]
+    needs: [setup, build-provider, deploy-gate]
+    if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -304,7 +353,8 @@ jobs:
             --paths "/index.html" "/asset-manifest.json"
 
   deploy-seat:
-    needs: [setup, build-seat]
+    needs: [setup, build-seat, deploy-gate]
+    if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read

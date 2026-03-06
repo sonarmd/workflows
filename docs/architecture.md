@@ -2,63 +2,122 @@
 
 ## Overview
 
-SonarMD CI/CD uses GitHub Actions as a drop-in replacement for CircleCI. Deployments are branch-triggered (same as CircleCI). Reusable workflows and composite actions live in this central repository.
+SonarMD CI/CD uses a **contract-based gate** model. Central workflows define quality contracts — they validate results with independently verified evidence but never execute project commands. Each repository owns its own CI implementation and calls the gates at stage boundaries.
+
+```
+Repo (owns implementation)          Central (owns contracts)
+──────────────────────────          ────────────────────────
+lint, typecheck                 ──> static-analysis-gate
+test + JUnit XML artifact       ──> test-gate (downloads + parses XML)
+build                           ──> build-gate
+                                    deploy-gate (requires all 3)
+```
 
 ## Repository Map
 
-| Repository | Purpose | CI | Deploy Mechanism |
-|-----------|---------|-----|-----------------|
-| `sonarmd/workflows` | Central reusable workflows + actions | — | — |
-| `sonarmd/frontend` | React monorepo (4 apps + shared lib) | Lint + test + build per app | S3 sync (GHA) |
-| `sonarmd/triggr_api` | Express.js API | Lint + test (4 shards) + build | Slack → Hubot → Ansible (unchanged) |
-| `sonarmd/frontend-patient-app` | React Native mobile app | Lint + typecheck + test | EAS Build (tag-triggered) |
-| `sonarmd/triggr_misc` | Ansible playbooks | Syntax check | N/A |
+| Repository | Purpose | CI | Deploy | Gate Integration |
+|-----------|---------|-----|--------|-----------------|
+| `sonarmd/workflows` | Central gates, actions, utilities | — | — | Defines the contracts |
+| `sonarmd/frontend` | React monorepo (4 apps + shared) | Path-filtered per-app testing | S3 sync per app | Per-app JUnit XML artifacts |
+| `sonarmd/triggr_api` | Express.js API | 4-shard parallel + MongoDB | OIDC + ECS | Mocha JSON -> JUnit XML per shard |
+| `sonarmd/frontend-patient-app` | React Native mobile | Jest + jest-junit | EAS Build (tag-triggered) | Single JUnit XML artifact |
 
-## Deployment Flow
+## Gate Flow
 
-### Frontend
-
-```
-Push to dev/staging/master → GHA detects changed apps → builds → S3 sync → Slack notification
-```
-
-### API
+### CI (every push + PR)
 
 ```
-Push to dev/staging/master → GHA builds + tests → Slack message "@r2-d2 deploy {env} {sha} {url}" → Hubot → Ansible → EC2
+┌─────────────┐    ┌──────────────────────┐    ┌─────────────┐
+│   lint       │───>│ static-analysis-gate │    │             │
+│   typecheck  │───>│ (lint_file_count>0)  │    │   merge     │
+└─────────────┘    └──────────────────────┘    │   blocked   │
+                                                │   until     │
+┌─────────────┐    ┌──────────────────────┐    │   both      │
+│   test       │───>│    test-gate         │    │   gates     │
+│ + JUnit XML  │───>│ (downloads XML,      │───>│   pass      │
+│   artifact   │    │  counts <testcase>)  │    │             │
+└─────────────┘    └──────────────────────┘    └─────────────┘
 ```
 
-The API deploy chain (Hubot → Ansible → EC2) is unchanged. GHA replaces only the CI + artifact build + Slack notification that CircleCI previously handled.
-
-### Mobile
+### Deploy (tag-triggered)
 
 ```
-Push tag stg-mobile-* → EAS preview build → Slack notification
-Push tag prd-mobile-* → EAS production build + auto-submit → Slack notification
+┌─────────────┐    ┌──────────────────────┐    ┌──────────────────────┐    ┌──────────┐
+│   build      │───>│    build-gate        │───>│    deploy-gate       │───>│  deploy   │
+│   (per repo) │    │ (status check)       │    │ (SA + test + build)  │    │  (S3/ECS) │
+└─────────────┘    └──────────────────────┘    └──────────────────────┘    └──────────┘
+```
+
+CI gates (`static-analysis-gate`, `test-gate`) already passed on the commit. Deploy workflows pass `success` for those and validate the build gate from the deploy build.
+
+## Evidence Chain
+
+The test gate's evidence chain is bound to the commit SHA:
+
+1. GitHub Actions triggers a workflow run at `github.sha`
+2. The test job runs at that SHA and produces a JUnit XML report
+3. `upload-artifact` ties the report to that workflow run
+4. The test gate (in the same run) downloads the artifact
+5. The gate parses `<testcase>` elements independently
+6. `github.sha` appears in the gate's log output for auditability
+
+No one can fake this because:
+- Artifacts are scoped to the workflow run (can't inject from another run)
+- CODEOWNERS protects the workflow files (can't remove gate calls)
+- Branch protection requires the gate checks (can't merge without them)
+- The gate does its own parsing (doesn't trust caller-provided counts)
+
+## Deployment Patterns
+
+### Frontend (S3 + CloudFront)
+
+```
+Tag push (dev-fe-*, stg-fe-*, prd-fe-*)
+  -> Resolve environment from tag prefix
+  -> Build all 4 apps in parallel
+  -> build-gate (aggregated build result)
+  -> deploy-gate (SA=success, test=success, build=gate result)
+  -> S3 sync per app + CloudFront invalidation
+  -> Slack notification + metrics
+```
+
+### API (OIDC + ECS)
+
+```
+Tag push (dev-api-*, stg-api-*, prd-api-*)
+  -> Resolve environment from tag prefix
+  -> Build + package artifact
+  -> Upload to S3 via OIDC
+  -> build-gate
+  -> deploy-gate
+  -> Generate configuration.json from 1Password
+  -> SSM-based deployment to EC2/ECS
+  -> Slack notification + metrics
+```
+
+### Mobile (EAS Build)
+
+```
+Tag push (stg-mobile-*, prd-mobile-*)
+  -> Resolve environment from tag prefix
+  -> deploy-gate (SA=success, test=success, build=skipped)
+  -> EAS Build (preview or production + auto-submit)
+  -> Slack notification
 ```
 
 ## Secrets
 
-Stored as GitHub repository secrets (same values as CircleCI's `DevOps` context):
-
 | Secret | Purpose |
 |--------|---------|
-| `AWS_ACCESS_KEY_ID` | S3 deploy for frontend |
-| `AWS_SECRET_ACCESS_KEY` | S3 deploy for frontend |
-| `SLACK_TOKEN` | Slack webhook for notifications |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | S3 deploy for frontend |
+| `AWS_DEPLOY_ROLE_ARN` | OIDC role for API deployment |
+| `OP_SERVICE_ACCOUNT_TOKEN` | 1Password service account for config generation |
+| `SLACK_WEBHOOK_URL` | Slack deploy notifications |
 | `EXPO_TOKEN` | EAS CLI authentication for mobile |
 
-## Frontend S3 Bucket Mapping
+## Composite Actions
 
-| App | Dev | Stg | Prd |
-|-----|-----|-----|-----|
-| admin | admin.dev.sonarmd.com | admin.stg.sonarmd.com | admin.sonarmd.com |
-| patient | my.dev.sonarmd.com | my.stg.sonarmd.com | my.sonarmd.com |
-| provider | care.dev.sonarmd.com | care.stg.sonarmd.com | care.sonarmd.com |
-| seat | seat.dev.sonarmd.com | seat.stg.sonarmd.com | seat.sonarmd.com |
-
-## S3 Cache Strategy
-
-- Static assets (JS, CSS, images): `max-age=604800` (7 days) — content-hashed filenames
-- `index.html`: `max-age=300` (5 minutes) — references change on each deploy
-- `asset-manifest.json`: `max-age=300` (5 minutes)
+| Action | Purpose |
+|--------|---------|
+| `setup-node` | Detects Node version (Volta or input), installs with yarn cache |
+| `detect-changed-apps` | Path filtering for frontend monorepo (admin, patient, provider, seat, shared) |

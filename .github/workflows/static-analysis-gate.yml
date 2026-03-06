@@ -1,0 +1,126 @@
+name: Static Analysis Gate
+
+# Contract gate: validates that static analysis stages passed WITH EVIDENCE.
+#
+# This gate doesn't just check status — it verifies that real work happened.
+# Repos must report how many files were analyzed. Zero files = gate blocked.
+#
+# Usage (from a per-repo CI workflow):
+#
+#   static-analysis:
+#     needs: [lint, typecheck]
+#     if: always()
+#     uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
+#     with:
+#       lint_result:      ${{ needs.lint.result }}
+#       lint_file_count:  ${{ needs.lint.outputs.file_count }}
+#       typecheck_result: ${{ needs.typecheck.result }}
+
+on:
+  workflow_call:
+    inputs:
+      lint_result:
+        description: |
+          Result of the lint stage. Must be 'success'. Cannot be skipped.
+          Accepts: 'success' | 'failure' | 'skipped' | 'cancelled'
+        required: true
+        type: string
+
+      lint_file_count:
+        description: |
+          Number of files that were linted. Must be greater than 0.
+          This prevents repos from passing lint with zero files in scope.
+        required: true
+        type: number
+
+      typecheck_result:
+        description: |
+          Result of the typecheck stage. Pass 'skipped' if the project has no
+          type system (shell scripts, plain JS, Ansible, etc.). Must not be 'failure'.
+          Accepts: 'success' | 'failure' | 'skipped' | 'cancelled' | ''
+        required: false
+        type: string
+        default: 'skipped'
+
+    outputs:
+      gate_result:
+        description: 'success or failure'
+        value: ${{ jobs.validate.outputs.result }}
+
+permissions: {}
+
+jobs:
+  validate:
+    name: static-analysis-gate
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      result: ${{ steps.evaluate.outputs.result }}
+    steps:
+      - name: Evaluate static analysis gate
+        id: evaluate
+        env:
+          LINT_RESULT:      ${{ inputs.lint_result }}
+          LINT_FILE_COUNT:  ${{ inputs.lint_file_count }}
+          TYPECHECK_RESULT: ${{ inputs.typecheck_result }}
+        run: |
+          set -euo pipefail
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Static Analysis Gate"
+          echo "  repo:   ${{ github.repository }}"
+          echo "  sha:    ${{ github.sha }}"
+          echo "  run:    ${{ github.run_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          FAILED=false
+
+          # Lint must succeed.
+          case "$LINT_RESULT" in
+            success)
+              printf "  ✓  %-14s  %s\n" "lint" "passed"
+              ;;
+            skipped|'')
+              printf "  ✗  %-14s  BLOCKED — lint cannot be skipped\n" "lint"
+              FAILED=true
+              ;;
+            *)
+              printf "  ✗  %-14s  %s\n" "lint" "$LINT_RESULT"
+              FAILED=true
+              ;;
+          esac
+
+          # Lint must have analyzed real files.
+          if [[ "$LINT_FILE_COUNT" -gt 0 ]] 2>/dev/null; then
+            printf "  ✓  %-14s  %s files analyzed\n" "lint-evidence" "$LINT_FILE_COUNT"
+          else
+            printf "  ✗  %-14s  BLOCKED — zero files linted (got: %s)\n" "lint-evidence" "$LINT_FILE_COUNT"
+            FAILED=true
+          fi
+
+          # Typecheck is optional — 'skipped' is fine, 'failure' is not.
+          case "$TYPECHECK_RESULT" in
+            success)
+              printf "  ✓  %-14s  %s\n" "typecheck" "passed"
+              ;;
+            skipped|'')
+              printf "  ○  %-14s  %s\n" "typecheck" "not configured"
+              ;;
+            *)
+              printf "  ✗  %-14s  %s\n" "typecheck" "$TYPECHECK_RESULT"
+              FAILED=true
+              ;;
+          esac
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if [[ "$FAILED" == "true" ]]; then
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+            echo "::error::Static analysis gate blocked. See above."
+            exit 1
+          fi
+
+          echo "result=success" >> "$GITHUB_OUTPUT"
+          echo "  Static analysis gate passed — $LINT_FILE_COUNT files verified"

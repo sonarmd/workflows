@@ -1,5 +1,17 @@
 name: CI Gate
 
+# ⚠️  DEPRECATED — Use the contract-based gates instead:
+#
+#   Test validation:  test-gate.yml   (replaces lint/test/typecheck checks)
+#   Build validation: build-gate.yml  (replaces build check)
+#   Deploy clearance: deploy-gate.yml (new — validates all prerequisites)
+#
+# This file is kept for backward compatibility during migration.
+# Remove after all consumers have switched to the new gates.
+# See: SONMD-2718
+#
+# ─── Original documentation ───────────────────────────────────────────
+#
 # The central enforcement point for the CI contract.
 #
 # Every project's CI — regardless of language, framework, or test runner —

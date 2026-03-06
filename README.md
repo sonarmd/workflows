@@ -1,84 +1,134 @@
 # sonarmd/workflows
 
-Central CI/CD infrastructure for SonarMD's GitHub Actions pipelines. Drop-in replacement for CircleCI — same branch-based triggers, same deploy patterns, same secrets approach.
+Central CI/CD infrastructure for SonarMD. Defines **contracts** (gates), not implementations. Each repo does its own work and calls the gates at stage boundaries. The gates validate outputs with independently verified evidence.
+
+## Architecture
+
+```
+repo runs lint/typecheck ──> static-analysis-gate.yml ──> validates evidence
+repo runs tests          ──> test-gate.yml             ──> downloads JUnit XML, counts <testcase>
+repo runs build          ──> build-gate.yml            ──> validates build status
+                             deploy-gate.yml            ──> requires all 3 upstream gates
+```
+
+Repos are responsible for their own runtime (Node version, test framework, build tool). The gates only care about **results and evidence**.
 
 ## Structure
 
 ```
-.github/workflows/          Reusable workflows (called by per-repo workflows)
-  ci-node.yml                 CI: lint + test + build (Node.js)
-  deploy-s3-cloudfront.yml    Deploy: S3 sync + optional CloudFront invalidation
-  deploy-eas-build.yml        Deploy: EAS Build (mobile)
-  tag-release.yml             Auto-tag on merge (for future use)
-  notify-slack.yml            Slack deploy notifications
+.github/workflows/              Reusable workflows
+  static-analysis-gate.yml        Gate: lint (required) + typecheck (optional)
+  test-gate.yml                   Gate: downloads JUnit XML, independently verifies test count
+  build-gate.yml                  Gate: build validation (Phase 2: artifact signing)
+  deploy-gate.yml                 Gate: requires all upstream gates before deploy
+  ci.yml                          Convenience CI wrapper for simple projects
+  deploy-s3-cloudfront.yml        Deploy utility: S3 sync + CloudFront invalidation
+  deploy-eas-build.yml            Deploy utility: EAS Build (mobile)
+  deploy-api-ssm.yml              Deploy utility: SSM-based API deployment
+  notify-slack.yml                Slack deploy notifications
+  metrics-collector.yml           Deploy metrics collection
+  tag-release.yml                 Auto-tag on merge
 
-actions/                     Composite actions
-  setup-node/                  Node.js via Volta detection + yarn cache
-  detect-changed-apps/         Path filtering for frontend monorepo
-  slack-notify/                Formatted Slack message
+actions/                         Composite actions
+  setup-node/                      Node.js + yarn install + caching
+  detect-changed-apps/             Path filtering for frontend monorepo
 
-per-repo/                    Workflow templates for each repository
-  frontend/                    sonarmd/frontend workflows
-  triggr_api/                  sonarmd/triggr_api workflows
-  frontend-patient-app/        sonarmd/frontend-patient-app workflows
-  triggr_misc/                 sonarmd/triggr_misc workflows
+per-repo/                        Workflow templates for each repository
+  frontend/                        sonarmd/frontend
+  triggr_api/                      sonarmd/triggr_api
+  frontend-patient-app/            sonarmd/frontend-patient-app
 
-docs/                        Documentation
-  architecture.md              System architecture overview
-  migration-runbook.md         Step-by-step CircleCI → GHA migration
+docs/                            Documentation
+  contract-gates.md                Gate interfaces, trust model, evidence requirements
+  architecture.md                  System architecture overview
+  migration-runbook.md             CircleCI -> GHA migration steps
+  system-diagrams.md               Deployment flow diagrams
 ```
+
+## Quick Start
+
+### Simple project (use the CI wrapper)
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  ci:
+    uses: sonarmd/workflows/.github/workflows/ci.yml@main
+    with:
+      node_version:      '18'
+      lint_command:       yarn lint
+      test_command:       yarn test --ci --reporters=default --reporters=jest-junit
+      typecheck_command:  yarn tsc --noEmit
+      build_command:      yarn build
+      lint_glob:          'src/**/*.{ts,tsx}'
+```
+
+The wrapper handles evidence collection and gate routing automatically.
+
+### Complex project (call gates directly)
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  lint:
+    steps:
+      - run: yarn lint
+      # Count files for evidence
+      - run: echo "file_count=$(find src -type f -name '*.ts' | wc -l)" >> "$GITHUB_OUTPUT"
+
+  test:
+    steps:
+      - run: yarn test --ci --reporters=default --reporters=jest-junit
+      # Upload JUnit XML — the test gate parses this independently
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-report
+          path: junit.xml
+
+  static-analysis-gate:
+    needs: [lint]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
+    with:
+      lint_result:     ${{ needs.lint.result }}
+      lint_file_count: ${{ needs.lint.outputs.file_count }}
+
+  test-gate:
+    needs: [test]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
+    with:
+      test_result: ${{ needs.test.result }}
+```
+
+## Gates
+
+| Gate | What it validates | Evidence |
+|------|------------------|----------|
+| `static-analysis-gate` | Lint passed, files were analyzed, typecheck didn't fail | `lint_file_count > 0` |
+| `test-gate` | Tests passed, real tests exist | Downloads JUnit XML, counts `<testcase>` elements |
+| `build-gate` | Build succeeded (or skipped for non-build repos) | Status check |
+| `deploy-gate` | All upstream gates passed | Requires static-analysis + test + build gates |
+
+The test gate is **artifact-based** — it downloads the JUnit XML report and independently counts test cases. It does not trust caller-provided counts. See [docs/contract-gates.md](docs/contract-gates.md) for the full trust model.
+
+## Per-Repo Templates
+
+Copy the appropriate `per-repo/<name>/.github/workflows/` directory to each repository's `.github/workflows/`. CODEOWNERS should protect these files to prevent unauthorized changes to gate calls.
+
+| Repo | CI Pattern | Deploy Pattern |
+|------|-----------|---------------|
+| `frontend` | Monorepo path filtering, per-app test jobs, summarize + gates | S3 sync per app, build-gate + deploy-gate |
+| `triggr_api` | 4-shard parallel tests with MongoDB, mocha JSON->JUnit XML | OIDC + ECS, build-gate + deploy-gate |
+| `frontend-patient-app` | Jest + jest-junit, separate lint/typecheck/test jobs | EAS Build (tag-triggered), deploy-gate |
 
 ## GitHub Secrets Required
 
-Set these as repository secrets (same values as CircleCI's `DevOps` context):
-
 | Secret | Repos | Purpose |
 |--------|-------|---------|
-| `AWS_ACCESS_KEY_ID` | frontend | AWS deploy credentials |
-| `AWS_SECRET_ACCESS_KEY` | frontend | AWS deploy credentials |
-| `SLACK_TOKEN` | frontend, triggr_api | Slack webhook token |
-| `EXPO_TOKEN` | frontend-patient-app | Expo/EAS CLI token |
-
-## Copy Workflows to Repos
-
-Copy the appropriate `per-repo/<name>/.github/workflows/` directory to each repository's `.github/workflows/`.
-
-## How It Works
-
-### Frontend (`sonarmd/frontend`)
-
-**CI** — Runs on every push and PRs to staging/master:
-- Detects which apps changed (admin, patient, provider, seat, shared)
-- Installs deps + builds shared lib (cached across jobs)
-- Runs per-app unit tests + Cypress (only for changed apps)
-- Lints the full codebase
-
-**Deploy** — Runs on push to `dev`, `staging`, `master`:
-- Detects changed apps via path filtering
-- Builds each changed app with environment-specific vars
-- Syncs to S3 (7-day cache for assets, 5-min cache for index.html)
-- Notifies Slack
-
-### API (`sonarmd/triggr_api`)
-
-**CI** — Runs on every push and PRs to staging/master:
-- Lints, runs tests across 4 shards with MongoDB service container, builds
-
-**Deploy** — Runs on push to `dev`, `staging`, `master`:
-- Runs lint + test + build
-- Packages build artifact (tar.gz) and uploads as GHA artifact
-- Sends `@r2-d2 deploy {env} {sha} {artifact_url}` to Slack (same pattern as current `slack-deploy.sh`)
-- Hubot + Ansible handle the actual EC2 deployment (unchanged)
-
-### Mobile (`sonarmd/frontend-patient-app`)
-
-**CI** — Runs on every push and PRs:
-- Lint + typecheck + test (Node 22)
-
-**EAS Builds** — Tag-triggered:
-- `stg-mobile-*` tags trigger preview builds
-- `prd-mobile-*` tags trigger production builds with auto-submit
-
-### Misc (`sonarmd/triggr_misc`)
-
-**CI** — Ansible playbook syntax check on push/PR
+| `AWS_ACCESS_KEY_ID` | frontend | S3 deploy credentials |
+| `AWS_SECRET_ACCESS_KEY` | frontend | S3 deploy credentials |
+| `SLACK_WEBHOOK_URL` | all | Slack deploy notifications |
+| `EXPO_TOKEN` | frontend-patient-app | EAS CLI authentication |
+| `OP_SERVICE_ACCOUNT_TOKEN` | triggr_api | 1Password service account for config generation |
