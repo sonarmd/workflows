@@ -41,13 +41,13 @@ runs:
         if [[ -z "$BASE" ]]; then
           if [[ -n "${GITHUB_BASE_REF:-}" ]]; then
             BASE="origin/$GITHUB_BASE_REF"
+            git fetch origin --depth=1 "$GITHUB_BASE_REF" 2>/dev/null || true
           else
+            # Push event: no GITHUB_BASE_REF. Deepen the shallow clone so HEAD~1 exists.
+            git fetch origin --deepen=1 2>/dev/null || true
             BASE="HEAD~1"
           fi
         fi
-
-        # Fetch base ref if needed
-        git fetch origin --depth=1 "${GITHUB_BASE_REF:-HEAD}" 2>/dev/null || true
 
         # Get changed files
         CHANGED=$(git diff --name-only "$BASE"...HEAD 2>/dev/null || git diff --name-only "$BASE" HEAD)
