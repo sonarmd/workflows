@@ -1,5 +1,5 @@
 name: Detect Changed Apps
-description: Detect which frontend apps have changed using path filtering (for monorepo CI)
+description: Detect which frontend apps have changed using git diff (for monorepo CI)
 
 inputs:
   base-ref:
@@ -10,66 +10,87 @@ inputs:
 outputs:
   admin:
     description: Whether admin app changed (true/false)
-    value: ${{ steps.filter.outputs.admin }}
+    value: ${{ steps.detect.outputs.admin }}
   patient:
     description: Whether patient app changed (true/false)
-    value: ${{ steps.filter.outputs.patient }}
+    value: ${{ steps.detect.outputs.patient }}
   provider:
     description: Whether provider app changed (true/false)
-    value: ${{ steps.filter.outputs.provider }}
+    value: ${{ steps.detect.outputs.provider }}
   seat:
     description: Whether seat app changed (true/false)
-    value: ${{ steps.filter.outputs.seat }}
+    value: ${{ steps.detect.outputs.seat }}
   shared:
     description: Whether shared library changed (true/false)
-    value: ${{ steps.filter.outputs.shared }}
+    value: ${{ steps.detect.outputs.shared }}
   any:
     description: Whether any app or shared changed (true/false)
-    value: ${{ steps.filter.outputs.any }}
+    value: ${{ steps.detect.outputs.any }}
 
 runs:
   using: composite
   steps:
     - name: Detect changed paths
-      id: filter
-      uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3
-      with:
-        base: ${{ inputs.base-ref || '' }}
-        filters: |
-          admin:
-            - 'admin/**'
-            - 'shared/**'
-            - 'package.json'
-            - 'yarn.lock'
-            - '.github/**'
-          patient:
-            - 'patient/**'
-            - 'shared/**'
-            - 'package.json'
-            - 'yarn.lock'
-            - '.github/**'
-          provider:
-            - 'provider/**'
-            - 'shared/**'
-            - 'package.json'
-            - 'yarn.lock'
-            - '.github/**'
-          seat:
-            - 'seat/**'
-            - 'shared/**'
-            - 'package.json'
-            - 'yarn.lock'
-            - '.github/**'
-          shared:
-            - 'shared/**'
-            - 'package.json'
-            - 'yarn.lock'
-          any:
-            - 'admin/**'
-            - 'patient/**'
-            - 'provider/**'
-            - 'seat/**'
-            - 'shared/**'
-            - 'package.json'
-            - 'yarn.lock'
-            - '.github/**'
+      id: detect
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Determine base ref
+        BASE="${{ inputs.base-ref }}"
+        if [[ -z "$BASE" ]]; then
+          if [[ -n "${GITHUB_BASE_REF:-}" ]]; then
+            BASE="origin/$GITHUB_BASE_REF"
+          else
+            BASE="HEAD~1"
+          fi
+        fi
+
+        # Fetch base ref if needed
+        git fetch origin --depth=1 "${GITHUB_BASE_REF:-HEAD}" 2>/dev/null || true
+
+        # Get changed files
+        CHANGED=$(git diff --name-only "$BASE"...HEAD 2>/dev/null || git diff --name-only "$BASE" HEAD)
+
+        # Helper: check if any changed file matches a pattern
+        matches() {
+          local pattern="$1"
+          echo "$CHANGED" | grep -qE "$pattern"
+        }
+
+        # Common patterns that affect all apps
+        ROOT_CHANGED=false
+        if matches '^(package\.json|yarn\.lock|\.github/)'; then
+          ROOT_CHANGED=true
+        fi
+
+        SHARED_CHANGED=false
+        if matches '^shared/' || [[ "$ROOT_CHANGED" == "true" ]]; then
+          SHARED_CHANGED=true
+        fi
+
+        # Per-app detection (app dir changed OR shared changed OR root changed)
+        for app in admin patient provider seat; do
+          if matches "^${app}/" || [[ "$SHARED_CHANGED" == "true" ]] || [[ "$ROOT_CHANGED" == "true" ]]; then
+            echo "${app}=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${app}=false" >> "$GITHUB_OUTPUT"
+          fi
+        done
+
+        # Shared output
+        echo "shared=${SHARED_CHANGED}" >> "$GITHUB_OUTPUT"
+
+        # Any output
+        if matches '^(admin|patient|provider|seat|shared)/' || [[ "$ROOT_CHANGED" == "true" ]]; then
+          echo "any=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "any=false" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Log for debugging
+        echo "Base ref: $BASE"
+        echo "Changed files:"
+        echo "$CHANGED" | head -50
+        echo "---"
+        cat "$GITHUB_OUTPUT"
