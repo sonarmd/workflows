@@ -114,7 +114,7 @@ jobs:
           AGORA_APP_ID: op://smd_agora_shared/github-ci-app-id/credential
       - name: Load App private key
         run: |
-          RAW=$(op read 'op://smd_agora_shared/github-ci-private-key/credential' 2>/dev/null)
+          RAW=$(op read 'op://smd_agora_shared/github-ci-private-key/notes' 2>/dev/null)
           # Mask every line so GitHub Actions redacts if any leak to logs
           while IFS= read -r line; do
             [ -n "$line" ] && echo "::add-mask::$line"
