@@ -72,10 +72,10 @@ jobs:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          AGORA_APP_ID: op://smd_agora_shared/agora-app-id/credential
+          AGORA_APP_ID: op://smd_agora_shared/github-ci-app-id/credential
       - name: Load App private key
         run: |
-          RAW=$(op read 'op://smd_agora_shared/agora-app-private-key/credential')
+          RAW=$(op read 'op://smd_agora_shared/github-ci-private-key/credential')
           HEADER=$(echo "$RAW" | grep -o '-----BEGIN [A-Z ]*-----')
           FOOTER=$(echo "$RAW" | grep -o '-----END [A-Z ]*-----')
           BODY=$(echo "$RAW" | sed "s|$HEADER||;s|$FOOTER||" | tr -d ' ' | fold -w 64)
