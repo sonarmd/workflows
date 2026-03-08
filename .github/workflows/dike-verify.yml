@@ -254,15 +254,8 @@ jobs:
         with:
           agora-ref: ${{ inputs.agora-ref }}
           token: ${{ github.token }}
-      - name: Load Jira credentials from 1Password
-        continue-on-error: true
-        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb # v3.1.0
-        with:
-          export-env: true
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          JIRA_API_TOKEN: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/credential
-          JIRA_USER: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/username
+      # Jira-GitHub app integration handles ticket linkage natively.
+      # Format-only validation: check that PR title/branch contains SONMD-XXXX.
       - name: Verify Jira ticket reference
         run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/check-provenance.sh"
         env:
@@ -270,8 +263,6 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          JIRA_API_TOKEN: ${{ env.JIRA_API_TOKEN }}
-          JIRA_USER: ${{ env.JIRA_USER }}
           JIRA_BASE_URL: https://sonarmd.atlassian.net
           AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
           JIRA_PROJECT: ${{ inputs.jira-project }}
