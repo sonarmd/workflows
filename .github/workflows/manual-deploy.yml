@@ -1,0 +1,219 @@
+name: Manual Deploy
+
+# Reusable workflow for manually tagging and deploying any repo.
+#
+# Four modes:
+#   staging    — auto-increment build number on a branch (release/* default)
+#   production — auto-increment minor version (master/main default)
+#   redeploy   — re-deploy an existing tag without creating a new one
+#   custom     — deploy any version to any environment
+#
+# Caller is responsible for running the deploy pipeline after this workflow
+# outputs the resolved tag. See manual-deploy.yml in triggr_api for an example.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'staging | production | redeploy | custom'
+        type: string
+        required: true
+      repo-short:
+        description: 'Short repo identifier for tag prefix (api, fe, mobile)'
+        type: string
+        required: true
+      ref:
+        description: 'Branch or SHA to tag. Leave empty for smart defaults (staging→latest release/*, production→master).'
+        type: string
+        default: ''
+      existing-tag:
+        description: '[redeploy] Existing tag to re-deploy.'
+        type: string
+        default: ''
+      custom-version:
+        description: '[custom] Version number (e.g. 4.5.1).'
+        type: string
+        default: ''
+      custom-env:
+        description: '[custom] Environment prefix (dev, stg, prd).'
+        type: string
+        default: 'stg'
+
+    outputs:
+      tag:
+        description: 'Resolved tag name (e.g. stg-api-1.0.0-b11)'
+        value: ${{ jobs.resolve.outputs.tag }}
+      env:
+        description: 'Target environment (dev, stg, prd)'
+        value: ${{ jobs.resolve.outputs.env }}
+      version:
+        description: 'Resolved version string'
+        value: ${{ jobs.resolve.outputs.version }}
+      ref:
+        description: 'Branch or SHA that was tagged'
+        value: ${{ jobs.resolve.outputs.ref }}
+      is-new-tag:
+        description: 'Whether a new tag was created (false for redeploy)'
+        value: ${{ jobs.resolve.outputs.is_new_tag }}
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: "Resolve & tag (${{ inputs.mode }})"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag:        ${{ steps.version.outputs.tag }}
+      env:        ${{ steps.version.outputs.env }}
+      version:    ${{ steps.version.outputs.version }}
+      ref:        ${{ steps.version.outputs.ref }}
+      is_new_tag: ${{ steps.version.outputs.is_new_tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve version and create tag
+        id: version
+        env:
+          MODE:           ${{ inputs.mode }}
+          SHORT:          ${{ inputs.repo-short }}
+          REF:            ${{ inputs.ref }}
+          EXISTING_TAG:   ${{ inputs.existing-tag }}
+          CUSTOM_VERSION: ${{ inputs.custom-version }}
+          CUSTOM_ENV:     ${{ inputs.custom-env }}
+        run: |
+          set -euo pipefail
+
+          # ── Staging ────────────────────────────────────────────
+          resolve_staging() {
+            if [ -z "$REF" ]; then
+              REF=$(git for-each-ref --sort=-committerdate \
+                --format='%(refname:short)' refs/remotes/origin/release/ \
+                | head -1 | sed 's|^origin/||')
+              [ -z "$REF" ] && { echo "::error::No release/* branches found. Specify a ref."; exit 1; }
+              git checkout "$REF" --quiet
+              echo "::notice::Auto-selected branch: $REF"
+            fi
+
+            VERSION=$(node -p "require('./package.json').version")
+            PREFIX="stg-${SHORT}-${VERSION}"
+
+            LATEST=$(git tag -l "${PREFIX}-b*" | sed "s/${PREFIX}-b//" | sort -n | tail -1)
+            TAG="${PREFIX}-b$(( ${LATEST:-0} + 1 ))"
+            ENV=stg
+            IS_NEW=true
+
+            case "$REF" in
+              master|main) echo "::warning::Deploying $REF to staging — release/* branches are the typical staging source." ;;
+            esac
+          }
+
+          # ── Production ─────────────────────────────────────────
+          resolve_production() {
+            if [ -z "$REF" ]; then
+              REF=master
+              git checkout master --quiet 2>/dev/null || { REF=main; git checkout main --quiet; }
+              echo "::notice::Auto-selected branch: $REF"
+            fi
+
+            LATEST_TAG=$(git tag -l "prd-${SHORT}-*" --sort=-v:refname | head -1)
+            if [ -n "$LATEST_TAG" ]; then
+              PREV=$(echo "$LATEST_TAG" | sed "s/prd-${SHORT}-//")
+              MAJOR=$(echo "$PREV" | cut -d. -f1)
+              MINOR=$(echo "$PREV" | cut -d. -f2)
+              VERSION="${MAJOR}.$(( MINOR + 1 )).0"
+            else
+              VERSION=$(node -p "require('./package.json').version")
+            fi
+
+            TAG="prd-${SHORT}-${VERSION}"
+            ENV=prd
+            IS_NEW=true
+
+            case "$REF" in
+              release/*) echo "::warning::Deploying $REF to production — master/main is the typical production source." ;;
+            esac
+          }
+
+          # ── Redeploy ───────────────────────────────────────────
+          resolve_redeploy() {
+            [ -z "$EXISTING_TAG" ] && { echo "::error::Redeploy mode requires the 'existing-tag' input."; exit 1; }
+
+            if ! git rev-parse "refs/tags/${EXISTING_TAG}" >/dev/null 2>&1; then
+              echo "::error::Tag '$EXISTING_TAG' does not exist."
+              exit 1
+            fi
+
+            TAG="$EXISTING_TAG"
+            REF=$(git rev-list -1 "$TAG")
+
+            case "$TAG" in
+              dev-*) ENV=dev ;; stg-*) ENV=stg ;; prd-*) ENV=prd ;;
+              *) echo "::error::Cannot determine environment from tag prefix: $TAG"; exit 1 ;;
+            esac
+
+            VERSION=$(echo "$TAG" | sed -E "s/^(dev|stg|prd)-${SHORT}-//")
+            IS_NEW=false
+            echo "::notice::Re-deploying existing tag $TAG — no new tag will be created."
+          }
+
+          # ── Custom ─────────────────────────────────────────────
+          resolve_custom() {
+            [ -z "$CUSTOM_VERSION" ] && { echo "::error::Custom mode requires the 'custom-version' input."; exit 1; }
+            [ -z "$REF" ]            && { echo "::error::Custom mode requires a 'ref' (branch to tag)."; exit 1; }
+
+            TAG="${CUSTOM_ENV}-${SHORT}-${CUSTOM_VERSION}"
+            VERSION="$CUSTOM_VERSION"
+            ENV="$CUSTOM_ENV"
+            IS_NEW=true
+          }
+
+          # ── Dispatch ───────────────────────────────────────────
+          case "$MODE" in
+            staging)    resolve_staging ;;
+            production) resolve_production ;;
+            redeploy)   resolve_redeploy ;;
+            custom)     resolve_custom ;;
+            *) echo "::error::Unknown mode: $MODE"; exit 1 ;;
+          esac
+
+          # ── Prevent tag reassignment ───────────────────────────
+          if [ "$IS_NEW" = "true" ] && git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag '$TAG' already exists. Use 'redeploy' to re-deploy it, or 'custom' with a different version."
+            exit 1
+          fi
+
+          # ── Create and push tag ────────────────────────────────
+          if [ "$IS_NEW" = "true" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Deploy: $TAG (manual — $MODE)"
+            git push origin "$TAG"
+            echo "::notice::Created and pushed tag: $TAG"
+          fi
+
+          # ── Outputs ────────────────────────────────────────────
+          {
+            echo "tag=$TAG"
+            echo "env=$ENV"
+            echo "version=$VERSION"
+            echo "ref=$REF"
+            echo "is_new_tag=$IS_NEW"
+          } >> "$GITHUB_OUTPUT"
+
+          # ── Summary ────────────────────────────────────────────
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Manual Deploy — $MODE
+          | | |
+          |---|---|
+          | **Tag** | \`$TAG\` |
+          | **Environment** | \`$ENV\` |
+          | **Version** | \`$VERSION\` |
+          | **Branch** | \`$REF\` |
+          | **Commit** | \`$(git rev-parse --short HEAD)\` |
+          | **New tag** | $IS_NEW |
+          EOF

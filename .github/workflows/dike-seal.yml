@@ -72,17 +72,28 @@ jobs:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          AGORA_APP_ID: op://smd_agora_shared/agora-app-id/credential
+          AGORA_APP_ID: op://smd_agora_shared/github-ci-app-id/credential
           CONFLUENCE_USER: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/username
           CONFLUENCE_TOKEN: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/credential
       - name: Load App private key
         run: |
-          RAW=$(op read 'op://smd_agora_shared/agora-app-private-key/credential')
-          HEADER=$(echo "$RAW" | grep -o '-----BEGIN [A-Z ]*-----')
-          FOOTER=$(echo "$RAW" | grep -o '-----END [A-Z ]*-----')
-          BODY=$(echo "$RAW" | sed "s|$HEADER||;s|$FOOTER||" | tr -d ' ' | fold -w 64)
-          PEM=$(printf '%s\n%s\n%s\n' "$HEADER" "$BODY" "$FOOTER")
-          echo "AGORA_PRIVATE_KEY=$(printf '%s' "$PEM" | base64 -w0)" >> "$GITHUB_ENV"
+          RAW=$(op read 'op://smd_agora_shared/github-ci-private-key/credential' 2>/dev/null)
+          # Mask every line so GitHub Actions redacts if any leak to logs
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$RAW"
+          # Reconstruct PEM: strip headers, remove whitespace, re-wrap at 64 chars
+          HEADER="-----BEGIN RSA PRIVATE KEY-----"
+          FOOTER="-----END RSA PRIVATE KEY-----"
+          BODY=$(printf '%s' "$RAW" | sed "s|$HEADER||;s|$FOOTER||" | tr -d ' \n\r' | fold -w 64)
+          DELIM="ghenv_$(openssl rand -hex 8)"
+          {
+            echo "AGORA_PRIVATE_KEY<<${DELIM}"
+            echo "$HEADER"
+            echo "$BODY"
+            echo "$FOOTER"
+            echo "${DELIM}"
+          } >> "$GITHUB_ENV"
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Generate Dike app token
