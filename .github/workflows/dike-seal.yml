@@ -3,7 +3,7 @@ name: "Dike — Post-Merge Seal"
 # Reusable workflow for Dike post-merge sealing on pull requests.
 # Thin orchestrator: checks out agora, calls its parameterized scripts.
 #
-# Runs sequentially: nomos-seal.sh → nomos-synthesize.sh → seal.sh
+# Runs sequentially: nomos-seal.sh → nomos-synthesize.sh → confluence-publish.sh → seal.sh
 # Writes to the calling repo's truth/ directory via GitHub Contents API.
 #
 # Usage (from a governed repo):
@@ -73,6 +73,8 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           AGORA_APP_ID: op://smd_agora_shared/github-ci-app-id/credential
+          CONFLUENCE_USER: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/username
+          CONFLUENCE_TOKEN: op://smd_agora_shared/atlassian-sonarmd-platform-oauth/credential
       - name: Load App private key
         run: |
           RAW=$(op read 'op://smd_agora_shared/github-ci-private-key/credential' 2>/dev/null)
@@ -126,6 +128,19 @@ jobs:
           AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
           TRUTH_ROOT: ${{ inputs.truth-path }}
           LOGS_ROOT: ${{ inputs.logs-path }}
+      - name: "Nomos-scribe — publish Confluence documentation"
+        id: confluence
+        run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/confluence-publish.sh"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFLUENCE_USER: ${{ env.CONFLUENCE_USER }}
+          CONFLUENCE_TOKEN: ${{ env.CONFLUENCE_TOKEN }}
+          MERGE_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          AGORA_GOVERNANCE_ROOT: ${{ inputs.namespace-mode == 'agora' && '.' || steps.agora.outputs.governance-root }}
+          TRUTH_ROOT: ${{ inputs.truth-path }}
       - name: "Dike — attestation bundle + fingerprint chain"
         run: bash "${AGORA_GOVERNANCE_ROOT}/.github/scripts/seal.sh"
         env:
@@ -138,3 +153,4 @@ jobs:
           NAMESPACE_MODE: ${{ inputs.namespace-mode }}
           TRUTH_ROOT: ${{ inputs.truth-path }}
           LOGS_ROOT: ${{ inputs.logs-path }}
+          CONFLUENCE_PAGE_URL: ${{ steps.confluence.outputs.confluence_url }}
