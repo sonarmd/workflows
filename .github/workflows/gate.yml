@@ -61,19 +61,129 @@ jobs:
           if [ -z "$ARTIFACT_URL" ]; then
             echo "  attestation: NOT FOUND"
             echo ""
-            echo "============================================="
-            echo "  FAILED"
-            echo "============================================="
-            echo ""
-            echo "  No CI attestation found for commit ${EXPECTED_COMMIT:0:12}."
-            echo ""
-            echo "  Your CI workflow must call ci-sign as its last step:"
-            echo ""
-            echo "    - uses: sonarmd/workflows/actions/ci-sign@main"
-            echo ""
-            echo "  If ci-sign is already there, a step before it failed."
-            echo "  Check your CI workflow run for errors."
-            echo ""
+
+            # Query the CI workflow runs for this commit to find what failed
+            REPORT=$(python3 <<'PYEOF'
+        import json, os, urllib.request
+
+        repo = os.environ["REPO"]
+        sha = os.environ["EXPECTED_COMMIT"]
+        token = os.environ["GH_TOKEN"]
+
+        # Find workflow runs at this commit
+        url = f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&per_page=10"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json"
+        })
+
+        try:
+            runs = json.loads(urllib.request.urlopen(req).read()).get("workflow_runs", [])
+        except Exception as e:
+            print(f"Could not fetch workflow runs: {e}")
+            exit(0)
+
+        # Skip the gate's own run
+        gate_run = os.environ.get("RUN_ID", "")
+        ci_runs = [r for r in runs if str(r["id"]) != gate_run]
+
+        if not ci_runs:
+            print("No CI workflow runs found for this commit.")
+            print("Make sure your repo has a CI workflow that calls ci-sign.")
+            exit(0)
+
+        md = []
+        for run in ci_runs:
+            status = run.get("conclusion") or run.get("status", "unknown")
+            run_name = run.get("name", "CI")
+            run_url = run.get("html_url", "")
+            run_id = run["id"]
+
+            if status not in ("failure", "cancelled"):
+                if status == "in_progress" or status == "queued":
+                    md.append(f"**{run_name}** is still running — gate will re-evaluate when it completes.")
+                    md.append(f"[View run]({run_url})")
+                continue
+
+            md.append(f"#### {run_name} — {status}")
+            md.append("")
+
+            # Get jobs for this run
+            jobs_url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=30"
+            jobs_req = urllib.request.Request(jobs_url, headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json"
+            })
+
+            try:
+                jobs = json.loads(urllib.request.urlopen(jobs_req).read()).get("jobs", [])
+            except:
+                md.append(f"Could not fetch job details. [View run]({run_url})")
+                continue
+
+            for job in jobs:
+                if job.get("conclusion") not in ("failure", "cancelled"):
+                    continue
+
+                md.append(f"**Job: {job['name']}**")
+                md.append("")
+                md.append("| Step | Status | Duration |")
+                md.append("|------|--------|----------|")
+
+                for step in job.get("steps", []):
+                    name = step["name"]
+                    conclusion = step.get("conclusion", "—")
+                    started = step.get("started_at", "")
+                    completed = step.get("completed_at", "")
+
+                    duration = "—"
+                    if started and completed:
+                        from datetime import datetime
+                        try:
+                            s = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                            e = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+                            secs = int((e - s).total_seconds())
+                            duration = f"{secs // 60}m {secs % 60}s" if secs >= 60 else f"{secs}s"
+                        except:
+                            pass
+
+                    if conclusion == "failure":
+                        md.append(f"| **{name}** | FAILED | {duration} |")
+                    elif conclusion == "success":
+                        md.append(f"| {name} | passed | {duration} |")
+                    elif conclusion == "skipped":
+                        md.append(f"| {name} | skipped | — |")
+                    else:
+                        md.append(f"| {name} | {conclusion} | {duration} |")
+
+                md.append("")
+                job_url = job.get("html_url", "")
+                if job_url:
+                    md.append(f"[View full log]({job_url})")
+                md.append("")
+
+        print("\n".join(md) if md else "Could not determine what failed.")
+        PYEOF
+            )
+
+            # Write the error summary to the dashboard
+            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ### Gate: FAILED — No CI Attestation
+
+          No attestation found for commit \`${EXPECTED_COMMIT:0:12}\`.
+
+          $REPORT
+
+          ---
+
+          **If ci-sign is missing from your CI workflow**, add it as the last step:
+          \`\`\`yaml
+          - uses: sonarmd/workflows/actions/ci-sign@main
+          \`\`\`
+
+          **If ci-sign is already there**, a step before it failed. See the details above.
+          SUMMARY
+
             exit 1
           fi
 
