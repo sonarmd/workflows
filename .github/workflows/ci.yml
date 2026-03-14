@@ -1,248 +1,821 @@
 name: CI
 
-# Convenience CI wrapper for projects that can express their quality gates
-# as simple shell commands. Runs lint, typecheck, test, and build in sequence,
-# then calls the contract gates with evidence.
+# ═══════════════════════════════════════════════════════════════════════════
+# UNIVERSAL CI — sonarmd/workflows
+# ═══════════════════════════════════════════════════════════════════════════
 #
-# For projects with complex requirements (service containers, matrix sharding,
-# monorepo path filtering), write a custom per-repo CI and call the gates directly.
+# Every sonarmd project calls this. No exceptions.
 #
-# Usage — Node project:
+# The project provides its commands. This workflow runs them, collects
+# evidence, signs the build with the commit hash, and gates the merge.
+#
+# Three things are verified:
+#   1. Static analysis passed (lint, typecheck, whatever your language uses)
+#   2. Tests passed (JUnit XML — every language has a reporter)
+#   3. Build succeeded and is signed with the commit SHA
+#
+# ── Caller example (this is ALL a project needs) ─────────────────────────
+#
+#   # .github/workflows/ci.yml
+#   on:
+#     pull_request:
+#       branches: [master, staging, 'release/**']
+#     merge_group:
+#       branches: [master, staging, 'release/**']
 #
 #   jobs:
 #     ci:
 #       uses: sonarmd/workflows/.github/workflows/ci.yml@main
 #       with:
-#         node_version:      '18'
-#         lint_command:      yarn lint
-#         test_command:      yarn test --ci --reporters=default --reporters=jest-junit
-#         typecheck_command: yarn tsc --noEmit
-#         build_command:     yarn build
-#         lint_glob:         'src/**/*.{ts,tsx,js,jsx}'
+#         runtime:        node
+#         runtime_version: '22'
+#         lint:           yarn lint
+#         test:           yarn test --ci --forceExit
+#         build:          yarn build
 #
-# Usage — Python project:
+# ── Python project ───────────────────────────────────────────────────────
 #
 #   jobs:
 #     ci:
 #       uses: sonarmd/workflows/.github/workflows/ci.yml@main
 #       with:
-#         python_version:    '3.13'
-#         install_command:   pip install -r requirements.txt
-#         lint_command:      flake8 .
-#         test_command:      pytest --junitxml=junit.xml --tb=short -q
-#         typecheck_command: mypy .
-#         lint_glob:         '**/*.py'
+#         runtime:        python
+#         runtime_version: '3.13'
+#         install:        pip install -r requirements.txt
+#         lint:           ruff check .
+#         test:           pytest --junitxml=junit.xml -q
+#         build:          python -m build
+#         build_output_dir: dist
+#
+# ── triggr_api (sharded tests + MongoDB) ─────────────────────────────────
+#
+#   jobs:
+#     ci:
+#       uses: sonarmd/workflows/.github/workflows/ci.yml@main
+#       with:
+#         runtime:            node
+#         runtime_version:    '22'
+#         pre_install:        sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
+#         lint:               yarn lint
+#         test:               'unused — see test_shard_command'
+#         test_shards:        4
+#         test_shard_glob:    'test/**/*.ts'
+#         test_shard_command: ./node_modules/.bin/mocha --require @swc-node/register --exit --timeout 10000 $SHARD_FILES
+#         build:              yarn build
+#         needs_mongo:        true
+#         node_options:       '--max-old-space-size=4096'
 
 on:
   workflow_call:
     inputs:
-      # ── Required ──────────────────────────────────────────────────────────
-      lint_command:
-        description: 'Command to lint the codebase (e.g. yarn lint, flake8 ., shellcheck scripts/)'
+      # ── Runtime ────────────────────────────────────────────────────────
+      runtime:
+        description: 'node | python | none'
         required: true
         type: string
 
-      test_command:
-        description: |
-          Command to run the test suite. Must produce a JUnit XML report at
-          the path specified by test_report_path. The test gate parses it
-          independently to verify tests actually ran.
-          For Jest:   yarn test --ci --reporters=default --reporters=jest-junit
-          For pytest: pytest --junitxml=junit.xml --tb=short -q
-          For Mocha:  mocha --reporter mocha-junit-reporter
-        required: true
-        type: string
-
-      lint_glob:
-        description: |
-          Glob pattern for files in scope for linting. Used to count lint targets
-          as evidence for the static analysis gate. Must match at least 1 file.
-          Examples: 'src/**/*.{ts,tsx}' | '**/*.py' | 'scripts/**/*.sh'
-        required: true
-        type: string
-
-      # ── Optional quality gates ─────────────────────────────────────────
-      typecheck_command:
-        description: |
-          Static type checking command. Leave empty for projects without a type
-          system (e.g. plain JS, shell scripts).
-          Examples: yarn tsc --noEmit | mypy . | npx tsc --noEmit
+      runtime_version:
+        description: 'Version (e.g. 22, 3.13). Required for node/python.'
         required: false
         type: string
         default: ''
 
-      build_command:
-        description: |
-          Command to produce a build artifact. Leave empty for projects where
-          CI doesn't build (mobile apps built via EAS, infra repos, etc.).
-          Examples: yarn build | python setup.py bdist_wheel | make
+      # ── Commands ───────────────────────────────────────────────────────
+      lint:
+        description: 'Lint command. Required.'
+        required: true
+        type: string
+
+      test:
+        description: 'Test command. Must produce JUnit XML at test_report_path.'
+        required: true
+        type: string
+
+      build:
+        description: 'Build command. Output goes to build_output_dir.'
+        required: true
+        type: string
+
+      typecheck:
+        description: 'Typecheck command (optional).'
         required: false
         type: string
         default: ''
 
+      # ── Paths ──────────────────────────────────────────────────────────
       test_report_path:
-        description: |
-          Path to the JUnit XML report produced by the test command.
-          Relative to working_directory. The test gate downloads this artifact
-          and parses it independently — this is the unfakeable evidence.
-          For Jest (jest-junit):  junit.xml
-          For pytest:             junit.xml (match --junitxml flag)
-          For Mocha:              test-results.xml
+        description: 'JUnit XML path.'
         required: false
         type: string
         default: 'junit.xml'
 
-      # ── Runtime setup ──────────────────────────────────────────────────
-      node_version:
-        description: |
-          Node.js version to install. When set, enables the setup-node composite
-          action which installs Node, runs yarn install --frozen-lockfile, and
-          caches node_modules. Leave empty for non-Node projects.
+      build_output_dir:
+        description: 'Build output directory.'
         required: false
         type: string
-        default: ''
+        default: 'dist'
 
-      python_version:
-        description: |
-          Python version to install. When set, enables setup-python.
-          Leave empty for non-Python projects.
-        required: false
-        type: string
-        default: ''
-
-      # ── Dependency install ─────────────────────────────────────────────
-      pre_install_command:
-        description: |
-          Command to run before dependency install. Use for system packages or
-          other prerequisites. Example: sudo apt-get install -y graphicsmagick
-        required: false
-        type: string
-        default: ''
-
-      install_command:
-        description: |
-          Dependency install command. For Node projects using node_version, omit
-          this — setup-node handles yarn install automatically. Use this for
-          non-Node installs (pip, gem, etc.) or when you need a custom install step.
-        required: false
-        type: string
-        default: ''
-
-      # ── Runner config ──────────────────────────────────────────────────
       working_directory:
-        description: 'Working directory for all commands. Defaults to repo root.'
+        description: 'Working directory.'
         required: false
         type: string
         default: '.'
 
-      runs_on:
-        description: 'GitHub Actions runner. Defaults to ubuntu-latest.'
+      # ── Dependencies ───────────────────────────────────────────────────
+      pre_install:
+        description: 'System deps (e.g. sudo apt-get install -y graphicsmagick).'
         required: false
         type: string
-        default: 'ubuntu-latest'
+        default: ''
 
-      timeout_minutes:
-        description: 'Timeout for the CI job in minutes.'
+      install:
+        description: 'Custom install. Node projects get yarn install automatically.'
+        required: false
+        type: string
+        default: ''
+
+      # ── Services ───────────────────────────────────────────────────────
+      needs_mongo:
+        description: 'Start MongoDB 8.0 service container.'
+        required: false
+        type: boolean
+        default: false
+
+      # ── Test sharding ──────────────────────────────────────────────────
+      test_shards:
+        description: 'Parallel test shards (1 = no sharding).'
         required: false
         type: number
-        default: 30
+        default: 1
+
+      test_shard_command:
+        description: 'Shard test command. Use $SHARD_FILES placeholder.'
+        required: false
+        type: string
+        default: ''
+
+      test_shard_glob:
+        description: 'Glob for test files to shard (e.g. test/**/*.ts).'
+        required: false
+        type: string
+        default: ''
+
+      # ── Tuning ─────────────────────────────────────────────────────────
+      timeout:
+        description: 'Job timeout in minutes. Max 15, default 10.'
+        required: false
+        type: number
+        default: 10
+
+      node_options:
+        description: 'NODE_OPTIONS (e.g. --max-old-space-size=4096).'
+        required: false
+        type: string
+        default: ''
 
 permissions: {}
 
 jobs:
-  ci:
-    name: ci
-    runs-on: ${{ inputs.runs_on }}
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+  # ════════════════════════════════════════════════════════════════════════
+  # SETUP — generate shard matrix for test job
+  # ════════════════════════════════════════════════════════════════════════
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      test-matrix: ${{ steps.matrix.outputs.json }}
+    steps:
+      - name: Validate inputs
+        env:
+          RUNTIME: ${{ inputs.runtime }}
+          RUNTIME_VERSION: ${{ inputs.runtime_version }}
+          LINT: ${{ inputs.lint }}
+          TEST: ${{ inputs.test }}
+          BUILD: ${{ inputs.build }}
+          TEST_SHARDS: ${{ inputs.test_shards }}
+          TEST_SHARD_CMD: ${{ inputs.test_shard_command }}
+          TEST_SHARD_GLOB: ${{ inputs.test_shard_glob }}
+          TIMEOUT: ${{ inputs.timeout }}
+        run: |
+          ERRORS=0
+          err() { echo "::error::$1"; ERRORS=$((ERRORS + 1)); }
+
+          # Runtime must be one of the known values
+          case "$RUNTIME" in
+            node|python|none) ;;
+            *) err "runtime must be 'node', 'python', or 'none' — got '$RUNTIME'" ;;
+          esac
+
+          # Runtime version required for node/python
+          if [ "$RUNTIME" != "none" ] && [ -z "$RUNTIME_VERSION" ]; then
+            err "runtime_version is required when runtime is '$RUNTIME'. Example: '22' for Node, '3.13' for Python."
+          fi
+
+          # Commands must not be empty
+          [ -n "$LINT" ]  || err "lint command is required. Example: 'yarn lint' or 'ruff check .'"
+          [ -n "$TEST" ]  || err "test command is required. Example: 'yarn test --ci --forceExit' or 'pytest --junitxml=junit.xml'"
+          [ -n "$BUILD" ] || err "build command is required. Example: 'yarn build' or 'python -m build'"
+
+          # Sharding: if shards > 1, shard_command and shard_glob are required
+          if [ "$TEST_SHARDS" -gt 1 ] 2>/dev/null; then
+            [ -n "$TEST_SHARD_CMD" ]  || err "test_shard_command is required when test_shards > 1. Use \$SHARD_FILES placeholder for the file list."
+            [ -n "$TEST_SHARD_GLOB" ] || err "test_shard_glob is required when test_shards > 1. Example: 'test/**/*.ts'"
+          fi
+
+          # Timeout sanity
+          if [ "$TIMEOUT" -gt 15 ] 2>/dev/null; then
+            err "timeout cannot exceed 15 minutes (got $TIMEOUT). This is a hard limit — if your CI takes longer than 15 minutes, fix your CI."
+          fi
+          if [ "$TIMEOUT" -lt 1 ] 2>/dev/null; then
+            err "timeout must be at least 1 minute (got $TIMEOUT)."
+          fi
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "::error::$ERRORS input validation error(s). Fix your caller workflow inputs. See examples in the ci.yml header."
+            exit 1
+          fi
+
+          echo "Inputs validated: runtime=$RUNTIME@$RUNTIME_VERSION shards=$TEST_SHARDS timeout=${TIMEOUT}m"
+
+      - name: Generate test matrix
+        id: matrix
+        run: |
+          SHARDS=${{ inputs.test_shards }}
+          if [ "$SHARDS" -le 1 ]; then
+            echo 'json={"shard":["none"]}' >> "$GITHUB_OUTPUT"
+          else
+            INDICES=$(python3 -c "import json; print(json.dumps({'shard': list(range($SHARDS))}))")
+            echo "json=${INDICES}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Test matrix: $(cat "$GITHUB_OUTPUT" | grep json | cut -d= -f2)"
+
+  # ════════════════════════════════════════════════════════════════════════
+  # STATIC ANALYSIS
+  # ════════════════════════════════════════════════════════════════════════
+  static-analysis:
+    name: static-analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
     permissions:
       contents: read
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
-    outputs:
-      lint_result:      ${{ steps.lint.outcome }}
-      lint_file_count:  ${{ steps.count-lint.outputs.file_count }}
-      test_result:      ${{ steps.test.outcome }}
-      typecheck_result: ${{ steps.typecheck.outcome }}
-      build_result:     ${{ steps.build.outcome }}
+    env:
+      NODE_OPTIONS: ${{ inputs.node_options }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@v4
 
-      # Node.js — setup-node composite action handles install + caching.
       - name: Setup Node.js
-        if: inputs.node_version != ''
-        uses: sonarmd/workflows/actions/setup-node@main
+        if: inputs.runtime == 'node'
+        uses: actions/setup-node@v4
         with:
-          node-version: ${{ inputs.node_version }}
-          working-directory: ${{ inputs.working_directory }}
+          node-version: ${{ inputs.runtime_version }}
+          cache: 'yarn'
+          cache-dependency-path: '${{ inputs.working_directory }}/yarn.lock'
 
-      # Python — setup-python handles install + caching.
       - name: Setup Python
-        if: inputs.python_version != ''
-        uses: actions/setup-python@v5  # TODO: pin to full commit SHA
+        if: inputs.runtime == 'python'
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python_version }}
+          python-version: ${{ inputs.runtime_version }}
           cache: 'pip'
 
-      # System or pre-build dependencies (e.g. apt packages).
-      - name: Pre-install
-        if: inputs.pre_install_command != ''
-        run: ${{ inputs.pre_install_command }}
-
-      # Explicit install step — for non-Node projects or custom install needs.
-      - name: Install dependencies
-        if: inputs.install_command != ''
-        run: ${{ inputs.install_command }}
-
-      # ── Evidence collection + quality gates ──────────────────────────────
-
-      - name: Count lint targets
-        id: count-lint
+      - name: System dependencies
+        if: inputs.pre_install != ''
         run: |
-          FILE_COUNT=$(find . -path './.git' -prune -o -type f -name '*.ts' -print -o -name '*.tsx' -print -o -name '*.js' -print -o -name '*.jsx' -print -o -name '*.py' -print -o -name '*.sh' -print | wc -l | tr -d ' ')
-          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Installing system dependencies..."
+          if ! ${{ inputs.pre_install }}; then
+            echo ""
+            echo "::error::System dependency install failed: '${{ inputs.pre_install }}'"
+            echo "::error::Check that the packages exist and the command is valid for ubuntu-latest."
+            exit 1
+          fi
 
-      - id: lint
-        name: Lint
-        run: ${{ inputs.lint_command }}
+      - name: Install (Node)
+        if: inputs.runtime == 'node' && inputs.install == ''
+        run: |
+          echo "Installing Node dependencies with yarn..."
+          if ! yarn install --frozen-lockfile 2>&1; then
+            echo ""
+            echo "::error::yarn install failed. Common causes:"
+            echo "::error::  - yarn.lock is out of sync with package.json (run 'yarn install' locally and commit yarn.lock)"
+            echo "::error::  - A private registry is unreachable (check .npmrc or .yarnrc)"
+            echo "::error::  - Node version mismatch (you requested ${{ inputs.runtime_version }}, check engines in package.json)"
+            exit 1
+          fi
 
-      - id: typecheck
-        name: Typecheck
-        if: inputs.typecheck_command != ''
-        run: ${{ inputs.typecheck_command }}
+      - name: Install (custom)
+        if: inputs.install != ''
+        run: |
+          echo "Running custom install: ${{ inputs.install }}"
+          if ! ${{ inputs.install }}; then
+            echo ""
+            echo "::error::Custom install command failed: '${{ inputs.install }}'"
+            echo "::error::This command runs before lint/test/build. Fix it in your caller workflow."
+            exit 1
+          fi
 
-      - id: test
-        name: Test
-        run: ${{ inputs.test_command }}
+      - name: Lint
+        id: lint
+        run: |
+          echo "Running lint: ${{ inputs.lint }}"
+          ${{ inputs.lint }}
 
-      - name: Upload test report
+      - name: Typecheck
+        id: typecheck
+        if: inputs.typecheck != ''
+        run: |
+          echo "Running typecheck: ${{ inputs.typecheck }}"
+          ${{ inputs.typecheck }}
+
+      - name: Write manifest
+        if: always()
+        run: |
+          cat > static-analysis-manifest.json <<'EOF'
+          {
+            "commit": "${{ github.sha }}",
+            "ref": "${{ github.ref }}",
+            "timestamp": "TIMESTAMP_PLACEHOLDER",
+            "lint": "${{ steps.lint.outcome }}",
+            "typecheck": "${{ steps.typecheck.outcome || 'skipped' }}"
+          }
+          EOF
+          sed -i "s/TIMESTAMP_PLACEHOLDER/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" static-analysis-manifest.json
+
+      - name: Upload manifest
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-report
-          path: ${{ inputs.working_directory }}/${{ inputs.test_report_path }}
+          name: ci-static-analysis
+          path: ${{ inputs.working_directory }}/static-analysis-manifest.json
+          if-no-files-found: error
+
+  # ════════════════════════════════════════════════════════════════════════
+  # TEST
+  # ════════════════════════════════════════════════════════════════════════
+  test:
+    name: test${{ matrix.shard != 'none' && format(' ({0})', matrix.shard) || '' }}
+    needs: [setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      NODE_OPTIONS: ${{ inputs.node_options }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.test-matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: inputs.runtime == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.runtime_version }}
+          cache: 'yarn'
+          cache-dependency-path: '${{ inputs.working_directory }}/yarn.lock'
+
+      - name: Setup Python
+        if: inputs.runtime == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.runtime_version }}
+          cache: 'pip'
+
+      - name: System dependencies
+        if: inputs.pre_install != ''
+        run: |
+          echo "Installing system dependencies..."
+          if ! ${{ inputs.pre_install }}; then
+            echo ""
+            echo "::error::System dependency install failed: '${{ inputs.pre_install }}'"
+            echo "::error::This runs before everything else. Check that the packages exist and the command is valid for ubuntu-latest."
+            exit 1
+          fi
+
+      - name: Install (Node)
+        if: inputs.runtime == 'node' && inputs.install == ''
+        run: |
+          echo "Installing Node dependencies with yarn..."
+          if ! yarn install --frozen-lockfile 2>&1; then
+            echo ""
+            echo "::error::yarn install failed. Common causes:"
+            echo "::error::  - yarn.lock is out of sync with package.json (run 'yarn install' locally and commit yarn.lock)"
+            echo "::error::  - A private registry is unreachable (check .npmrc or .yarnrc)"
+            echo "::error::  - Node version mismatch (you requested ${{ inputs.runtime_version }}, check engines in package.json)"
+            exit 1
+          fi
+
+      - name: Install (custom)
+        if: inputs.install != ''
+        run: |
+          echo "Running custom install: ${{ inputs.install }}"
+          if ! ${{ inputs.install }}; then
+            echo ""
+            echo "::error::Custom install command failed: '${{ inputs.install }}'"
+            echo "::error::This command runs before tests. Fix it in your caller workflow."
+            exit 1
+          fi
+
+      - name: Start MongoDB
+        if: inputs.needs_mongo
+        uses: supercharge/mongodb-github-action@v1
+        with:
+          mongodb-version: '8.0'
+
+      - name: Verify MongoDB
+        if: inputs.needs_mongo
+        run: |
+          echo "Verifying MongoDB is reachable..."
+          for i in 1 2 3 4 5; do
+            if mongosh --eval "db.runCommand({ping:1})" --quiet 2>/dev/null; then
+              echo "MongoDB is up and responding."
+              exit 0
+            fi
+            echo "Attempt $i: MongoDB not ready, waiting 2s..."
+            sleep 2
+          done
+          echo ""
+          echo "::error::MongoDB failed to start after 10 seconds."
+          echo "::error::The supercharge/mongodb-github-action started but the server isn't responding on localhost:27017."
+          echo "::error::This is a CI infrastructure issue, not your code. Re-run the workflow."
+          exit 1
+
+      - name: Run tests
+        if: matrix.shard == 'none'
+        id: test-single
+        run: |
+          echo "Running tests: ${{ inputs.test }}"
+          ${{ inputs.test }}
+
+      - name: Shard test files
+        if: matrix.shard != 'none'
+        id: shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          TOTAL_SHARDS: ${{ inputs.test_shards }}
+          SHARD_GLOB: ${{ inputs.test_shard_glob }}
+        run: |
+          shopt -s globstar nullglob
+          ALL_FILES=$(printf '%s\n' ${SHARD_GLOB} | sort)
+          if [ -z "$ALL_FILES" ]; then
+            echo ""
+            echo "::error::No test files matched glob '${SHARD_GLOB}'"
+            echo "::error::Check test_shard_glob in your caller workflow. The glob is evaluated from the repo root."
+            echo "::error::Example: 'test/**/*.ts' matches all .ts files under test/"
+            echo ""
+            echo "Files in working directory:"
+            ls -la
+            exit 1
+          fi
+          TOTAL=$(echo "$ALL_FILES" | wc -l | tr -d ' ')
+          SHARD_SIZE=$(( (TOTAL + TOTAL_SHARDS - 1) / TOTAL_SHARDS ))
+          START=$(( SHARD_INDEX * SHARD_SIZE + 1 ))
+          SHARD_FILES=$(echo "$ALL_FILES" | sed -n "${START},$(( START + SHARD_SIZE - 1 ))p" | tr '\n' ' ')
+
+          if [ -z "$SHARD_FILES" ]; then
+            echo "::warning::Shard ${SHARD_INDEX} has no files (total files: $TOTAL, shards: $TOTAL_SHARDS). This shard will be skipped."
+            echo "files=" >> "$GITHUB_OUTPUT"
+          else
+            FILE_COUNT=$(echo "$SHARD_FILES" | wc -w | tr -d ' ')
+            echo "Shard ${SHARD_INDEX}/${TOTAL_SHARDS}: $FILE_COUNT files (lines ${START}-$(( START + SHARD_SIZE - 1 )) of $TOTAL)"
+            echo "files=$SHARD_FILES" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests (shard ${{ matrix.shard }})
+        if: matrix.shard != 'none' && steps.shard.outputs.files != ''
+        id: test-shard
+        env:
+          SHARD_FILES: ${{ steps.shard.outputs.files }}
+        run: |
+          echo "Running shard ${{ matrix.shard }} tests..."
+          echo "Files: $(echo $SHARD_FILES | wc -w | tr -d ' ') test files"
+          ${{ inputs.test_shard_command }}
+
+      - name: Write manifest
+        if: always()
+        run: |
+          TEST_OUTCOME="${{ steps.test-single.outcome || steps.test-shard.outcome }}"
+          # If outcome is empty (neither step ran), mark it explicitly
+          if [ -z "$TEST_OUTCOME" ]; then
+            TEST_OUTCOME="skipped"
+          fi
+          cat > test-manifest.json <<'EOF'
+          {
+            "commit": "${{ github.sha }}",
+            "ref": "${{ github.ref }}",
+            "shard": "${{ matrix.shard }}",
+            "timestamp": "TIMESTAMP_PLACEHOLDER",
+            "result": "RESULT_PLACEHOLDER"
+          }
+          EOF
+          sed -i "s/TIMESTAMP_PLACEHOLDER/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" test-manifest.json
+          sed -i "s/RESULT_PLACEHOLDER/${TEST_OUTCOME}/" test-manifest.json
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-report${{ matrix.shard != 'none' && format('-{0}', matrix.shard) || '' }}
+          path: |
+            ${{ inputs.working_directory }}/${{ inputs.test_report_path }}
+            ${{ inputs.working_directory }}/test-manifest.json
           if-no-files-found: warn
 
-      - id: build
-        name: Build
-        if: inputs.build_command != ''
-        run: ${{ inputs.build_command }}
+  # ════════════════════════════════════════════════════════════════════════
+  # BUILD + SIGN
+  # ════════════════════════════════════════════════════════════════════════
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      NODE_OPTIONS: ${{ inputs.node_options }}
+    steps:
+      - uses: actions/checkout@v4
 
-  # Static analysis gate — validates lint + typecheck with evidence.
-  static-analysis-gate:
-    needs: ci
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
-    with:
-      lint_result:      ${{ needs.ci.outputs.lint_result }}
-      lint_file_count:  ${{ needs.ci.outputs.lint_file_count }}
-      typecheck_result: ${{ needs.ci.outputs.typecheck_result }}
+      - name: Setup Node.js
+        if: inputs.runtime == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.runtime_version }}
+          cache: 'yarn'
+          cache-dependency-path: '${{ inputs.working_directory }}/yarn.lock'
 
-  # Test gate — downloads JUnit XML artifact, independently parses <testcase>
-  # elements. Does NOT trust caller-provided counts.
-  test-gate:
-    needs: ci
+      - name: Setup Python
+        if: inputs.runtime == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.runtime_version }}
+          cache: 'pip'
+
+      - name: System dependencies
+        if: inputs.pre_install != ''
+        run: |
+          echo "Installing system dependencies..."
+          if ! ${{ inputs.pre_install }}; then
+            echo ""
+            echo "::error::System dependency install failed: '${{ inputs.pre_install }}'"
+            echo "::error::Check that the packages exist and the command is valid for ubuntu-latest."
+            exit 1
+          fi
+
+      - name: Install (Node)
+        if: inputs.runtime == 'node' && inputs.install == ''
+        run: |
+          echo "Installing Node dependencies with yarn..."
+          if ! yarn install --frozen-lockfile 2>&1; then
+            echo ""
+            echo "::error::yarn install failed. Common causes:"
+            echo "::error::  - yarn.lock is out of sync with package.json (run 'yarn install' locally and commit yarn.lock)"
+            echo "::error::  - A private registry is unreachable (check .npmrc or .yarnrc)"
+            echo "::error::  - Node version mismatch (you requested ${{ inputs.runtime_version }}, check engines in package.json)"
+            exit 1
+          fi
+
+      - name: Install (custom)
+        if: inputs.install != ''
+        run: |
+          echo "Running custom install: ${{ inputs.install }}"
+          if ! ${{ inputs.install }}; then
+            echo ""
+            echo "::error::Custom install command failed: '${{ inputs.install }}'"
+            echo "::error::This command runs before the build. Fix it in your caller workflow."
+            exit 1
+          fi
+
+      - name: Build
+        id: build
+        run: |
+          echo "Running build: ${{ inputs.build }}"
+          ${{ inputs.build }}
+
+      - name: Sign build
+        run: |
+          BUILD_DIR="${{ inputs.build_output_dir }}"
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo ""
+            echo "::error::Build output directory '$BUILD_DIR' does not exist."
+            echo "::error::Your build command ('${{ inputs.build }}') succeeded but didn't produce output at '$BUILD_DIR'."
+            echo "::error::Either:"
+            echo "::error::  1. Set build_output_dir to match where your build actually writes files"
+            echo "::error::  2. Fix your build command to output to '$BUILD_DIR'"
+            echo ""
+            echo "Directories that DO exist:"
+            ls -d */ 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+
+          FILE_COUNT=$(find "$BUILD_DIR" -type f | wc -l | tr -d ' ')
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo ""
+            echo "::error::Build output directory '$BUILD_DIR' exists but is empty."
+            echo "::error::Your build command ran but produced no files. Check your build configuration."
+            exit 1
+          fi
+
+          echo "Signing build: $FILE_COUNT files in $BUILD_DIR"
+
+          # Hash every file in build output
+          find "$BUILD_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > build-checksums.txt
+
+          # Single digest of the entire build
+          BUILD_DIGEST=$(sha256sum build-checksums.txt | cut -d' ' -f1)
+
+          cat > build-manifest.json <<'EOF'
+          {
+            "commit": "${{ github.sha }}",
+            "ref": "${{ github.ref }}",
+            "timestamp": "TIMESTAMP_PLACEHOLDER",
+            "build_digest": "DIGEST_PLACEHOLDER",
+            "file_count": FILECOUNT_PLACEHOLDER,
+            "result": "${{ steps.build.outcome }}"
+          }
+          EOF
+          sed -i "s/TIMESTAMP_PLACEHOLDER/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" build-manifest.json
+          sed -i "s/DIGEST_PLACEHOLDER/${BUILD_DIGEST}/" build-manifest.json
+          sed -i "s/FILECOUNT_PLACEHOLDER/${FILE_COUNT}/" build-manifest.json
+
+          echo ""
+          echo "Build signed:"
+          echo "  commit:     ${{ github.sha }}"
+          echo "  digest:     ${BUILD_DIGEST}"
+          echo "  files:      ${FILE_COUNT}"
+
+      - name: Upload build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-build
+          path: |
+            ${{ inputs.working_directory }}/build-manifest.json
+            ${{ inputs.working_directory }}/build-checksums.txt
+          if-no-files-found: error
+
+  # ════════════════════════════════════════════════════════════════════════
+  # GATE — verify all evidence, produce the merge check
+  # ════════════════════════════════════════════════════════════════════════
+  gate:
+    name: gate
+    needs: [setup, static-analysis, test, build]
     if: always()
-    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
-    with:
-      test_result: ${{ needs.ci.outputs.test_result }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Download evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*
+          merge-multiple: false
+
+      - name: Verify
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+          SA_RESULT: ${{ needs.static-analysis.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          PASS=true
+          FAILURES=""
+
+          echo ""
+          echo "═══════════════════════════════════════════════════════"
+          echo "  CI GATE — sonarmd/workflows universal CI"
+          echo "  commit: ${EXPECTED_COMMIT:0:12}"
+          echo "═══════════════════════════════════════════════════════"
+          echo ""
+
+          # ── Job-level checks ──────────────────────────────────────
+          check_job() {
+            local name="$1" result="$2"
+            case "$result" in
+              success)
+                echo "  $name: passed"
+                ;;
+              failure)
+                echo "  $name: FAILED"
+                FAILURES="${FAILURES}\n  - $name failed. Check the '$name' job logs above for details."
+                PASS=false
+                ;;
+              cancelled)
+                echo "  $name: CANCELLED"
+                FAILURES="${FAILURES}\n  - $name was cancelled (timeout or manual cancel). Check if it hit the ${TIMEOUT:-10} minute limit."
+                PASS=false
+                ;;
+              skipped)
+                echo "  $name: SKIPPED"
+                FAILURES="${FAILURES}\n  - $name was skipped. This means a job it depends on failed first."
+                PASS=false
+                ;;
+              *)
+                echo "  $name: UNKNOWN ($result)"
+                FAILURES="${FAILURES}\n  - $name has unexpected status '$result'. This is a CI infrastructure issue."
+                PASS=false
+                ;;
+            esac
+          }
+
+          check_job "static-analysis" "$SA_RESULT"
+          check_job "test"            "$TEST_RESULT"
+          check_job "build"           "$BUILD_RESULT"
+          echo ""
+
+          # ── Manifest verification ─────────────────────────────────
+          echo "  Evidence verification:"
+
+          verify_commit() {
+            local file="$1" label="$2"
+            if [ ! -f "$file" ]; then
+              echo "    $label: MISSING"
+              FAILURES="${FAILURES}\n  - $label manifest not found at '$file'. The job may have crashed before writing it."
+              PASS=false
+              return
+            fi
+
+            # Validate JSON
+            if ! python3 -c "import json; json.load(open('$file'))" 2>/dev/null; then
+              echo "    $label: CORRUPT (invalid JSON)"
+              FAILURES="${FAILURES}\n  - $label manifest is not valid JSON. The job may have been killed mid-write."
+              PASS=false
+              return
+            fi
+
+            local got
+            got=$(python3 -c "import json; print(json.load(open('$file'))['commit'])" 2>/dev/null)
+            if [ $? -ne 0 ]; then
+              echo "    $label: CORRUPT (missing 'commit' field)"
+              FAILURES="${FAILURES}\n  - $label manifest exists but has no 'commit' field. Something overwrote or truncated it."
+              PASS=false
+              return
+            fi
+
+            if [ "$got" != "$EXPECTED_COMMIT" ]; then
+              echo "    $label: COMMIT MISMATCH (expected ${EXPECTED_COMMIT:0:12}, got ${got:0:12})"
+              FAILURES="${FAILURES}\n  - $label was built from commit ${got:0:12} but this PR is at ${EXPECTED_COMMIT:0:12}. This should never happen — it means the evidence is from a different run."
+              PASS=false
+            else
+              echo "    $label: ${got:0:12} OK"
+            fi
+          }
+
+          verify_commit "ci-static-analysis/static-analysis-manifest.json" "static-analysis"
+
+          TEST_MANIFESTS=$(find . -path '*/ci-test-report*/test-manifest.json' 2>/dev/null | sort)
+          if [ -z "$TEST_MANIFESTS" ]; then
+            echo "    test: NO MANIFESTS FOUND"
+            FAILURES="${FAILURES}\n  - No test manifests were uploaded. The test job may have crashed before the manifest step."
+            PASS=false
+          else
+            for manifest in $TEST_MANIFESTS; do
+              shard=$(python3 -c "import json; s=json.load(open('$manifest')).get('shard',''); print(f' (shard {s})' if s and s != 'none' else '')" 2>/dev/null)
+              verify_commit "$manifest" "test${shard}"
+            done
+          fi
+
+          verify_commit "ci-build/build-manifest.json" "build"
+
+          # ── Build digest ──────────────────────────────────────────
+          if [ -f ci-build/build-manifest.json ]; then
+            digest=$(python3 -c "import json; print(json.load(open('ci-build/build-manifest.json')).get('build_digest','???'))" 2>/dev/null)
+            files=$(python3 -c "import json; print(json.load(open('ci-build/build-manifest.json')).get('file_count','???'))" 2>/dev/null)
+            echo ""
+            echo "  Build artifact:"
+            echo "    digest: ${digest}"
+            echo "    files:  ${files}"
+          fi
+
+          # ── Verdict ───────────────────────────────────────────────
+          echo ""
+          echo "═══════════════════════════════════════════════════════"
+          if [ "$PASS" = true ]; then
+            echo "  PASSED — all checks green, all evidence verified"
+            echo "═══════════════════════════════════════════════════════"
+          else
+            echo "  FAILED"
+            echo "═══════════════════════════════════════════════════════"
+            echo ""
+            echo "  What went wrong:"
+            echo -e "$FAILURES"
+            echo ""
+            echo "  What to do:"
+            echo "    1. Read the error messages above"
+            echo "    2. Check the failing job's logs (click its name in the left sidebar)"
+            echo "    3. Fix the issue locally, push, and let CI re-run"
+            echo "    4. Do NOT re-run without fixing — the same thing will fail again"
+            echo ""
+            exit 1
+          fi
