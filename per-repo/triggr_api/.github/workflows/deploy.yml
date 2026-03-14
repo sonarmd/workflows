@@ -1,33 +1,204 @@
 name: Deploy
 
-# Verify CI attestation and notify Slack for Ansible/Hubot pickup.
-# Does NOT deploy directly — Hubot handles the actual deploy.
+# Single deploy workflow for all environments.
+# Environment is derived from the tag prefix — no separate files per env.
+#
+# Tag format:
+#   dev-api-<version>   →  deploy to dev
+#   stg-api-<version>   →  deploy to staging
+#   prd-api-<version>   →  deploy to production (requires GitHub Environment approval)
+#
+# The same build, config generation, and deployment steps run for every
+# environment. Only the values differ — resolved in the setup job below.
 
 on:
   push:
-    branches: [staging]
-    tags: ['v*']
+    tags:
+      - 'dev-api-*'
+      - 'stg-api-*'
+      - 'prd-api-*'
+
+permissions: {}
 
 concurrency:
-  group: deploy-api-${{ github.ref }}
+  group: deploy-api-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  deploy-dev:
-    if: github.ref == 'refs/heads/staging'
-    uses: sonarmd/workflows/.github/workflows/deploy.yml@main
+  # Parses the tag prefix and emits environment-specific values as outputs.
+  # Every downstream job consumes these — no env logic lives anywhere else.
+  setup:
+    name: Resolve environment
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      env:            ${{ steps.parse.outputs.env }}
+      s3-prefix:      ${{ steps.parse.outputs.s3-prefix }}
+      instance-tag:   ${{ steps.parse.outputs.instance-tag }}
+      slack-channel:  ${{ steps.parse.outputs.slack-channel }}
+      collect-metrics: ${{ steps.parse.outputs.collect-metrics }}
+    steps:
+      - id: parse
+        name: Parse tag → environment
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          case "$TAG" in
+            dev-api-*)
+              echo "env=dev"                         >> "$GITHUB_OUTPUT"
+              echo "s3-prefix=api/dev"               >> "$GITHUB_OUTPUT"
+              echo "instance-tag=APIDev"             >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops-dev"          >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=false"           >> "$GITHUB_OUTPUT"
+              ;;
+            stg-api-*)
+              echo "env=stg"                         >> "$GITHUB_OUTPUT"
+              echo "s3-prefix=api/stg"               >> "$GITHUB_OUTPUT"
+              echo "instance-tag=APIStaging"         >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops"              >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=true"            >> "$GITHUB_OUTPUT"
+              ;;
+            prd-api-*)
+              echo "env=prd"                         >> "$GITHUB_OUTPUT"
+              echo "s3-prefix=api/prd"               >> "$GITHUB_OUTPUT"
+              echo "instance-tag=APIPrd"             >> "$GITHUB_OUTPUT"
+              echo "slack-channel=#ops"              >> "$GITHUB_OUTPUT"
+              echo "collect-metrics=true"            >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unrecognized tag format: $TAG"
+              exit 1
+              ;;
+          esac
+          echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
+
+  build:
+    needs: setup
+    runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.env }}  # GitHub Environment — gates production with approval
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '18'
+
+      - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
+
+      - name: Build
+        run: yarn build
+
+      - name: Package artifact
+        run: tar czf api.tar.gz dist/ node_modules/ package.json
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload artifact to S3
+        run: |
+          aws s3 cp api.tar.gz \
+            "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/api.tar.gz"
+
+  # Build gate — validates the build succeeded before proceeding.
+  build-gate:
+    needs: build
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/build-gate.yml@main
     with:
-      environment: dev
-      app_name: triggr_api
+      build_result: ${{ needs.build.result }}
+
+  # Deploy gate — validates all prerequisites before deployment.
+  deploy-gate:
+    needs: build-gate
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
+    with:
+      # Deploy workflows are tag-triggered — CI gates already passed on the commit.
+      static_analysis_gate_result: success
+      test_gate_result:            success
+      build_gate_result:           ${{ needs.build-gate.outputs.gate_result }}
+
+  generate-config:
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        with:
+          export-env: true
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: sonarmd/workflows
+          sparse-checkout: templates/
+          path: _workflows
+
+      - name: Render configuration.json
+        run: |
+          export DEPLOY_TAG="${{ github.ref_name }}"
+          export DEPLOY_ENV="${{ needs.setup.outputs.env }}"
+          export SERVER_TYPE="Server"
+          envsubst < _workflows/templates/configuration.json.tpl > configuration.json
+          python3 -c "import json; json.load(open('configuration.json'))"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Upload config to S3
+        run: |
+          aws s3 cp configuration.json \
+            "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/configuration.json"
+
+  deploy:
+    needs: [setup, build, generate-config, deploy-gate]
+    if: needs.deploy-gate.outputs.gate_result == 'success'
+    uses: sonarmd/workflows/.github/workflows/deploy-api-ssm.yml@main
+    with:
+      environment:        ${{ needs.setup.outputs.env }}
+      artifact-s3-key:   ${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/api.tar.gz
+      config-s3-key:     ${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/configuration.json
+      deploy-tag:        ${{ github.ref_name }}
+      instance-tag-value: ${{ needs.setup.outputs.instance-tag }}
+      aws-role-arn:      ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+
+  notify:
+    needs: [setup, deploy]
+    if: always()
+    uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+    with:
+      status:      ${{ needs.deploy.result }}
+      environment: ${{ needs.setup.outputs.env }}
+      app-name:    triggr_api
+      tag:         ${{ github.ref_name }}
+      channel:     ${{ needs.setup.outputs.slack-channel }}
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-  deploy-stg:
-    if: startsWith(github.ref, 'refs/tags/v')
-    uses: sonarmd/workflows/.github/workflows/deploy.yml@main
+  metrics:
+    needs: [setup, deploy]
+    if: always() && needs.setup.outputs.collect-metrics == 'true'
+    uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main
+    permissions:
+      id-token: write
+      contents: read
     with:
-      environment: stg
-      app_name: triggr_api
-      version: ${{ github.ref_name }}
-    secrets:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      repo:        sonarmd/triggr_api
+      environment: ${{ needs.setup.outputs.env }}
+      tag:         ${{ github.ref_name }}
+      status:      ${{ needs.deploy.result }}
+      started:     ${{ github.event.head_commit.timestamp }}
+      aws-role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
