@@ -1,9 +1,18 @@
 name: CI Sign
 description: |
   Signs a CI attestation and generates a CycloneDX SBOM.
-  Add this as the LAST step in your CI workflow.
-  If all prior steps passed, this writes and uploads signed evidence.
-  The org-level gate checks for this attestation — no attestation, no merge.
+  Add this as the LAST step in your CI workflow with `if: always()`.
+
+  On success: writes attestation + SBOM + build digest + summary.
+  On failure: pulls failed step details from the GitHub API and writes
+  an error report to the job summary so you can see what broke without
+  clicking into log output.
+
+  Example:
+    - uses: sonarmd/workflows/actions/ci-sign@main
+      if: always()
+      with:
+        build_output_dir: dist
 
 inputs:
   build_output_dir:
@@ -17,7 +26,127 @@ inputs:
 runs:
   using: composite
   steps:
+    # ── FAILURE PATH ──────────────────────────────────────────────
+    # If any prior step failed, pull the details and write an error
+    # summary. Do NOT produce an attestation — gate will block.
+    - name: Report failure
+      if: failure()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        mkdir -p /tmp/ci-evidence
+
+        echo "ci-sign: CI failed — generating error report"
+
+        # Get all jobs for this run, find the current job's failed steps
+        REPORT=$(python3 <<'PYEOF'
+        import json, os, urllib.request
+
+        repo = os.environ["REPO"]
+        run_id = os.environ["RUN_ID"]
+        token = os.environ["GH_TOKEN"]
+
+        url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=30"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json"
+        })
+
+        try:
+            data = json.loads(urllib.request.urlopen(req).read())
+        except Exception as e:
+            print(f"Failed to fetch job data: {e}")
+            exit(0)
+
+        lines = []
+        for job in data.get("jobs", []):
+            if job.get("conclusion") != "failure":
+                continue
+
+            lines.append(f"### Job: {job['name']}")
+            lines.append("")
+            lines.append("| Step | Status | Duration |")
+            lines.append("|------|--------|----------|")
+
+            for step in job.get("steps", []):
+                name = step["name"]
+                conclusion = step.get("conclusion", "—")
+                started = step.get("started_at", "")
+                completed = step.get("completed_at", "")
+
+                # Calculate duration
+                duration = "—"
+                if started and completed:
+                    from datetime import datetime
+                    try:
+                        s = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        e = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+                        secs = int((e - s).total_seconds())
+                        if secs >= 60:
+                            duration = f"{secs // 60}m {secs % 60}s"
+                        else:
+                            duration = f"{secs}s"
+                    except:
+                        pass
+
+                if conclusion == "failure":
+                    lines.append(f"| **{name}** | FAILED | {duration} |")
+                elif conclusion == "success":
+                    lines.append(f"| {name} | passed | {duration} |")
+                elif conclusion == "skipped":
+                    lines.append(f"| {name} | skipped | — |")
+                else:
+                    lines.append(f"| {name} | {conclusion} | {duration} |")
+
+            # Get the log URL for failed steps
+            lines.append("")
+            log_url = job.get("html_url", "")
+            if log_url:
+                lines.append(f"[View full log]({log_url})")
+            lines.append("")
+
+        print("\n".join(lines) if lines else "Could not determine which step failed.")
+        PYEOF
+        )
+
+        # Also try to grab annotations (error messages from ::error::)
+        ANNOTATIONS=$(gh api \
+          "repos/$REPO/check-runs?head_sha=${{ github.sha }}&status=completed&filter=latest" \
+          --jq '.check_runs[]
+                | select(.conclusion == "failure")
+                | .output.annotations[]?
+                | select(.annotation_level == "failure")
+                | "- **\(.path // .title // "error")**: \(.message)"' \
+          2>/dev/null | head -20 || true)
+
+        cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+        ### CI Failed
+
+        | | |
+        |--|--|
+        | Commit | \`${{ github.sha }}\` |
+        | Repository | $REPO |
+        | Run | [#${RUN_ID}](${{ github.server_url }}/$REPO/actions/runs/$RUN_ID) |
+
+        $REPORT
+
+        $(if [ -n "$ANNOTATIONS" ]; then
+          echo "#### Error Messages"
+          echo ""
+          echo "$ANNOTATIONS"
+        fi)
+
+        > No attestation was produced. Fix the errors above and push again.
+        SUMMARY
+
+        echo "ci-sign: error report written to job summary"
+
+    # ── SUCCESS PATH ──────────────────────────────────────────────
     - name: Generate SBOM
+      if: success()
       shell: bash
       run: |
         mkdir -p /tmp/ci-evidence
@@ -54,11 +183,11 @@ runs:
           DEP_COUNT=0
         fi
 
-        # Export for the attestation step
         echo "BOM_DIGEST=$BOM_DIGEST" >> "$GITHUB_ENV"
         echo "DEP_COUNT=$DEP_COUNT" >> "$GITHUB_ENV"
 
     - name: Hash build output
+      if: success()
       shell: bash
       env:
         BUILD_DIR: ${{ inputs.build_output_dir }}
@@ -76,6 +205,7 @@ runs:
         echo "BUILD_FILE_COUNT=$FILE_COUNT" >> "$GITHUB_ENV"
 
     - name: Sign attestation
+      if: success()
       shell: bash
       run: |
         cat > /tmp/ci-evidence/attestation.json <<EOF
@@ -96,20 +226,19 @@ runs:
         EOF
         echo "ci-sign: attestation written for ${{ github.repository }}@${GITHUB_SHA:0:12}"
 
-    - name: Write job summary
+    - name: Write success summary
+      if: success()
       shell: bash
       run: |
         COMMIT="${{ github.sha }}"
         REPO="${{ github.repository }}"
 
-        # Build info line
         if [ -n "$BUILD_DIGEST" ]; then
           BUILD_LINE="| Build | $BUILD_FILE_COUNT files | \`${BUILD_DIGEST:0:24}...\` |"
         else
           BUILD_LINE="| Build | — | no build artifact |"
         fi
 
-        # SBOM info line
         if [ -n "$BOM_DIGEST" ]; then
           SBOM_LINE="| SBOM | $DEP_COUNT components | \`${BOM_DIGEST:0:24}...\` |"
         else
@@ -132,6 +261,7 @@ runs:
         SUMMARY
 
     - name: Upload evidence
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: ci-attestation

@@ -51,8 +51,9 @@ jobs:
       - run: yarn test
       - run: yarn build
 
-      # === ci-sign — MUST be last ===
+      # === ci-sign — MUST be last, always runs ===
       - uses: sonarmd/workflows/actions/ci-sign@main
+        if: always()
 ```
 
 That's it. The gate runs automatically.
@@ -104,6 +105,7 @@ jobs:
           LOG_LEVEL: none
           TZ: utc
       - uses: sonarmd/workflows/actions/ci-sign@main
+        if: always()
 ```
 
 ### frontend
@@ -140,6 +142,7 @@ jobs:
       - run: yarn lint
       - run: yarn just-test
       - uses: sonarmd/workflows/actions/ci-sign@main
+        if: always()
 ```
 
 ### frontend-patient-app
@@ -173,6 +176,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: yarn test --ci --passWithNoTests
       - uses: sonarmd/workflows/actions/ci-sign@main
+        if: always()
 ```
 
 ## Structure
