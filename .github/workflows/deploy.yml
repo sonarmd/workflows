@@ -198,3 +198,19 @@ jobs:
           echo "  channel: ${{ inputs.slack_channel }}"
           echo "  message: $DEPLOY_MSG"
           echo "============================================="
+
+          # Job summary
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ### Deploy: $APP_NAME → $ENVIRONMENT
+
+          | | Detail |
+          |--|--------|
+          | App | $APP_NAME |
+          | Environment | $ENVIRONMENT |
+          | Version | \`$VERSION\` |
+          | Commit | \`${COMMIT:0:12}\` |
+          | Channel | ${{ inputs.slack_channel }} |
+          | Triggered by | $ACTOR |
+
+          > Slack message: \`$DEPLOY_MSG\`
+          SUMMARY

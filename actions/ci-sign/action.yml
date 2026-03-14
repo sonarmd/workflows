@@ -96,6 +96,41 @@ runs:
         EOF
         echo "ci-sign: attestation written for ${{ github.repository }}@${GITHUB_SHA:0:12}"
 
+    - name: Write job summary
+      shell: bash
+      run: |
+        COMMIT="${{ github.sha }}"
+        REPO="${{ github.repository }}"
+
+        # Build info line
+        if [ -n "$BUILD_DIGEST" ]; then
+          BUILD_LINE="| Build | $BUILD_FILE_COUNT files | \`${BUILD_DIGEST:0:24}...\` |"
+        else
+          BUILD_LINE="| Build | — | no build artifact |"
+        fi
+
+        # SBOM info line
+        if [ -n "$BOM_DIGEST" ]; then
+          SBOM_LINE="| SBOM | $DEP_COUNT components | \`${BOM_DIGEST:0:24}...\` |"
+        else
+          SBOM_LINE="| SBOM | — | not generated |"
+        fi
+
+        cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+        ### CI Attestation
+
+        | | Detail | Digest |
+        |--|--------|--------|
+        | Commit | \`${COMMIT:0:12}\` | — |
+        | Repository | $REPO | — |
+        $BUILD_LINE
+        $SBOM_LINE
+
+        > Signed at $(date -u +%Y-%m-%dT%H:%M:%SZ) by \`${{ github.actor }}\`
+        >
+        > Schema: \`sonarmd/ci-attestation/v1\`
+        SUMMARY
+
     - name: Upload evidence
       uses: actions/upload-artifact@v4
       with:

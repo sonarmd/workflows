@@ -158,3 +158,30 @@ jobs:
           echo "============================================="
           echo "  PASSED"
           echo "============================================="
+
+          # Job summary — visible on the Actions dashboard
+          if [ -n "$SBOM_DIGEST" ]; then
+            SBOM_SUMMARY="$SBOM_COMPONENTS components — digest verified"
+          else
+            SBOM_SUMMARY="not generated"
+          fi
+
+          if [ -n "$BUILD_DIGEST" ]; then
+            BUILD_SUMMARY="$BUILD_FILES files — \`${BUILD_DIGEST:0:24}...\`"
+          else
+            BUILD_SUMMARY="no build artifact"
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ### Gate: PASSED
+
+          | Check | Result |
+          |-------|--------|
+          | Commit | \`${GOT_COMMIT:0:12}\` verified |
+          | Repository | $GOT_REPO verified |
+          | Schema | \`$SCHEMA\` |
+          | SBOM | $SBOM_SUMMARY |
+          | Build | $BUILD_SUMMARY |
+          | Signed | $TIMESTAMP |
+          | Actor | $ACTOR |
+          SUMMARY
