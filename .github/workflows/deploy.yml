@@ -1,0 +1,200 @@
+name: Deploy
+
+# Verifies the CI attestation, then pings Slack so Ansible/Hubot picks it up.
+#
+# This does NOT deploy anything. It validates the attestation from ci-sign,
+# confirms the build matches the signed commit, and posts to #ops in the
+# format Hubot expects: @r2-d2 deploy <env> <version> <artifact_url>
+#
+# Usage (from a per-repo deploy workflow):
+#
+#   on:
+#     push:
+#       branches: [staging]           # deploy on merge to staging
+#       tags: ['v*']                  # or on version tag
+#
+#   jobs:
+#     deploy:
+#       uses: sonarmd/workflows/.github/workflows/deploy.yml@main
+#       with:
+#         environment: dev            # dev | stg | prd
+#         app_name: triggr_api
+#       secrets:
+#         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment: dev, stg, or prd'
+        required: true
+        type: string
+
+      app_name:
+        description: 'Application name (e.g. triggr_api, admin, provider)'
+        required: true
+        type: string
+
+      version:
+        description: 'Version string. Defaults to short SHA if not provided.'
+        required: false
+        type: string
+        default: ''
+
+      slack_channel:
+        description: 'Slack channel for deploy notification'
+        required: false
+        type: string
+        default: '#ops'
+
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: true
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    steps:
+      - name: Validate inputs
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "$ENVIRONMENT" in
+            dev|stg|prd) ;;
+            *) echo "::error::environment must be dev, stg, or prd — got '$ENVIRONMENT'"; exit 1 ;;
+          esac
+
+      - name: Verify CI attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo ""
+          echo "============================================="
+          echo "  DEPLOY VERIFICATION"
+          echo "  repo:   $REPO"
+          echo "  commit: ${EXPECTED_COMMIT:0:12}"
+          echo "  env:    ${{ inputs.environment }}"
+          echo "============================================="
+          echo ""
+
+          # Find the attestation artifact for this commit
+          ARTIFACT_URL=$(gh api \
+            "repos/$REPO/actions/artifacts?name=ci-attestation&per_page=5" \
+            --jq ".artifacts[]
+                   | select(.workflow_run.head_sha == \"$EXPECTED_COMMIT\")
+                   | .archive_download_url" \
+            2>/dev/null | head -1)
+
+          if [ -z "$ARTIFACT_URL" ]; then
+            echo "::error::No CI attestation found for commit ${EXPECTED_COMMIT:0:12}."
+            echo "::error::CI must pass before deploy. Check that ci-sign ran in your CI workflow."
+            exit 1
+          fi
+
+          # Download and verify
+          gh api "$ARTIFACT_URL" > /tmp/attestation.zip 2>/dev/null
+          cd /tmp && unzip -qo attestation.zip
+
+          if [ ! -f attestation.json ]; then
+            echo "::error::Attestation archive is corrupt — no attestation.json"
+            exit 1
+          fi
+
+          # Verify commit
+          GOT_COMMIT=$(python3 -c "import json; print(json.load(open('attestation.json'))['commit'])")
+          GOT_REPO=$(python3 -c "import json; print(json.load(open('attestation.json'))['repository'])")
+          SCHEMA=$(python3 -c "import json; print(json.load(open('attestation.json')).get('schema','unknown'))")
+          TIMESTAMP=$(python3 -c "import json; print(json.load(open('attestation.json'))['timestamp'])")
+
+          if [ "$SCHEMA" != "sonarmd/ci-attestation/v1" ]; then
+            echo "::error::Invalid attestation schema: $SCHEMA"
+            exit 1
+          fi
+
+          if [ "$GOT_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "::error::Attestation commit mismatch: expected ${EXPECTED_COMMIT:0:12}, got ${GOT_COMMIT:0:12}"
+            exit 1
+          fi
+
+          if [ "$GOT_REPO" != "$REPO" ]; then
+            echo "::error::Attestation repo mismatch: expected $REPO, got $GOT_REPO"
+            exit 1
+          fi
+
+          echo "  attestation: verified"
+          echo "  commit:      ${GOT_COMMIT:0:12}"
+          echo "  signed:      $TIMESTAMP"
+          echo "  schema:      $SCHEMA"
+          echo ""
+          echo "  CI passed. Cleared for deploy."
+          echo "============================================="
+
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          APP_NAME: ${{ inputs.app_name }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${COMMIT:0:12}"
+          fi
+
+          ARTIFACT_URL="$RUN_URL"
+
+          # Post in the format Hubot expects
+          DEPLOY_MSG="@r2-d2 deploy $ENVIRONMENT $VERSION $ARTIFACT_URL"
+
+          PAYLOAD=$(jq -n \
+            --arg channel "${{ inputs.slack_channel }}" \
+            --arg deploy_msg "$DEPLOY_MSG" \
+            --arg app "$APP_NAME" \
+            --arg env "$ENVIRONMENT" \
+            --arg version "$VERSION" \
+            --arg commit "${COMMIT:0:12}" \
+            --arg actor "$ACTOR" \
+            --arg run_url "$RUN_URL" \
+            '{
+              channel: $channel,
+              text: $deploy_msg,
+              attachments: [{
+                color: "#36a64f",
+                fallback: ("Deploy " + $app + " " + $version + " to " + $env),
+                title: ("Deploy: " + $app),
+                fields: [
+                  {title: "Environment", value: $env, short: true},
+                  {title: "Version", value: ("`" + $version + "`"), short: true},
+                  {title: "Commit", value: ("`" + $commit + "`"), short: true},
+                  {title: "Triggered by", value: $actor, short: true}
+                ],
+                actions: [{type: "button", text: "View Run", url: $run_url}]
+              }]
+            }')
+
+          if ! curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL"; then
+            echo "::error::Failed to send Slack notification. Check SLACK_WEBHOOK_URL secret."
+            exit 1
+          fi
+
+          echo ""
+          echo "============================================="
+          echo "  DEPLOY NOTIFICATION SENT"
+          echo "  channel: ${{ inputs.slack_channel }}"
+          echo "  message: $DEPLOY_MSG"
+          echo "============================================="
