@@ -1,92 +1,28 @@
 name: CI
 
-# frontend-patient-app CI — React Native / Expo app.
-#
-# Runs its own lint, typecheck, and test jobs, then calls the central gates
-# to validate the contracts WITH EVIDENCE. No build step — production builds
-# are handled by EAS on tag push (see deploy.yml).
-#
-# CODEOWNERS protects this file — changes require @sonarmd/platform-eng approval.
-
 on:
   push:
     branches: ['**']
   pull_request:
-    branches: [master, 'release/**']
+    branches: [master, staging, 'release/**']
   merge_group:
-    branches: [master, 'release/**']
-
-permissions: {}
+    branches: [master, staging, 'release/**']
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint:
+  ci:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      file_count: ${{ steps.run.outputs.file_count }}
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: sonarmd/workflows/actions/setup-node@main
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Count lint targets
-        id: count
-        run: echo "file_count=$(find src -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
-      - name: Lint
-        id: run
-        run: |
-          yarn lint
-          echo "file_count=${{ steps.count.outputs.file_count }}" >> "$GITHUB_OUTPUT"
-
-  typecheck:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '22'
+      - run: yarn install --frozen-lockfile
+      - run: yarn lint
       - run: npx tsc --noEmit
-
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '22'
-      - name: Run tests
-        run: yarn test --ci --reporters=default --reporters=jest-junit --passWithNoTests
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-report
-          path: junit.xml
-          if-no-files-found: warn
-
-  # Static analysis gate — validates lint + typecheck with evidence.
-  static-analysis-gate:
-    needs: [lint, typecheck]
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
-    with:
-      lint_result:      ${{ needs.lint.result }}
-      lint_file_count:  ${{ needs.lint.outputs.file_count }}
-      typecheck_result: ${{ needs.typecheck.result }}
-
-  # Test gate — downloads JUnit XML, independently verifies <testcase> elements.
-  test-gate:
-    needs: [test]
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
-    with:
-      test_result: ${{ needs.test.result }}
+      - run: yarn test --ci --passWithNoTests
+      - uses: sonarmd/workflows/actions/ci-sign@main

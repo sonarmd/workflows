@@ -53,17 +53,16 @@ name: CI
 #     ci:
 #       uses: sonarmd/workflows/.github/workflows/ci.yml@main
 #       with:
-#         runtime:            node
-#         runtime_version:    '22'
-#         pre_install:        sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
-#         lint:               yarn lint
-#         test:               'unused — see test_shard_command'
-#         test_shards:        4
-#         test_shard_glob:    'test/**/*.ts'
-#         test_shard_command: ./node_modules/.bin/mocha --require @swc-node/register --exit --timeout 10000 $SHARD_FILES
-#         build:              yarn build
-#         needs_mongo:        true
-#         node_options:       '--max-old-space-size=4096'
+#         runtime:         node
+#         runtime_version: '18'
+#         pre_install:     sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
+#         lint:            yarn lint
+#         test:            ./node_modules/.bin/mocha --require @swc-node/register --exit --timeout 10000
+#         test_shards:     4
+#         test_shard_glob: 'test/**/*.ts'
+#         build:           yarn build
+#         needs_mongo:     true
+#         node_options:    '--max-old-space-size=4096'
 
 on:
   workflow_call:
@@ -148,12 +147,6 @@ on:
         type: number
         default: 1
 
-      test_shard_command:
-        description: 'Shard test command. Use $SHARD_FILES placeholder.'
-        required: false
-        type: string
-        default: ''
-
       test_shard_glob:
         description: 'Glob for test files to shard (e.g. test/**/*.ts).'
         required: false
@@ -194,7 +187,6 @@ jobs:
           TEST: ${{ inputs.test }}
           BUILD: ${{ inputs.build }}
           TEST_SHARDS: ${{ inputs.test_shards }}
-          TEST_SHARD_CMD: ${{ inputs.test_shard_command }}
           TEST_SHARD_GLOB: ${{ inputs.test_shard_glob }}
           TIMEOUT: ${{ inputs.timeout }}
         run: |
@@ -217,9 +209,8 @@ jobs:
           [ -n "$TEST" ]  || err "test command is required. Example: 'yarn test --ci --forceExit' or 'pytest --junitxml=junit.xml'"
           [ -n "$BUILD" ] || err "build command is required. Example: 'yarn build' or 'python -m build'"
 
-          # Sharding: if shards > 1, shard_command and shard_glob are required
+          # Sharding: if shards > 1, shard_glob is required
           if [ "$TEST_SHARDS" -gt 1 ] 2>/dev/null; then
-            [ -n "$TEST_SHARD_CMD" ]  || err "test_shard_command is required when test_shards > 1. Use \$SHARD_FILES placeholder for the file list."
             [ -n "$TEST_SHARD_GLOB" ] || err "test_shard_glob is required when test_shards > 1. Example: 'test/**/*.ts'"
           fi
 
@@ -498,7 +489,7 @@ jobs:
         run: |
           echo "Running shard ${{ matrix.shard }} tests..."
           echo "Files: $(echo $SHARD_FILES | wc -w | tr -d ' ') test files"
-          ${{ inputs.test_shard_command }}
+          ${{ inputs.test }} $SHARD_FILES
 
       - name: Write manifest
         if: always()

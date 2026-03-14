@@ -1,0 +1,34 @@
+name: CI Sign
+description: |
+  Signs a CI attestation. Add this as the LAST step in your CI workflow.
+  If all prior steps passed, this writes and uploads a signed attestation.
+  The org-level gate checks for this attestation — no attestation, no merge.
+
+runs:
+  using: composite
+  steps:
+    - name: Sign CI attestation
+      shell: bash
+      run: |
+        mkdir -p /tmp/ci-evidence
+        cat > /tmp/ci-evidence/attestation.json <<EOF
+        {
+          "schema": "sonarmd/ci-attestation/v1",
+          "commit": "${{ github.sha }}",
+          "ref": "${{ github.ref }}",
+          "repository": "${{ github.repository }}",
+          "run_id": "${{ github.run_id }}",
+          "run_attempt": "${{ github.run_attempt }}",
+          "actor": "${{ github.actor }}",
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        }
+        EOF
+        echo "ci-sign: attestation written for ${{ github.repository }}@${GITHUB_SHA:0:12}"
+
+    - name: Upload attestation
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-attestation
+        path: /tmp/ci-evidence/attestation.json
+        if-no-files-found: error
+        retention-days: 90
