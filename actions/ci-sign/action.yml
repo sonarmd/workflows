@@ -1,16 +1,83 @@
 name: CI Sign
 description: |
-  Signs a CI attestation. Add this as the LAST step in your CI workflow.
-  If all prior steps passed, this writes and uploads a signed attestation.
+  Signs a CI attestation and generates a CycloneDX SBOM.
+  Add this as the LAST step in your CI workflow.
+  If all prior steps passed, this writes and uploads signed evidence.
   The org-level gate checks for this attestation — no attestation, no merge.
+
+inputs:
+  build_output_dir:
+    description: |
+      Directory containing build output. If provided, every file gets
+      hashed into a digest included in the attestation. Omit for projects
+      with no build artifact (infra repos, mobile apps built via EAS).
+    required: false
+    default: ''
 
 runs:
   using: composite
   steps:
-    - name: Sign CI attestation
+    - name: Generate SBOM
       shell: bash
       run: |
         mkdir -p /tmp/ci-evidence
+
+        # Node project — generate CycloneDX SBOM
+        if [ -f package.json ]; then
+          echo "ci-sign: generating CycloneDX SBOM..."
+          if npx --yes @cyclonedx/cyclonedx-npm --output-file /tmp/ci-evidence/bom.json 2>/dev/null; then
+            BOM_DIGEST=$(sha256sum /tmp/ci-evidence/bom.json | cut -d' ' -f1)
+            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
+            echo "ci-sign: SBOM generated — $DEP_COUNT components, digest ${BOM_DIGEST:0:16}..."
+          else
+            echo "::warning::ci-sign: CycloneDX generation failed — SBOM will be empty"
+            BOM_DIGEST=""
+            DEP_COUNT=0
+          fi
+
+        # Python project
+        elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+          echo "ci-sign: generating CycloneDX SBOM (Python)..."
+          if pip install --quiet cyclonedx-bom 2>/dev/null && cyclonedx-py environment --output /tmp/ci-evidence/bom.json --format json 2>/dev/null; then
+            BOM_DIGEST=$(sha256sum /tmp/ci-evidence/bom.json | cut -d' ' -f1)
+            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
+            echo "ci-sign: SBOM generated — $DEP_COUNT components, digest ${BOM_DIGEST:0:16}..."
+          else
+            echo "::warning::ci-sign: CycloneDX generation failed — SBOM will be empty"
+            BOM_DIGEST=""
+            DEP_COUNT=0
+          fi
+
+        else
+          echo "ci-sign: no package.json or requirements.txt — skipping SBOM"
+          BOM_DIGEST=""
+          DEP_COUNT=0
+        fi
+
+        # Export for the attestation step
+        echo "BOM_DIGEST=$BOM_DIGEST" >> "$GITHUB_ENV"
+        echo "DEP_COUNT=$DEP_COUNT" >> "$GITHUB_ENV"
+
+    - name: Hash build output
+      shell: bash
+      env:
+        BUILD_DIR: ${{ inputs.build_output_dir }}
+      run: |
+        if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR" ]; then
+          FILE_COUNT=$(find "$BUILD_DIR" -type f | wc -l | tr -d ' ')
+          find "$BUILD_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/ci-evidence/build-checksums.txt
+          BUILD_DIGEST=$(sha256sum /tmp/ci-evidence/build-checksums.txt | cut -d' ' -f1)
+          echo "ci-sign: build signed — $FILE_COUNT files, digest ${BUILD_DIGEST:0:16}..."
+        else
+          FILE_COUNT=0
+          BUILD_DIGEST=""
+        fi
+        echo "BUILD_DIGEST=$BUILD_DIGEST" >> "$GITHUB_ENV"
+        echo "BUILD_FILE_COUNT=$FILE_COUNT" >> "$GITHUB_ENV"
+
+    - name: Sign attestation
+      shell: bash
+      run: |
         cat > /tmp/ci-evidence/attestation.json <<EOF
         {
           "schema": "sonarmd/ci-attestation/v1",
@@ -20,15 +87,19 @@ runs:
           "run_id": "${{ github.run_id }}",
           "run_attempt": "${{ github.run_attempt }}",
           "actor": "${{ github.actor }}",
-          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "sbom_digest": "$BOM_DIGEST",
+          "sbom_components": $DEP_COUNT,
+          "build_digest": "$BUILD_DIGEST",
+          "build_file_count": $BUILD_FILE_COUNT
         }
         EOF
         echo "ci-sign: attestation written for ${{ github.repository }}@${GITHUB_SHA:0:12}"
 
-    - name: Upload attestation
+    - name: Upload evidence
       uses: actions/upload-artifact@v4
       with:
         name: ci-attestation
-        path: /tmp/ci-evidence/attestation.json
+        path: /tmp/ci-evidence/
         if-no-files-found: error
         retention-days: 90

@@ -117,12 +117,43 @@ jobs:
 
           TIMESTAMP=$(python3 -c "import json; print(json.load(open('attestation.json'))['timestamp'])")
           ACTOR=$(python3 -c "import json; print(json.load(open('attestation.json')).get('actor','unknown'))")
+          SBOM_DIGEST=$(python3 -c "import json; print(json.load(open('attestation.json')).get('sbom_digest',''))" 2>/dev/null)
+          SBOM_COMPONENTS=$(python3 -c "import json; print(json.load(open('attestation.json')).get('sbom_components',0))" 2>/dev/null)
+          BUILD_DIGEST=$(python3 -c "import json; print(json.load(open('attestation.json')).get('build_digest',''))" 2>/dev/null)
+          BUILD_FILES=$(python3 -c "import json; print(json.load(open('attestation.json')).get('build_file_count',0))" 2>/dev/null)
 
           echo "  commit:  ${GOT_COMMIT:0:12} verified"
           echo "  repo:    $GOT_REPO verified"
           echo "  schema:  $SCHEMA"
           echo "  signed:  $TIMESTAMP"
           echo "  actor:   $ACTOR"
+
+          # SBOM verification
+          if [ -n "$SBOM_DIGEST" ]; then
+            # Verify the BOM file exists and its digest matches
+            if [ -f bom.json ]; then
+              ACTUAL_BOM_DIGEST=$(sha256sum bom.json | cut -d' ' -f1)
+              if [ "$ACTUAL_BOM_DIGEST" = "$SBOM_DIGEST" ]; then
+                echo "  sbom:    $SBOM_COMPONENTS components, digest verified"
+              else
+                echo "  sbom:    DIGEST MISMATCH (attestation: ${SBOM_DIGEST:0:16}, actual: ${ACTUAL_BOM_DIGEST:0:16})"
+                exit 1
+              fi
+            else
+              echo "  sbom:    referenced in attestation but bom.json missing from artifact"
+              exit 1
+            fi
+          else
+            echo "  sbom:    not generated (no package manager detected)"
+          fi
+
+          # Build digest
+          if [ -n "$BUILD_DIGEST" ]; then
+            echo "  build:   $BUILD_FILES files, digest ${BUILD_DIGEST:0:16}..."
+          else
+            echo "  build:   no build artifact"
+          fi
+
           echo ""
           echo "============================================="
           echo "  PASSED"
