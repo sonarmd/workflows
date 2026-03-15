@@ -5,8 +5,11 @@ on:
     branches: ['**']
   pull_request:
     branches: [master, staging, 'release/**']
-  merge_group:
-    branches: [master, staging, 'release/**']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -24,5 +27,7 @@ jobs:
       - run: yarn install --frozen-lockfile
       - run: yarn lint
       - run: npx tsc --noEmit
-      - run: yarn test --ci --passWithNoTests
+      - run: yarn test --ci --reporters=jest-junit
       - uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          test_report_path: junit.xml

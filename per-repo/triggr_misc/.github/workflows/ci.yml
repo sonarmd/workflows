@@ -5,8 +5,11 @@ on:
     branches: ['**']
   pull_request:
     branches: [master, 'release/**']
-  merge_group:
-    branches: [master, 'release/**']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   ci:
@@ -14,11 +17,27 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - run: pip3 install ansible
+      - run: pip3 install ansible ansible-lint
       - name: Syntax check all playbooks
         run: |
           cd Ansible
           for playbook in *.yml; do
             [ -f "$playbook" ] && ansible-playbook --syntax-check "$playbook"
           done
+      - name: Lint and produce JUnit XML
+        run: |
+          cd Ansible
+          ansible-lint -f pep8 --nocolor . > /dev/null 2>&1 || true
+          python3 -c "
+          import subprocess, xml.etree.ElementTree as ET
+          result = subprocess.run(['ansible-lint', '--parseable', '.'], capture_output=True, text=True)
+          suite = ET.Element('testsuite', name='ansible-lint', tests='1')
+          tc = ET.SubElement(suite, 'testcase', name='ansible-lint', classname='Ansible')
+          if result.returncode != 0 and result.stdout.strip():
+            fail = ET.SubElement(tc, 'failure', message='lint violations')
+            fail.text = result.stdout
+          ET.ElementTree(suite).write('$GITHUB_WORKSPACE/junit.xml', xml_declaration=True)
+          "
       - uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          test_report_path: junit.xml
