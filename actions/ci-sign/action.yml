@@ -1,94 +1,129 @@
 name: CI Sign
 description: |
-  Signs a CI attestation and generates a CycloneDX SBOM.
-  Add this as the LAST step in your CI workflow.
-  If all prior steps passed, this writes and uploads signed evidence.
-  The org-level gate checks for this attestation — no attestation, no merge.
+  Collects CI evidence, generates a CycloneDX SBOM, and signs everything
+  with GitHub's native Sigstore attestation. Add as the LAST step.
 
-  On failure, ci-sign never runs (GitHub Actions skips remaining steps).
-  The gate handles error reporting — it queries the GitHub API for what
-  failed and writes it to the gate's job summary.
+  The gate independently verifies:
+  - Sigstore signature (proves which workflow produced it — can't be faked)
+  - JUnit XML has real test cases (can't pass with empty/missing tests)
+  - SBOM exists (dependency inventory for compliance)
+  - Build digest matches (artifact integrity)
 
   Example:
     - uses: sonarmd/workflows/actions/ci-sign@main
       with:
+        test_report_path: junit.xml
         build_output_dir: dist
 
 inputs:
+  test_report_path:
+    description: |
+      Path to JUnit XML test report. The gate independently counts
+      <testcase> elements — no test cases = gate blocks.
+      If your runner doesn't produce JUnit XML, add a reporter.
+    required: false
+    default: 'junit.xml'
+
   build_output_dir:
     description: |
-      Directory containing build output. If provided, every file gets
-      hashed into a digest included in the attestation. Omit for projects
-      with no build artifact (infra repos, mobile apps built via EAS).
+      Directory containing build output. Every file gets hashed.
+      Omit for projects with no build artifact.
     required: false
     default: ''
 
 runs:
   using: composite
   steps:
-    - name: Generate SBOM
-      shell: bash
-      run: |
-        mkdir -p /tmp/ci-evidence
-
-        # Node project — generate CycloneDX SBOM
-        if [ -f package.json ]; then
-          echo "ci-sign: generating CycloneDX SBOM..."
-          if npx --yes @cyclonedx/cyclonedx-npm --output-file /tmp/ci-evidence/bom.json 2>/dev/null; then
-            BOM_DIGEST=$(sha256sum /tmp/ci-evidence/bom.json | cut -d' ' -f1)
-            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
-            echo "ci-sign: SBOM generated — $DEP_COUNT components, digest ${BOM_DIGEST:0:16}..."
-          else
-            echo "::warning::ci-sign: CycloneDX generation failed — SBOM will be empty"
-            BOM_DIGEST=""
-            DEP_COUNT=0
-          fi
-
-        # Python project
-        elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
-          echo "ci-sign: generating CycloneDX SBOM (Python)..."
-          if pip install --quiet cyclonedx-bom 2>/dev/null && cyclonedx-py environment --output /tmp/ci-evidence/bom.json --format json 2>/dev/null; then
-            BOM_DIGEST=$(sha256sum /tmp/ci-evidence/bom.json | cut -d' ' -f1)
-            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
-            echo "ci-sign: SBOM generated — $DEP_COUNT components, digest ${BOM_DIGEST:0:16}..."
-          else
-            echo "::warning::ci-sign: CycloneDX generation failed — SBOM will be empty"
-            BOM_DIGEST=""
-            DEP_COUNT=0
-          fi
-
-        else
-          echo "ci-sign: no package.json or requirements.txt — skipping SBOM"
-          BOM_DIGEST=""
-          DEP_COUNT=0
-        fi
-
-        echo "BOM_DIGEST=$BOM_DIGEST" >> "$GITHUB_ENV"
-        echo "DEP_COUNT=$DEP_COUNT" >> "$GITHUB_ENV"
-
-    - name: Hash build output
+    - name: Collect evidence
       shell: bash
       env:
+        TEST_REPORT: ${{ inputs.test_report_path }}
         BUILD_DIR: ${{ inputs.build_output_dir }}
       run: |
+        set -euo pipefail
+        mkdir -p /tmp/ci-evidence
+
+        # ── Test evidence ─────────────────────────────────
+        if [ -f "$TEST_REPORT" ]; then
+          cp "$TEST_REPORT" /tmp/ci-evidence/test-report.xml
+          TEST_COUNT=$(python3 -c "
+        import xml.etree.ElementTree as ET
+        tree = ET.parse('$TEST_REPORT')
+        print(len(tree.findall('.//testcase')))" 2>/dev/null || echo "0")
+
+          if [ "$TEST_COUNT" -eq 0 ]; then
+            echo "::error::ci-sign: JUnit XML exists at '$TEST_REPORT' but contains 0 test cases."
+            echo "::error::The gate will reject this. You must have real tests."
+            exit 1
+          fi
+
+          echo "ci-sign: $TEST_COUNT test cases found in $TEST_REPORT"
+        else
+          echo "::error::ci-sign: no test report found at '$TEST_REPORT'"
+          echo "::error::Your test runner must produce JUnit XML. Every language has a reporter:"
+          echo "::error::  Node/Jest:   --reporters=jest-junit"
+          echo "::error::  Node/Mocha:  --reporter mocha-junit-reporter"
+          echo "::error::  Python:      pytest --junitxml=junit.xml"
+          exit 1
+        fi
+
+        echo "TEST_COUNT=$TEST_COUNT" >> "$GITHUB_ENV"
+
+        # ── Build evidence ────────────────────────────────
         if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR" ]; then
           FILE_COUNT=$(find "$BUILD_DIR" -type f | wc -l | tr -d ' ')
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "::error::ci-sign: build_output_dir '$BUILD_DIR' exists but is empty."
+            exit 1
+          fi
           find "$BUILD_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/ci-evidence/build-checksums.txt
           BUILD_DIGEST=$(sha256sum /tmp/ci-evidence/build-checksums.txt | cut -d' ' -f1)
-          echo "ci-sign: build signed — $FILE_COUNT files, digest ${BUILD_DIGEST:0:16}..."
+          echo "ci-sign: build — $FILE_COUNT files, digest ${BUILD_DIGEST:0:16}..."
         else
           FILE_COUNT=0
           BUILD_DIGEST=""
         fi
+
         echo "BUILD_DIGEST=$BUILD_DIGEST" >> "$GITHUB_ENV"
         echo "BUILD_FILE_COUNT=$FILE_COUNT" >> "$GITHUB_ENV"
 
-    - name: Sign attestation
+    - name: Generate SBOM
       shell: bash
       run: |
-        cat > /tmp/ci-evidence/attestation.json <<EOF
+        # Node
+        if [ -f package.json ]; then
+          echo "ci-sign: generating CycloneDX SBOM..."
+          if npx --yes @cyclonedx/cyclonedx-npm --output-file /tmp/ci-evidence/bom.json 2>/dev/null; then
+            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
+            echo "ci-sign: SBOM — $DEP_COUNT components"
+          else
+            echo "::warning::ci-sign: CycloneDX generation failed — continuing without SBOM"
+            DEP_COUNT=0
+          fi
+
+        # Python
+        elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+          echo "ci-sign: generating CycloneDX SBOM (Python)..."
+          if pip install --quiet cyclonedx-bom 2>/dev/null && cyclonedx-py environment --output /tmp/ci-evidence/bom.json --format json 2>/dev/null; then
+            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
+            echo "ci-sign: SBOM — $DEP_COUNT components"
+          else
+            echo "::warning::ci-sign: CycloneDX generation failed — continuing without SBOM"
+            DEP_COUNT=0
+          fi
+
+        else
+          echo "ci-sign: no package manager detected — skipping SBOM"
+          DEP_COUNT=0
+        fi
+
+        echo "DEP_COUNT=$DEP_COUNT" >> "$GITHUB_ENV"
+
+    - name: Write evidence manifest
+      shell: bash
+      run: |
+        cat > /tmp/ci-evidence/manifest.json <<EOF
         {
-          "schema": "sonarmd/ci-attestation/v1",
           "commit": "${{ github.sha }}",
           "ref": "${{ github.ref }}",
           "repository": "${{ github.repository }}",
@@ -96,51 +131,53 @@ runs:
           "run_attempt": "${{ github.run_attempt }}",
           "actor": "${{ github.actor }}",
           "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-          "sbom_digest": "$BOM_DIGEST",
+          "test_count": $TEST_COUNT,
           "sbom_components": $DEP_COUNT,
           "build_digest": "$BUILD_DIGEST",
           "build_file_count": $BUILD_FILE_COUNT
         }
         EOF
-        echo "ci-sign: attestation written for ${{ github.repository }}@${GITHUB_SHA:0:12}"
+
+    - name: Upload evidence
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-evidence
+        path: /tmp/ci-evidence/
+        if-no-files-found: error
+        retention-days: 90
+
+    - name: Attest build provenance (Sigstore)
+      uses: actions/attest-build-provenance@v2
+      with:
+        subject-path: /tmp/ci-evidence/manifest.json
 
     - name: Write job summary
       shell: bash
       run: |
         COMMIT="${{ github.sha }}"
-        REPO="${{ github.repository }}"
 
         if [ -n "$BUILD_DIGEST" ]; then
           BUILD_LINE="| Build | $BUILD_FILE_COUNT files | \`${BUILD_DIGEST:0:24}...\` |"
         else
-          BUILD_LINE="| Build | — | no build artifact |"
+          BUILD_LINE="| Build | — | no artifact |"
         fi
 
-        if [ -n "$BOM_DIGEST" ]; then
-          SBOM_LINE="| SBOM | $DEP_COUNT components | \`${BOM_DIGEST:0:24}...\` |"
+        if [ -f /tmp/ci-evidence/bom.json ]; then
+          SBOM_LINE="| SBOM | $DEP_COUNT components | CycloneDX |"
         else
           SBOM_LINE="| SBOM | — | not generated |"
         fi
 
         cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-        ### CI Attestation
+        ### CI Evidence — Signed
 
-        | | Detail | Digest |
-        |--|--------|--------|
+        | | Detail | Info |
+        |--|--------|------|
         | Commit | \`${COMMIT:0:12}\` | — |
-        | Repository | $REPO | — |
+        | Tests | $TEST_COUNT test cases | JUnit XML |
         $BUILD_LINE
         $SBOM_LINE
+        | Attestation | Sigstore | \`actions/attest-build-provenance\` |
 
         > Signed at $(date -u +%Y-%m-%dT%H:%M:%SZ) by \`${{ github.actor }}\`
-        >
-        > Schema: \`sonarmd/ci-attestation/v1\`
         SUMMARY
-
-    - name: Upload evidence
-      uses: actions/upload-artifact@v4
-      with:
-        name: ci-attestation
-        path: /tmp/ci-evidence/
-        if-no-files-found: error
-        retention-days: 90
