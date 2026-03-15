@@ -1,134 +1,313 @@
 # sonarmd/workflows
 
-Central CI/CD infrastructure for SonarMD. Defines **contracts** (gates), not implementations. Each repo does its own work and calls the gates at stage boundaries. The gates validate outputs with independently verified evidence.
+CI enforcement for SonarMD. Two pieces:
 
-## Architecture
+1. **`ci-sign`** — composite action. Add as the last step in your CI. Collects test evidence, generates an SBOM, and signs everything with Sigstore.
+2. **`gate.yml`** — required workflow (org-level ruleset). Runs in the merge queue after all PR checks pass. Independently verifies the evidence. No evidence = no merge.
+
+You own your CI. Install whatever you want, run whatever you want. The only requirements: produce JUnit XML test results, and call `ci-sign` at the end.
+
+## How It Works
 
 ```
-repo runs lint/typecheck ──> static-analysis-gate.yml ──> validates evidence
-repo runs tests          ──> test-gate.yml             ──> downloads JUnit XML, counts <testcase>
-repo runs build          ──> build-gate.yml            ──> validates build status
-                             deploy-gate.yml            ──> requires all 3 upstream gates
+Your CI workflow:
+  checkout -> setup -> deps -> lint -> test (JUnit XML) -> build -> ci-sign
+                                                                      |
+                                                            collects evidence:
+                                                            - JUnit XML (test proof)
+                                                            - CycloneDX SBOM
+                                                            - build digest
+                                                            signs with Sigstore
+                                                                      |
+merge queue (automatic):                                              v
+  gate.yml -> verifies Sigstore attestation
+           -> independently counts JUnit XML test cases
+           -> checks SBOM exists
+           -> verifies build digest + commit SHA
+           -> PASS or FAIL (shown on dashboard)
 ```
 
-Repos are responsible for their own runtime (Node version, test framework, build tool). The gates only care about **results and evidence**.
+If any step before `ci-sign` fails, GitHub Actions stops. `ci-sign` never runs. No attestation. Gate fails. PR blocked.
+
+## Quick Start
+
+Add this to `.github/workflows/ci.yml` in your repo:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master, staging, 'release/**']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # === Your setup — install whatever you need ===
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - run: yarn install --frozen-lockfile
+
+      # === Your checks — run whatever you run ===
+      - run: yarn lint
+      - run: yarn test --reporters=jest-junit
+      - run: yarn build
+
+      # === ci-sign — MUST be last ===
+      - uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          test_report_path: junit.xml
+```
+
+That's it. The gate runs automatically in the merge queue.
+
+## Working Examples
+
+### triggr_api
+
+Node 18, MongoDB, graphicsmagick. The project sets up its own service container and system deps.
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master, staging, 'release/**']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
+      - run: yarn install --frozen-lockfile
+      - run: yarn lint
+      - run: yarn build
+      - run: yarn test --reporters=jest-junit
+        env:
+          LOG_LEVEL: none
+          TZ: utc
+      - uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          test_report_path: junit.xml
+          build_output_dir: dist
+```
+
+### frontend
+
+React monorepo. Node 18 with `--openssl-legacy-provider` for legacy react-scripts. Shared library must build first.
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master, staging, 'release/**']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: --openssl-legacy-provider
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - run: yarn install --frozen-lockfile
+      - run: yarn build-shared
+      - run: yarn lint
+      - run: yarn just-test --reporters=jest-junit
+      - uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          test_report_path: junit.xml
+```
+
+### frontend-patient-app
+
+React Native / Expo. Node 22. No build step — production builds go through EAS.
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master, staging, 'release/**']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: yarn install --frozen-lockfile
+      - run: yarn lint
+      - run: npx tsc --noEmit
+      - run: yarn test --ci --reporters=jest-junit
+      - uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          test_report_path: junit.xml
+```
 
 ## Structure
 
 ```
-.github/workflows/              Reusable workflows
-  static-analysis-gate.yml        Gate: lint (required) + typecheck (optional)
-  test-gate.yml                   Gate: downloads JUnit XML, independently verifies test count
-  build-gate.yml                  Gate: build validation (Phase 2: artifact signing)
-  deploy-gate.yml                 Gate: requires all upstream gates before deploy
-  ci.yml                          Convenience CI wrapper for simple projects
-  deploy-s3-cloudfront.yml        Deploy utility: S3 sync + CloudFront invalidation
-  deploy-eas-build.yml            Deploy utility: EAS Build (mobile)
-  deploy-api-ssm.yml              Deploy utility: SSM-based API deployment
-  notify-slack.yml                Slack deploy notifications
-  metrics-collector.yml           Deploy metrics collection
-  tag-release.yml                 Auto-tag on merge
+actions/
+  ci-sign/action.yml       Collects evidence, signs with Sigstore
 
-actions/                         Composite actions
-  setup-node/                      Node.js + yarn install + caching
-  detect-changed-apps/             Path filtering for frontend monorepo
+.github/workflows/
+  gate.yml                 Required workflow — merge queue, verifies everything
+  deploy.yml               Reusable deploy — verifies attestation, pings Slack
 
-per-repo/                        Workflow templates for each repository
-  frontend/                        sonarmd/frontend
-  triggr_api/                      sonarmd/triggr_api
-  frontend-patient-app/            sonarmd/frontend-patient-app
-
-docs/                            Documentation
-  contract-gates.md                Gate interfaces, trust model, evidence requirements
-  architecture.md                  System architecture overview
-  migration-runbook.md             CircleCI -> GHA migration steps
-  system-diagrams.md               Deployment flow diagrams
+per-repo/                  Ready-to-copy CI workflows for each project
+  triggr_api/
+  frontend/
+  frontend-patient-app/
+  triggr_misc/
 ```
 
-## Quick Start
+## ci-sign
 
-### Simple project (use the CI wrapper)
+**What it does**: Collects CI evidence (test results, SBOM, build hashes), writes a manifest, and signs it with GitHub's native Sigstore attestation (`actions/attest-build-provenance`).
 
-```yaml
-# .github/workflows/ci.yml
-jobs:
-  ci:
-    uses: sonarmd/workflows/.github/workflows/ci.yml@main
-    with:
-      node_version:      '18'
-      lint_command:       yarn lint
-      test_command:       yarn test --ci --reporters=default --reporters=jest-junit
-      typecheck_command:  yarn tsc --noEmit
-      build_command:      yarn build
-      lint_glob:          'src/**/*.{ts,tsx}'
-```
+**Inputs**:
 
-The wrapper handles evidence collection and gate routing automatically.
+| Input | Default | Required | Description |
+|-------|---------|----------|-------------|
+| `test_report_path` | `junit.xml` | No | Path to JUnit XML test report. Must contain real test cases. |
+| `build_output_dir` | _(empty)_ | No | Directory with build output. Every file gets SHA256 hashed. |
 
-### Complex project (call gates directly)
+**What it collects**:
 
-```yaml
-# .github/workflows/ci.yml
-jobs:
-  lint:
-    steps:
-      - run: yarn lint
-      # Count files for evidence
-      - run: echo "file_count=$(find src -type f -name '*.ts' | wc -l)" >> "$GITHUB_OUTPUT"
+| Evidence | Source | Gate verifies |
+|----------|--------|---------------|
+| Test results | JUnit XML | Independently counts `<testcase>` elements |
+| SBOM | CycloneDX (auto-detected) | Checks existence |
+| Build digest | SHA256 of all build files | Matches manifest |
+| Commit SHA | `github.sha` | Must match gate's commit |
+| Sigstore attestation | `attest-build-provenance` | Cryptographic proof |
 
-  test:
-    steps:
-      - run: yarn test --ci --reporters=default --reporters=jest-junit
-      # Upload JUnit XML — the test gate parses this independently
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-report
-          path: junit.xml
+**When to call it**: As the last step in your CI job. If you have multiple jobs, put it at the end of the one that runs last.
 
-  static-analysis-gate:
-    needs: [lint]
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
-    with:
-      lint_result:     ${{ needs.lint.result }}
-      lint_file_count: ${{ needs.lint.outputs.file_count }}
+**JUnit XML requirement**: Your test runner must produce JUnit XML. Every language has a reporter:
 
-  test-gate:
-    needs: [test]
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
-    with:
-      test_result: ${{ needs.test.result }}
-```
+| Runner | Flag |
+|--------|------|
+| Jest | `--reporters=jest-junit` |
+| Mocha | `--reporter mocha-junit-reporter` |
+| pytest | `--junitxml=junit.xml` |
+| Go | `go test -v \| go-junit-report > junit.xml` |
 
-## Gates
+## gate.yml
 
-| Gate | What it validates | Evidence |
-|------|------------------|----------|
-| `static-analysis-gate` | Lint passed, files were analyzed, typecheck didn't fail | `lint_file_count > 0` |
-| `test-gate` | Tests passed, real tests exist | Downloads JUnit XML, counts `<testcase>` elements |
-| `build-gate` | Build succeeded (or skipped for non-build repos) | Status check |
-| `deploy-gate` | All upstream gates passed | Requires static-analysis + test + build gates |
+**What it does**: Runs in the merge queue (after all PR checks pass). Downloads the evidence artifact, independently verifies everything, and writes a pass/fail summary to the dashboard.
 
-The test gate is **artifact-based** — it downloads the JUnit XML report and independently counts test cases. It does not trust caller-provided counts. See [docs/contract-gates.md](docs/contract-gates.md) for the full trust model.
+**Trigger**: `merge_group` only. No race condition — the merge queue only activates when all PR checks are green.
 
-## Per-Repo Templates
+**What it verifies**:
 
-Copy the appropriate `per-repo/<name>/.github/workflows/` directory to each repository's `.github/workflows/`. CODEOWNERS should protect these files to prevent unauthorized changes to gate calls.
+1. **Sigstore attestation** — cryptographic proof from the right workflow (can't be faked by a rogue workflow)
+2. **JUnit XML test cases** — independently counts `<testcase>` elements (can't pass with empty/zero tests)
+3. **Commit SHA** — evidence is from this exact commit
+4. **Repository** — evidence is from this repo
+5. **SBOM** — dependency inventory exists
+6. **Build digest** — artifact integrity
 
-| Repo | CI Pattern | Deploy Pattern |
-|------|-----------|---------------|
-| `frontend` | Monorepo path filtering, per-app test jobs, summarize + gates | S3 sync per app, build-gate + deploy-gate |
-| `triggr_api` | 4-shard parallel tests with MongoDB, mocha JSON->JUnit XML | OIDC + ECS, build-gate + deploy-gate |
-| `frontend-patient-app` | Jest + jest-junit, separate lint/typecheck/test jobs | EAS Build (tag-triggered), deploy-gate |
+**Error reporting**: When no evidence is found, the gate queries the GitHub API for failed CI steps and writes a detailed failure table to the job summary — zero extra CI minutes since the gate runs anyway.
 
-## GitHub Secrets Required
+**How to enable** (org admin, one time):
 
-| Secret | Repos | Purpose |
-|--------|-------|---------|
-| `AWS_ACCESS_KEY_ID` | frontend | S3 deploy credentials |
-| `AWS_SECRET_ACCESS_KEY` | frontend | S3 deploy credentials |
-| `SLACK_WEBHOOK_URL` | all | Slack deploy notifications |
-| `EXPO_TOKEN` | frontend-patient-app | EAS CLI authentication |
-| `OP_SERVICE_ACCOUNT_TOKEN` | triggr_api | 1Password service account for config generation |
+1. Go to `github.com/organizations/sonarmd/settings/rules`
+2. New ruleset — target all repositories (or specific ones)
+3. Target default branch
+4. Add rule: "Require merge queue"
+5. Add rule: "Require workflows to pass"
+6. Add workflow: `sonarmd/workflows` → `.github/workflows/gate.yml` → ref: `main`
+
+After this, every PR in the org must pass through the merge queue with valid evidence to merge.
+
+## FAQ
+
+**Can I split CI into multiple jobs?**
+Yes. Put `ci-sign` at the end of whatever runs last. If you have parallel jobs, add a final job that `needs: [lint, test, build]` and only runs `ci-sign`.
+
+**What if my project has no tests?**
+`ci-sign` requires JUnit XML with at least one test case. The gate independently verifies this. You need at least one test.
+
+**What if I need to run CI on self-hosted runners?**
+Change `runs-on`. Nothing else changes. `ci-sign` is shell commands — it runs anywhere.
+
+**Can someone bypass the gate?**
+Not without org admin access to the ruleset. The gate is enforced at the org level via merge queue. Even repo admins can't skip it.
+
+**Why Sigstore?**
+Industry standard (SLSA). GitHub's native `actions/attest-build-provenance` produces cryptographic attestations tied to the specific workflow that ran. A rogue workflow produces a different signature. No custom JSON schema to maintain.
+
+**Why merge queue instead of pull_request?**
+Eliminates the race condition. With `pull_request`, the gate and CI both trigger simultaneously — the gate would fail because CI hasn't finished yet. The merge queue only activates after all PR checks pass, so the evidence always exists when the gate runs.
+
+**What permissions do I need?**
+Your CI workflow needs `id-token: write` and `attestations: write` for Sigstore signing. The gate needs `attestations: read`.

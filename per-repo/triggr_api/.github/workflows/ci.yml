@@ -1,57 +1,24 @@
 name: CI
 
-# triggr_api requires custom CI because:
-#   - MongoDB 8.0 service container (can't be parameterized in ci wrapper)
-#   - 4-shard parallel test execution (can't be expressed as a single command)
-#   - graphicsmagick system dependency
-#
-# The gate jobs at the bottom call static-analysis-gate.yml and test-gate.yml
-# to validate the CI contracts WITH EVIDENCE. Build validation is handled by
-# build-gate.yml in the deploy workflow.
-# CODEOWNERS protects this file — changes require @sonarmd/platform-eng approval.
-
 on:
   push:
     branches: ['**']
   pull_request:
-    branches: [master, 'release/**']
-  merge_group:
-    branches: [master, 'release/**']
+    branches: [master, staging, 'release/**']
 
-permissions: {}
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint:
+  ci:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      file_count: ${{ steps.run.outputs.file_count }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '18'
-      - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
-      - name: Lint
-        id: run
-        run: |
-          FILE_COUNT=$(find src -type f \( -name '*.ts' -o -name '*.js' \) | wc -l | tr -d ' ')
-          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
-          yarn lint
-
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
+    timeout-minutes: 12
     services:
       mongo:
         image: mongo:8.0
@@ -63,90 +30,20 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: sonarmd/workflows/actions/setup-node@main
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
       - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
-
-      - name: Split test files into shard ${{ matrix.shard }}
-        id: tests
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: |
-          ALL_FILES=$(find test -name '*.ts' -type f | sort)
-          TOTAL=$(echo "$ALL_FILES" | wc -l)
-          SHARD_SIZE=$(( (TOTAL + 3) / 4 ))
-          START=$(( SHARD * SHARD_SIZE + 1 ))
-          TEST_FILES=$(echo "$ALL_FILES" | sed -n "${START},$(( START + SHARD_SIZE - 1 ))p" | tr '\n' ' ')
-          echo "files=$TEST_FILES" >> "$GITHUB_OUTPUT"
-
-      - name: Run tests (shard ${{ matrix.shard }})
+      - run: yarn install --frozen-lockfile
+      - run: yarn lint
+      - run: yarn build
+      - name: Test
         env:
           LOG_LEVEL: none
           TZ: utc
-          TEST_FILES: ${{ steps.tests.outputs.files }}
-        run: |
-          ./node_modules/.bin/mocha \
-            --require @swc-node/register \
-            --exit \
-            --timeout 10000 \
-            --reporter json \
-            $TEST_FILES | tee mocha-results.json
-
-      # Convert mocha JSON → JUnit XML for the test gate.
-      # No new dependencies — python3 is pre-installed on ubuntu runners.
-      - name: Generate JUnit XML from results
-        if: always()
-        run: |
-          python3 -c "
-          import json, html
-          d = json.load(open('mocha-results.json'))
-          lines = ['<?xml version=\"1.0\"?>', '<testsuites>']
-          lines.append('<testsuite tests=\"%d\" failures=\"%d\">' % (d['stats']['tests'], d['stats']['failures']))
-          for t in d.get('passes', []) + d.get('failures', []) + d.get('pending', []):
-              name = html.escape(t.get('fullTitle', ''))
-              cls = html.escape(t.get('file', ''))
-              lines.append('<testcase name=\"%s\" classname=\"%s\"/>' % (name, cls))
-          lines.append('</testsuite></testsuites>')
-          open('junit.xml', 'w').write('\n'.join(lines))
-          " 2>/dev/null || true
-
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v4
+        run: yarn test --reporters=jest-junit
+      - uses: sonarmd/workflows/actions/ci-sign@main
         with:
-          name: test-report-shard-${{ matrix.shard }}
-          path: junit.xml
-          if-no-files-found: warn
-
-  build:
-    needs: [lint, test]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: sonarmd/workflows/actions/setup-node@main
-        with:
-          node-version: '18'
-      - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
-      - run: yarn build
-
-  # Static analysis gate — validates lint passed with evidence.
-  static-analysis-gate:
-    needs: [lint, test, build]
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
-    with:
-      lint_result:     ${{ needs.lint.result }}
-      lint_file_count: ${{ needs.lint.outputs.file_count }}
-
-  # Test gate — downloads JUnit XML from all 4 shards (test-report-shard-*),
-  # independently counts <testcase> elements. Does NOT trust caller counts.
-  test-gate:
-    needs: [lint, test, build]
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
-    with:
-      test_result: ${{ needs.test.result }}
+          test_report_path: junit.xml
+          build_output_dir: dist
