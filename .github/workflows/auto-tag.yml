@@ -65,8 +65,6 @@ jobs:
             # Infer from merge commit (squash or merge commit includes PR commits)
             MERGE_LOG=$(git log -1 --pretty=%B)
             if echo "$MERGE_LOG" | grep -qiE '^feat!:|BREAKING CHANGE'; then
-              BUMP="major"
-            elif echo "$MERGE_LOG" | grep -qiE '^feat:'; then
               BUMP="minor"
             else
               BUMP="patch"
