@@ -1,0 +1,56 @@
+name: CI Breaker
+description: |
+  Circuit breaker for CI. If the last 3 runs of the calling workflow
+  on this branch all failed, outputs should_run=false. Saves minutes
+  when a developer keeps pushing broken code.
+
+  Add as the first job. Gate lint/test/build behind its output.
+
+  The breaker resets automatically when a run succeeds (breaking
+  the streak). No manual intervention needed.
+
+  Usage in your CI workflow:
+
+    jobs:
+      preflight:
+        runs-on: ubuntu-latest
+        permissions:
+          actions: read
+        outputs:
+          should_run: ${{ steps.breaker.outputs.should_run }}
+        steps:
+          - uses: sonarmd/workflows/actions/ci-breaker@main
+            id: breaker
+
+      lint:
+        needs: [preflight]
+        if: needs.preflight.outputs.should_run == 'true'
+        ...
+
+outputs:
+  should_run:
+    description: "'true' if CI should proceed, 'false' if circuit breaker tripped"
+    value: ${{ steps.check.outputs.should_run }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check recent CI history
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        BRANCH="${{ github.head_ref || github.ref_name }}"
+        WORKFLOW="${{ github.workflow_ref }}"
+        WORKFLOW_FILE=$(echo "$WORKFLOW" | sed 's|.*/\.github/workflows/||' | sed 's|@.*||')
+
+        CONCLUSIONS=$(gh api "repos/${{ github.repository }}/actions/workflows/${WORKFLOW_FILE}/runs?branch=${BRANCH}&per_page=3&status=completed" \
+          --jq '[.workflow_runs[].conclusion] | join(",")' 2>/dev/null || echo "")
+
+        if [ "$CONCLUSIONS" = "failure,failure,failure" ]; then
+          echo "::warning::CI circuit breaker tripped: 3 consecutive failures on ${BRANCH}. Skipping to save minutes. Push a fix to reset."
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+        fi
