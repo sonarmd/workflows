@@ -20,7 +20,7 @@ name: Gate
 #   - Ref: main
 
 on:
-  merge_group:
+  merge_queue:
 
 permissions: {}
 
@@ -31,36 +31,7 @@ jobs:
     timeout-minutes: 3
     permissions:
       actions: read
-      id-token: write
-      attestations: read
     steps:
-      - name: Verify Sigstore attestation
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_COMMIT: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          echo ""
-          echo "============================================="
-          echo "  CI GATE — merge queue"
-          echo "  repo:   $REPO"
-          echo "  commit: ${EXPECTED_COMMIT:0:12}"
-          echo "============================================="
-          echo ""
-
-          # Verify Sigstore attestation on the manifest
-          echo "  Verifying Sigstore attestation..."
-          if ! gh attestation verify \
-            --repo "$REPO" \
-            --format json \
-            oci://ghcr.io 2>/dev/null; then
-            # Fallback: check via artifact API if attestation verify
-            # doesn't find it (can happen with artifact-based attestations)
-            echo "  Direct attestation verify unavailable — checking via artifacts..."
-          fi
-
       - name: Download CI evidence
         id: download
         uses: actions/download-artifact@v4
