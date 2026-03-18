@@ -44,8 +44,8 @@ jobs:
         uses: 1password/load-secrets-action@v2
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          APP_ID: op://smd_agora_shared/smd-ci-agora/app-id
-          APP_PRIVATE_KEY: op://smd_agora_shared/smd-ci-agora/private-key
+          APP_ID: op://smd_agora_shared/4skvt7l46qfd42ndku2ermwyly/appid
+          APP_PRIVATE_KEY: op://smd_agora_shared/twqeia3cpwcinjptjrnft5m3y4/notesPlain
         with:
           export-env: true
 
