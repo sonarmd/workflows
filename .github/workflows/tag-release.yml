@@ -16,6 +16,14 @@ on:
         type: string
         default: '.'
 
+    secrets:
+      APP_ID:
+        description: GitHub App ID (smd-ci-agora)
+        required: true
+      APP_PRIVATE_KEY:
+        description: GitHub App private key (smd-ci-agora)
+        required: true
+
     outputs:
       tag:
         description: The created tag name
@@ -35,9 +43,17 @@ jobs:
       tag: ${{ steps.create-tag.outputs.tag }}
       version: ${{ steps.create-tag.outputs.version }}
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Create release tag
         id: create-tag
@@ -47,7 +63,6 @@ jobs:
           WORKING_DIR: ${{ inputs.working-directory }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          # Resolve environment: use input if provided, otherwise infer from branch
           if [ -n "$ENV_INPUT" ]; then
             TAG_ENV="$ENV_INPUT"
           else
