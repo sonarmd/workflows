@@ -8,13 +8,29 @@ on:
         type: string
         required: true
       environment:
-        description: 'Environment prefix (dev, stg, prd). If empty, inferred from branch: release/* → stg, master/main → prd.'
+        description: 'Environment prefix (dev, stg, prd). If empty, inferred from branch.'
         type: string
         default: ''
       working-directory:
         description: Directory containing package.json with version
         type: string
         default: '.'
+      build:
+        description: 'Build command. If empty, release has source only.'
+        type: string
+        default: ''
+      artifact-paths:
+        description: 'Paths to tar into release asset'
+        type: string
+        default: 'dist/ node_modules/ package.json'
+      pre-build:
+        description: 'System deps before build'
+        type: string
+        default: ''
+      node-version:
+        description: Node version
+        type: string
+        default: '22'
 
     secrets:
       OP_SERVICE_ACCOUNT_TOKEN:
@@ -23,11 +39,11 @@ on:
 
     outputs:
       tag:
-        description: The created tag name
         value: ${{ jobs.tag.outputs.tag }}
       version:
-        description: The version from package.json
         value: ${{ jobs.tag.outputs.version }}
+      release-url:
+        value: ${{ jobs.tag.outputs.release-url }}
 
 permissions: {}
 
@@ -37,8 +53,9 @@ jobs:
     permissions:
       contents: write
     outputs:
-      tag: ${{ steps.create-tag.outputs.tag }}
-      version: ${{ steps.create-tag.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      release-url: ${{ steps.release.outputs.url }}
     steps:
       - name: Load secrets from 1Password
         uses: 1password/load-secrets-action@v2
@@ -56,44 +73,59 @@ jobs:
           app-id: ${{ env.APP_ID }}
           private-key: ${{ env.APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Create release tag
-        id: create-tag
-        env:
-          REPO_SHORT: ${{ inputs.repo-short }}
-          ENV_INPUT: ${{ inputs.environment }}
-          WORKING_DIR: ${{ inputs.working-directory }}
-          RUN_NUMBER: ${{ github.run_number }}
+      - name: Resolve tag
+        id: resolve
         run: |
-          if [ -n "$ENV_INPUT" ]; then
-            TAG_ENV="$ENV_INPUT"
+          if [ -n "${{ inputs.environment }}" ]; then
+            TAG_ENV="${{ inputs.environment }}"
           else
             BRANCH="${GITHUB_REF#refs/heads/}"
             case "$BRANCH" in
               release/*) TAG_ENV="stg" ;;
               master|main) TAG_ENV="prd" ;;
-              *) echo "::error::Cannot infer environment from branch '$BRANCH'. Pass environment input explicitly."; exit 1 ;;
+              *) echo "::error::Cannot infer env from '$BRANCH'"; exit 1 ;;
             esac
           fi
-
-          VERSION=$(node -p "require('./${WORKING_DIR}/package.json').version")
-          TAG="${TAG_ENV}-${REPO_SHORT}-${VERSION}-b${RUN_NUMBER}"
-
+          VERSION=$(node -p "require('./${{ inputs.working-directory }}/package.json').version")
+          TAG="${TAG_ENV}-${{ inputs.repo-short }}-${VERSION}-b${{ github.run_number }}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          echo "Creating tag: $TAG"
+      - name: Pre-build
+        if: inputs.pre-build != ''
+        run: ${{ inputs.pre-build }}
 
+      - uses: sonarmd/workflows/actions/setup-node@main
+        if: inputs.build != ''
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Build
+        if: inputs.build != ''
+        run: ${{ inputs.build }}
+
+      - name: Package
+        if: inputs.build != ''
+        run: tar czf release.tar.gz ${{ inputs.artifact-paths }}
+
+      - name: Create tag + release
+        id: release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Auto-release $TAG"
           git push origin "$TAG"
-
-          echo "### Tag Created" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag**: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version**: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Build**: \`$RUN_NUMBER\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f release.tar.gz ]; then
+            gh release create "$TAG" release.tar.gz --title "$TAG" --generate-notes
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          echo "url=https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" >> "$GITHUB_OUTPUT"
