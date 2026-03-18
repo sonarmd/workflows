@@ -47,6 +47,12 @@ on:
         type: string
         default: '#ops'
 
+      artifact_url:
+        description: 'Artifact download URL. Defaults to the Actions run URL if not provided.'
+        required: false
+        type: string
+        default: ''
+
     secrets:
       SLACK_WEBHOOK_URL:
         required: true
@@ -154,7 +160,10 @@ jobs:
             VERSION="${COMMIT:0:12}"
           fi
 
-          ARTIFACT_URL="$RUN_URL"
+          ARTIFACT_URL="${{ inputs.artifact_url }}"
+          if [ -z "$ARTIFACT_URL" ]; then
+            ARTIFACT_URL="$RUN_URL"
+          fi
 
           # Post in the format Hubot expects
           DEPLOY_MSG="@r2-d2 deploy $ENVIRONMENT $VERSION $ARTIFACT_URL"
