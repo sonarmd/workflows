@@ -20,7 +20,7 @@ name: Gate
 #   - Ref: main
 
 on:
-  merge_queue:
+  merge_group:
 
 permissions: {}
 
