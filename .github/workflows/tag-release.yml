@@ -17,11 +17,8 @@ on:
         default: '.'
 
     secrets:
-      APP_ID:
-        description: GitHub App ID (smd-ci-agora)
-        required: true
-      APP_PRIVATE_KEY:
-        description: GitHub App private key (smd-ci-agora)
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: 1Password service account token
         required: true
 
     outputs:
@@ -43,12 +40,21 @@ jobs:
       tag: ${{ steps.create-tag.outputs.tag }}
       version: ${{ steps.create-tag.outputs.version }}
     steps:
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APP_ID: op://smd_agora_shared/smd-ci-agora/app-id
+          APP_PRIVATE_KEY: op://smd_agora_shared/smd-ci-agora/private-key
+        with:
+          export-env: true
+
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
