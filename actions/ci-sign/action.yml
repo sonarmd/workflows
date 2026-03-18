@@ -147,6 +147,7 @@ runs:
         retention-days: 90
 
     - name: Attest build provenance (Sigstore)
+      continue-on-error: true
       uses: actions/attest-build-provenance@v2
       with:
         subject-path: /tmp/ci-evidence/manifest.json
