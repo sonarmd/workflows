@@ -8,9 +8,9 @@ on:
         type: string
         required: true
       environment:
-        description: Environment prefix for the tag (stg)
+        description: 'Environment prefix (dev, stg, prd). If empty, inferred from branch: release/* → stg, master/main → prd.'
         type: string
-        default: 'stg'
+        default: ''
       working-directory:
         description: Directory containing package.json with version
         type: string
@@ -43,10 +43,22 @@ jobs:
         id: create-tag
         env:
           REPO_SHORT: ${{ inputs.repo-short }}
-          TAG_ENV: ${{ inputs.environment }}
+          ENV_INPUT: ${{ inputs.environment }}
           WORKING_DIR: ${{ inputs.working-directory }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
+          # Resolve environment: use input if provided, otherwise infer from branch
+          if [ -n "$ENV_INPUT" ]; then
+            TAG_ENV="$ENV_INPUT"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            case "$BRANCH" in
+              release/*) TAG_ENV="stg" ;;
+              master|main) TAG_ENV="prd" ;;
+              *) echo "::error::Cannot infer environment from branch '$BRANCH'. Pass environment input explicitly."; exit 1 ;;
+            esac
+          fi
+
           VERSION=$(node -p "require('./${WORKING_DIR}/package.json').version")
           TAG="${TAG_ENV}-${REPO_SHORT}-${VERSION}-b${RUN_NUMBER}"
 
