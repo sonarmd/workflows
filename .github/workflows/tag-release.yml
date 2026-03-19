@@ -96,6 +96,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Cache apt packages
+        if: inputs.pre-build != ''
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ hashFiles('.github/workflows/*.yml') }}
+
       - name: Pre-build
         if: inputs.pre-build != ''
         run: ${{ inputs.pre-build }}
