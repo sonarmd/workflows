@@ -419,7 +419,11 @@ jobs:
       - name: Start MongoDB
         if: inputs.needs_mongo
         run: |
-          docker run -d --name mongodb -p 27017:27017 mongo:8.0
+          if ! docker run -d --name mongodb -p 27017:27017 mongo:8.0; then
+            echo "::error::Failed to start MongoDB container."
+            docker logs mongodb 2>/dev/null || true
+            exit 1
+          fi
           echo "Waiting for MongoDB..."
           for i in 1 2 3 4 5; do
             if docker exec mongodb mongosh --eval "db.runCommand({ping:1})" --quiet 2>/dev/null; then
@@ -428,8 +432,14 @@ jobs:
             fi
             sleep 2
           done
-          echo "::error::MongoDB failed to start."
+          echo "::error::MongoDB failed to respond after 10s."
+          docker ps -a
+          docker logs mongodb 2>/dev/null || true
           exit 1
+
+      - name: Stop MongoDB
+        if: always() && inputs.needs_mongo
+        run: docker rm -f mongodb 2>/dev/null || true
 
       - name: Run tests
         if: matrix.shard == 'none'
