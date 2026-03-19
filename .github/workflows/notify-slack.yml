@@ -25,7 +25,7 @@ on:
         default: '#ops'
 
     secrets:
-      SLACK_WEBHOOK_URL:
+      OP_SERVICE_ACCOUNT_TOKEN:
         required: true
 
 permissions: {}
@@ -35,7 +35,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load Slack webhook from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SLACK_WEBHOOK_URL: op://smd_agora_shared/slack-webhook-url/credential
+        with:
+          export-env: true
+
+      - uses: actions/checkout@v4
         with:
           repository: sonarmd/workflows
           sparse-checkout: actions/slack-notify/
@@ -44,7 +52,7 @@ jobs:
       - name: Send Slack notification
         uses: ./_actions/actions/slack-notify
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-url: ${{ env.SLACK_WEBHOOK_URL }}
           status: ${{ inputs.status }}
           environment: ${{ inputs.environment }}
           app-name: ${{ inputs.app-name }}

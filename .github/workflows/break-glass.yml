@@ -71,7 +71,7 @@ on:
         default: '22'
 
     secrets:
-      SLACK_WEBHOOK_URL:
+      OP_SERVICE_ACCOUNT_TOKEN:
         required: true
       EXPO_TOKEN:
         required: false
@@ -140,4 +140,4 @@ jobs:
       tag: ${{ needs.audit.outputs.ref }}
       channel: ${{ needs.audit.outputs.channel }}
     secrets:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}

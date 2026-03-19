@@ -20,7 +20,7 @@ name: Deploy
 #         environment: dev            # dev | stg | prd
 #         app_name: triggr_api
 #       secrets:
-#         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+#         SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
 
 on:
   workflow_call:
@@ -54,7 +54,7 @@ on:
         default: ''
 
     secrets:
-      SLACK_WEBHOOK_URL:
+      OP_SERVICE_ACCOUNT_TOKEN:
         required: true
 
 permissions: {}
@@ -67,6 +67,14 @@ jobs:
     permissions:
       actions: read
     steps:
+      - name: Load Slack webhook from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SLACK_WEBHOOK_URL: op://smd_agora_shared/slack-webhook-url/credential
+        with:
+          export-env: true
+
       - name: Validate inputs
         env:
           ENVIRONMENT: ${{ inputs.environment }}
@@ -147,7 +155,7 @@ jobs:
 
       - name: Notify Slack
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
           APP_NAME: ${{ inputs.app_name }}
           ENVIRONMENT: ${{ inputs.environment }}
           REPO: ${{ github.repository }}
