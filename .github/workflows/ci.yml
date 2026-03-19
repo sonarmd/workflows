@@ -418,26 +418,17 @@ jobs:
 
       - name: Start MongoDB
         if: inputs.needs_mongo
-        uses: supercharge/mongodb-github-action@v1
-        with:
-          mongodb-version: '8.0'
-
-      - name: Verify MongoDB
-        if: inputs.needs_mongo
         run: |
-          echo "Verifying MongoDB is reachable..."
+          docker run -d --name mongodb -p 27017:27017 mongo:8.0
+          echo "Waiting for MongoDB..."
           for i in 1 2 3 4 5; do
-            if mongosh --eval "db.runCommand({ping:1})" --quiet 2>/dev/null; then
+            if docker exec mongodb mongosh --eval "db.runCommand({ping:1})" --quiet 2>/dev/null; then
               echo "MongoDB is up and responding."
               exit 0
             fi
-            echo "Attempt $i: MongoDB not ready, waiting 2s..."
             sleep 2
           done
-          echo ""
-          echo "::error::MongoDB failed to start after 10 seconds."
-          echo "::error::The supercharge/mongodb-github-action started but the server isn't responding on localhost:27017."
-          echo "::error::This is a CI infrastructure issue, not your code. Re-run the workflow."
+          echo "::error::MongoDB failed to start."
           exit 1
 
       - name: Run tests
