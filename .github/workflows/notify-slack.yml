@@ -39,7 +39,7 @@ jobs:
         uses: 1password/load-secrets-action@v2
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          SLACK_WEBHOOK_URL: op://smd_agora_shared/slack-webhook-url/credential
+          SLACK_WEBHOOK_URL: op://smd_agora_shared/SLACK_WEBHOOK_URL/credential
         with:
           export-env: true
 
