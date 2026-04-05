@@ -1,0 +1,89 @@
+name: Ping Slack
+description: Post a status notification (or raw message) to a Slack webhook.
+
+inputs:
+  webhook-url:
+    description: 'Slack incoming webhook URL'
+    required: true
+  status:
+    description: 'Status: started | success | failure'
+    required: false
+    default: ''
+  app:
+    description: 'Application name for the notification'
+    required: true
+  environment:
+    description: 'Deployment environment (optional)'
+    required: false
+    default: ''
+  tag:
+    description: 'Release tag (optional)'
+    required: false
+    default: ''
+  message:
+    description: 'If provided, post this raw text verbatim (Hubot commands, etc.) instead of a formatted status block'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Post to Slack
+      shell: bash
+      run: |
+        WEBHOOK="${{ inputs.webhook-url }}"
+        MESSAGE="${{ inputs.message }}"
+
+        if [ -n "$MESSAGE" ]; then
+          # Raw message mode — post verbatim text
+          PAYLOAD=$(printf '{"text":"%s"}' "$MESSAGE")
+        else
+          STATUS="${{ inputs.status }}"
+          APP="${{ inputs.app }}"
+          ENV="${{ inputs.environment }}"
+          TAG="${{ inputs.tag }}"
+          RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          case "$STATUS" in
+            started)
+              COLOR="#808080"
+              EMOJI=":hourglass_flowing_sand:"
+              TITLE="Build started"
+              ;;
+            success)
+              COLOR="#36a64f"
+              EMOJI=":white_check_mark:"
+              TITLE="Build succeeded"
+              ;;
+            failure)
+              COLOR="#cc0000"
+              EMOJI=":x:"
+              TITLE="Build failed"
+              ;;
+            *)
+              COLOR="#808080"
+              EMOJI=":information_source:"
+              TITLE="Notification"
+              ;;
+          esac
+
+          FIELDS="[{\"title\":\"App\",\"value\":\"${APP}\",\"short\":true}"
+
+          if [ -n "$ENV" ]; then
+            FIELDS="${FIELDS},{\"title\":\"Environment\",\"value\":\"${ENV}\",\"short\":true}"
+          fi
+
+          if [ -n "$TAG" ]; then
+            FIELDS="${FIELDS},{\"title\":\"Tag\",\"value\":\"${TAG}\",\"short\":true}"
+          fi
+
+          FIELDS="${FIELDS},{\"title\":\"Run\",\"value\":\"<${RUN_URL}|#${GITHUB_RUN_NUMBER}>\",\"short\":true}]"
+
+          PAYLOAD=$(printf '{"attachments":[{"color":"%s","title":"%s %s","fields":%s,"footer":"%s","ts":%s}]}' \
+            "$COLOR" "$EMOJI" "$TITLE" "$FIELDS" "$GITHUB_REPOSITORY" "$(date +%s)")
+        fi
+
+        curl -sf -X POST \
+          -H 'Content-Type: application/json' \
+          -d "$PAYLOAD" \
+          "$WEBHOOK" || true

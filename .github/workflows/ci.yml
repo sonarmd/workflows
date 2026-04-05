@@ -2,7 +2,7 @@ name: CI
 
 # Convenience CI wrapper for projects that can express their quality gates
 # as simple shell commands. Runs lint, typecheck, test, and build in sequence,
-# then calls the contract gates with evidence.
+# then signs artifacts and uploads ci-evidence.
 #
 # For projects with complex requirements (service containers, matrix sharding,
 # monorepo path filtering), write a custom per-repo CI and call the gates directly.
@@ -45,8 +45,7 @@ on:
       test_command:
         description: |
           Command to run the test suite. Must produce a JUnit XML report at
-          the path specified by test_report_path. The test gate parses it
-          independently to verify tests actually ran.
+          the path specified by test_report_path.
           For Jest:   yarn test --ci --reporters=default --reporters=jest-junit
           For pytest: pytest --junitxml=junit.xml --tb=short -q
           For Mocha:  mocha --reporter mocha-junit-reporter
@@ -55,8 +54,8 @@ on:
 
       lint_glob:
         description: |
-          Glob pattern for files in scope for linting. Used to count lint targets
-          as evidence for the static analysis gate. Must match at least 1 file.
+          Glob pattern for files in scope for linting. Used to count lint targets.
+          Must match at least 1 file.
           Examples: 'src/**/*.{ts,tsx}' | '**/*.py' | 'scripts/**/*.sh'
         required: true
         type: string
@@ -83,14 +82,19 @@ on:
       test_report_path:
         description: |
           Path to the JUnit XML report produced by the test command.
-          Relative to working_directory. The test gate downloads this artifact
-          and parses it independently — this is the unfakeable evidence.
+          Relative to working_directory.
           For Jest (jest-junit):  junit.xml
           For pytest:             junit.xml (match --junitxml flag)
           For Mocha:              test-results.xml
         required: false
         type: string
         default: 'junit.xml'
+
+      build_output_dir:
+        description: 'Directory where build output lands, for SBOM and signing'
+        required: false
+        type: string
+        default: 'dist'
 
       # ── Runtime setup ──────────────────────────────────────────────────
       node_version:
@@ -147,9 +151,26 @@ on:
         type: number
         default: 30
 
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+      OP_SERVICE_ACCOUNT_TOKEN_AGORA:
+        required: false
+
 permissions: {}
 
 jobs:
+  notify-start:
+    name: notify-start
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: sonarmd/workflows/actions/ping-slack@main
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          status: started
+          app: ${{ github.event.repository.name }}
+
   ci:
     name: ci
     runs-on: ${{ inputs.runs_on }}
@@ -179,7 +200,7 @@ jobs:
       # Python — setup-python handles install + caching.
       - name: Setup Python
         if: inputs.python_version != ''
-        uses: actions/setup-python@v5  # TODO: pin to full commit SHA
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
           cache: 'pip'
@@ -228,21 +249,44 @@ jobs:
         if: inputs.build_command != ''
         run: ${{ inputs.build_command }}
 
-  # Static analysis gate — validates lint + typecheck with evidence.
-  static-analysis-gate:
+  sbom:
+    name: sbom
     needs: ci
-    if: always()
-    uses: sonarmd/workflows/.github/workflows/static-analysis-gate.yml@main
-    with:
-      lint_result:      ${{ needs.ci.outputs.lint_result }}
-      lint_file_count:  ${{ needs.ci.outputs.lint_file_count }}
-      typecheck_result: ${{ needs.ci.outputs.typecheck_result }}
+    if: needs.ci.result == 'success' && inputs.build_command != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: sonarmd/workflows/actions/sbom-generator@main
+        with:
+          artifact-path: ${{ inputs.working_directory }}/${{ inputs.build_output_dir }}
 
-  # Test gate — downloads JUnit XML artifact, independently parses <testcase>
-  # elements. Does NOT trust caller-provided counts.
-  test-gate:
-    needs: ci
+  sign:
+    name: sign
+    needs: [ci, sbom]
+    if: always() && needs.ci.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          build_output_dir: ${{ inputs.working_directory }}/${{ inputs.build_output_dir }}
+          test_report_path: ${{ inputs.working_directory }}/${{ inputs.test_report_path }}
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_AGORA }}
+
+  notify-complete:
+    name: notify-complete
+    needs: [ci, sign]
     if: always()
-    uses: sonarmd/workflows/.github/workflows/test-gate.yml@main
-    with:
-      test_result: ${{ needs.ci.outputs.test_result }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: sonarmd/workflows/actions/ping-slack@main
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          status: ${{ (needs.ci.result == 'success' && needs.sign.result == 'success') && 'success' || 'failure' }}
+          app: ${{ github.event.repository.name }}

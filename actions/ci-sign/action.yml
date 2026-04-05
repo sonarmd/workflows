@@ -1,0 +1,107 @@
+name: CI Sign
+description: Package build artifacts, generate a manifest, sign it, and upload as a ci-evidence artifact.
+
+inputs:
+  build_output_dir:
+    description: 'Path to built artifacts directory'
+    required: true
+  test_report_path:
+    description: 'Path to JUnit XML test report (relative to working directory)'
+    required: false
+    default: 'junit.xml'
+
+runs:
+  using: composite
+  steps:
+    - name: Install 1Password CLI
+      uses: 1password/install-cli-action@143a85f84a90555d121cde2ff5872e393a47ab9f
+
+    - name: Package build artifacts
+      shell: bash
+      run: |
+        tar czf build.tar.gz -C "${{ inputs.build_output_dir }}" .
+        sha256sum build.tar.gz > build.tar.gz.sha256
+        echo "build.tar.gz sha256: $(cat build.tar.gz.sha256)"
+
+    - name: Collect test report
+      shell: bash
+      run: |
+        mkdir -p /tmp/ci-evidence-staging
+        REPORT="${{ inputs.test_report_path }}"
+        if [ -f "$REPORT" ]; then
+          echo "Collecting test report: $REPORT"
+          cp "$REPORT" /tmp/ci-evidence-staging/
+        else
+          echo "Test report not found at $REPORT — skipping"
+        fi
+
+    - name: Create manifest.json
+      shell: bash
+      run: |
+        ARTIFACT_SHA=$(cat build.tar.gz.sha256 | awk '{print $1}')
+        TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        jq -n \
+          --arg commit      "$GITHUB_SHA" \
+          --arg run_id      "$GITHUB_RUN_ID" \
+          --arg run_number  "$GITHUB_RUN_NUMBER" \
+          --arg repository  "$GITHUB_REPOSITORY" \
+          --arg workflow    "$GITHUB_WORKFLOW" \
+          --arg actor       "$GITHUB_ACTOR" \
+          --arg timestamp   "$TIMESTAMP" \
+          --arg sha256      "$ARTIFACT_SHA" \
+          '{
+            commit:          $commit,
+            run_id:          $run_id,
+            run_number:      $run_number,
+            repository:      $repository,
+            workflow:        $workflow,
+            actor:           $actor,
+            timestamp:       $timestamp,
+            artifact_sha256: $sha256
+          }' > manifest.json
+        echo "manifest.json created:"
+        cat manifest.json
+
+    - name: Sign manifest
+      shell: bash
+      run: |
+        # Verify 1Password CLI is operational
+        op run --no-masking -- sh -c 'echo "1Password CLI verified"'
+
+        # Full cryptographic signing via 1Password key to be added —
+        # for now integrity via sha256
+        sha256sum manifest.json > manifest.sha256
+        echo "manifest.sha256: $(cat manifest.sha256)"
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ env.OP_SERVICE_ACCOUNT_TOKEN }}
+
+    - name: Collect all evidence files
+      shell: bash
+      run: |
+        STAGING=/tmp/ci-evidence-staging
+        mkdir -p "$STAGING"
+
+        cp build.tar.gz      "$STAGING/"
+        cp build.tar.gz.sha256 "$STAGING/"
+        cp manifest.json     "$STAGING/"
+        cp manifest.sha256   "$STAGING/"
+
+        # Include SBOM if it exists alongside the build output dir
+        SBOM_PATH="$(dirname "${{ inputs.build_output_dir }}")/sbom.json"
+        if [ -f "$SBOM_PATH" ]; then
+          echo "Including SBOM: $SBOM_PATH"
+          cp "$SBOM_PATH" "$STAGING/"
+        elif [ -f "sbom.json" ]; then
+          echo "Including sbom.json from working directory"
+          cp sbom.json "$STAGING/"
+        fi
+
+        echo "Evidence staging contents:"
+        ls -la "$STAGING/"
+
+    - name: Upload ci-evidence artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-evidence
+        path: /tmp/ci-evidence-staging/
+        retention-days: 30

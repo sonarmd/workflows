@@ -1,0 +1,122 @@
+name: GitHub Release
+description: Find ci-evidence artifact, create a GitHub release with the build archive.
+
+inputs:
+  tag:
+    description: 'Release tag to create'
+    required: true
+  prerelease:
+    description: 'Whether this is a pre-release ("true" or "false")'
+    required: true
+  commit-sha:
+    description: 'The commit SHA this release is built from'
+    required: true
+  token:
+    description: 'GitHub token with contents:write permission'
+    required: true
+  artifact-run-id:
+    description: 'Run ID where ci-evidence lives. If empty, searches for it automatically.'
+    required: false
+    default: ''
+
+outputs:
+  artifact-url:
+    description: 'GitHub API URL for the release assets'
+    value: ${{ steps.release.outputs.artifact-url }}
+  release-url:
+    description: 'HTML URL of the created GitHub release'
+    value: ${{ steps.release.outputs.release-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve ci-evidence artifact run ID
+      id: find-artifact
+      shell: bash
+      run: |
+        ARTIFACT_RUN_ID="${{ inputs.artifact-run-id }}"
+
+        if [ -n "$ARTIFACT_RUN_ID" ]; then
+          echo "Using provided artifact-run-id: $ARTIFACT_RUN_ID"
+          echo "run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "Searching for ci-evidence artifact on commit ${{ inputs.commit-sha }}..."
+
+        # Fetch completed successful runs for this commit
+        RUNS=$(gh api \
+          "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${{ inputs.commit-sha }}&status=completed&per_page=50" \
+          --jq '.workflow_runs[] | select(.conclusion=="success") | .id')
+
+        FOUND_RUN_ID=""
+        for RUN_ID in $RUNS; do
+          ARTIFACTS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
+            --jq '.artifacts[] | select(.name=="ci-evidence" and .expired==false) | .id' 2>/dev/null || true)
+          if [ -n "$ARTIFACTS" ]; then
+            echo "Found ci-evidence in run $RUN_ID"
+            FOUND_RUN_ID="$RUN_ID"
+            break
+          fi
+        done
+
+        if [ -z "$FOUND_RUN_ID" ]; then
+          echo "::error::No ci-evidence artifact found for commit ${{ inputs.commit-sha }}"
+          echo "Ensure CI passed and produced a ci-evidence artifact before triggering CD."
+          exit 1
+        fi
+
+        echo "run_id=$FOUND_RUN_ID" >> "$GITHUB_OUTPUT"
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+
+    - name: Download ci-evidence
+      shell: bash
+      run: |
+        RUN_ID="${{ steps.find-artifact.outputs.run_id }}"
+        echo "Downloading ci-evidence from run $RUN_ID..."
+        gh run download "$RUN_ID" --name ci-evidence --dir /tmp/ci-evidence
+        echo "Downloaded:"
+        ls -la /tmp/ci-evidence/
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+
+    - name: Prepare release archive
+      shell: bash
+      run: |
+        ARCHIVE=$(find /tmp/ci-evidence -name 'build.tar.gz' | head -1)
+        if [ -z "$ARCHIVE" ]; then
+          echo "::error::build.tar.gz not found in ci-evidence"
+          exit 1
+        fi
+        cp "$ARCHIVE" /tmp/release.tar.gz
+        echo "Release archive ready: /tmp/release.tar.gz ($(du -sh /tmp/release.tar.gz | cut -f1))"
+
+    - name: Create GitHub release
+      id: release
+      shell: bash
+      run: |
+        TAG="${{ inputs.tag }}"
+        PRERELEASE="${{ inputs.prerelease }}"
+
+        if [ "$PRERELEASE" = "true" ]; then
+          RELEASE_FLAGS="--prerelease"
+        else
+          RELEASE_FLAGS="--latest"
+        fi
+
+        gh release create "$TAG" /tmp/release.tar.gz \
+          --title "$TAG" \
+          --generate-notes \
+          $RELEASE_FLAGS
+
+        ARTIFACT_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
+        RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
+
+        echo "artifact-url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+        echo "release-url=$RELEASE_URL"   >> "$GITHUB_OUTPUT"
+
+        echo "Release created: $RELEASE_URL"
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GITHUB_REPOSITORY: ${{ env.GITHUB_REPOSITORY }}

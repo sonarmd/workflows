@@ -1,0 +1,308 @@
+name: CD
+
+# Universal CD workflow. Called by per-repo thin shims.
+# Finds the ci-evidence artifact from the CI run on the merged commit,
+# tags the release, creates a GitHub release, then pings Hubot per bundle.
+#
+# Tag format: {env}-{repo-short}-{version}-b{run_number}
+# Environments: prd (master/main), stg (release/**), dev (everything else)
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: 'App name (e.g. triggr_api)'
+        required: true
+        type: string
+      repo-short:
+        description: 'Short tag prefix (e.g. api, fe, mobile)'
+        required: true
+        type: string
+      slack-project:
+        description: 'Display name for Slack notifications'
+        required: true
+        type: string
+      node-version:
+        description: 'Node version for fallback build'
+        required: false
+        type: string
+        default: '22'
+      pre-install-command:
+        description: 'Pre-install command for fallback build'
+        required: false
+        type: string
+        default: ''
+      build-command:
+        description: 'Build command for fallback build'
+        required: false
+        type: string
+        default: ''
+      build-output-dir:
+        description: 'Build output directory for fallback build'
+        required: false
+        type: string
+        default: 'dist'
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN_AGORA:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
+      GH_RELEASE_TOKEN:
+        required: true
+
+jobs:
+  # ── Setup: parse env, read version, locate ci-evidence ─────────────────
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      env:                  ${{ steps.parse-env.outputs.env }}
+      version:              ${{ steps.read-version.outputs.version }}
+      ci_artifact_exists:   ${{ steps.find-artifact.outputs.ci_artifact_exists }}
+      ci_artifact_run_id:   ${{ steps.find-artifact.outputs.ci_artifact_run_id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Notify CD started
+        uses: sonarmd/workflows/actions/ping-slack@main
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          app: ${{ inputs.app }}
+          message: "CD started for ${{ inputs.app }} on ${{ github.ref_name }}"
+
+      - name: Parse environment from branch
+        id: parse-env
+        shell: bash
+        run: |
+          REF="${{ github.ref_name }}"
+          if [[ "$REF" == "master" || "$REF" == "main" ]]; then
+            ENV="prd"
+          elif [[ "$REF" == release/* ]]; then
+            ENV="stg"
+          else
+            ENV="dev"
+          fi
+          echo "env=$ENV" >> "$GITHUB_OUTPUT"
+          echo "Resolved environment: $ENV (from branch: $REF)"
+
+      - name: Read version from package.json
+        id: read-version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Find ci-evidence artifact
+        id: find-artifact
+        shell: bash
+        run: |
+          SHA="${{ github.sha }}"
+          echo "Searching for ci-evidence on commit $SHA..."
+
+          RUNS=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&status=completed&per_page=50" \
+            --jq '.workflow_runs[] | select(.conclusion=="success") | .id' 2>/dev/null || true)
+
+          FOUND_RUN_ID=""
+          for RUN_ID in $RUNS; do
+            HAS_ARTIFACT=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
+              --jq '.artifacts[] | select(.name=="ci-evidence" and .expired==false) | .id' \
+              2>/dev/null | head -1 || true)
+            if [ -n "$HAS_ARTIFACT" ]; then
+              echo "Found ci-evidence in run $RUN_ID"
+              FOUND_RUN_ID="$RUN_ID"
+              break
+            fi
+          done
+
+          if [ -n "$FOUND_RUN_ID" ]; then
+            echo "ci_artifact_exists=true"  >> "$GITHUB_OUTPUT"
+            echo "ci_artifact_run_id=$FOUND_RUN_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "ci_artifact_exists=false" >> "$GITHUB_OUTPUT"
+            echo "ci_artifact_run_id="      >> "$GITHUB_OUTPUT"
+            echo "No ci-evidence artifact found for commit $SHA"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+  # ── Fallback: minimal rebuild when ci-evidence is missing ──────────────
+  ci-fallback:
+    name: ci-fallback
+    needs: setup
+    if: needs.setup.outputs.ci_artifact_exists == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Warn — no CI artifact
+        uses: sonarmd/workflows/actions/ping-slack@main
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          app: ${{ inputs.app }}
+          message: ":warning: No CI artifact found for commit ${{ github.sha }} — running minimal build fallback before releasing"
+
+      - name: Fail if no build command provided
+        if: inputs.build-command == ''
+        shell: bash
+        run: |
+          echo "::error::No CI artifact found and no build-command provided for fallback."
+          echo "Ensure CI passes and produces a ci-evidence artifact before merging."
+          exit 1
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Pre-install
+        if: inputs.pre-install-command != ''
+        shell: bash
+        run: ${{ inputs.pre-install-command }}
+
+      - name: Setup Node.js
+        if: inputs.node-version != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build-command }}
+
+      - name: Generate SBOM
+        uses: sonarmd/workflows/actions/sbom-generator@main
+        with:
+          artifact-path: ${{ inputs.build-output-dir }}
+
+      - name: Sign artifacts
+        uses: sonarmd/workflows/actions/ci-sign@main
+        with:
+          build_output_dir: ${{ inputs.build-output-dir }}
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_AGORA }}
+
+  # ── Tag: create and push the release tag ───────────────────────────────
+  tag:
+    name: tag
+    needs: [setup, ci-fallback]
+    if: |
+      always() &&
+      needs.setup.result == 'success' &&
+      (needs.setup.outputs.ci_artifact_exists == 'true' || needs.ci-fallback.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.auto-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          token: ${{ secrets.GH_RELEASE_TOKEN }}
+
+      - name: Auto tag
+        id: auto-tag
+        uses: sonarmd/workflows/actions/auto-tag@main
+        with:
+          repo-short:   ${{ inputs.repo-short }}
+          environment:  ${{ needs.setup.outputs.env }}
+          version:      ${{ needs.setup.outputs.version }}
+          run-number:   ${{ github.run_number }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+  # ── Release: create GitHub release from ci-evidence artifact ───────────
+  release:
+    name: release
+    needs: [setup, tag, ci-fallback]
+    if: always() && needs.tag.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      artifact-url: ${{ steps.gh-release.outputs.artifact-url }}
+      release-url:  ${{ steps.gh-release.outputs.release-url }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Create GitHub release
+        id: gh-release
+        uses: sonarmd/workflows/actions/github-release@main
+        with:
+          tag:              ${{ needs.tag.outputs.tag }}
+          prerelease:       ${{ needs.setup.outputs.env == 'stg' && 'true' || 'false' }}
+          commit-sha:       ${{ github.sha }}
+          token:            ${{ secrets.GH_RELEASE_TOKEN }}
+          artifact-run-id:  ${{ needs.setup.outputs.ci_artifact_run_id }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+  # ── Notify: ping Hubot per bundle + final Slack status ─────────────────
+  notify:
+    name: notify
+    needs: [setup, tag, release]
+    if: always() && needs.setup.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (for deploy.json)
+        if: needs.release.result == 'success'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Ping Hubot per bundle
+        if: needs.release.result == 'success'
+        shell: bash
+        run: |
+          ENV="${{ needs.setup.outputs.env }}"
+          TAG="${{ needs.tag.outputs.tag }}"
+          APP="${{ inputs.app }}"
+          ARTIFACT_URL="${{ needs.release.outputs.artifact-url }}"
+          WEBHOOK="${{ secrets.SLACK_WEBHOOK_URL }}"
+
+          if [ ! -f deploy.json ]; then
+            echo "No deploy.json found — skipping Hubot pings"
+            exit 0
+          fi
+
+          BUNDLE_COUNT=$(jq '.bundles | length' deploy.json)
+          echo "Pinging Hubot for $BUNDLE_COUNT bundle(s)..."
+
+          jq -c '.bundles[]' deploy.json | while read -r BUNDLE; do
+            BUNDLE_NAME=$(echo "$BUNDLE" | jq -r '.name')
+
+            # Resolve deploy_hosts for this bundle + env:
+            #   - object hosts: pick the env key (e.g. hosts.prd = "care.sonarmd.com")
+            #   - array hosts:  substitute ${env} and join with comma
+            #   - missing:      fall back to "eas" (mobile / no static hosts)
+            HOSTS=$(echo "$BUNDLE" | jq -r --arg env "$ENV" '
+              .hosts //
+              "eas" |
+              if type == "object" then .[$env] // "eas"
+              elif type == "array" then
+                map(gsub("\\$\\{env\\}"; $env)) | join(",")
+              else "eas"
+              end
+            ')
+            [ -z "$HOSTS" ] && HOSTS="eas"
+
+            MESSAGE="@r2-d2 ${APP} ${BUNDLE_NAME} ${ENV} ${TAG} ${HOSTS} ${ARTIFACT_URL}"
+            echo "Posting: $MESSAGE"
+            PAYLOAD=$(printf '{"text":"%s"}' "$MESSAGE")
+            curl -sf -X POST \
+              -H 'Content-Type: application/json' \
+              -d "$PAYLOAD" \
+              "$WEBHOOK" || true
+          done
+
+      - name: Notify final status
+        uses: sonarmd/workflows/actions/ping-slack@main
+        with:
+          webhook-url:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          status:       ${{ needs.release.result == 'success' && 'success' || 'failure' }}
+          app:          ${{ inputs.app }}
+          environment:  ${{ needs.setup.outputs.env }}
+          tag:          ${{ needs.tag.outputs.tag }}

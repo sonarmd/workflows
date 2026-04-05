@@ -1,0 +1,39 @@
+name: Auto Tag
+description: Create and push a release tag in the format {env}-{repo-short}-{version}-b{run-number}.
+
+inputs:
+  repo-short:
+    description: 'Short identifier for the repo used in the tag (e.g. api, fe, mobile)'
+    required: true
+  environment:
+    description: 'Target environment: dev | stg | prd'
+    required: true
+  version:
+    description: 'Semver version string from package.json (e.g. 1.2.3)'
+    required: true
+  run-number:
+    description: 'GitHub Actions run number'
+    required: true
+
+outputs:
+  tag:
+    description: 'The created tag string'
+    value: ${{ steps.create-tag.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create and push tag
+      id: create-tag
+      shell: bash
+      run: |
+        TAG="${{ inputs.environment }}-${{ inputs.repo-short }}-${{ inputs.version }}-b${{ inputs.run-number }}"
+        echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git tag "$TAG"
+        git push origin "$TAG"
+      env:
+        GH_TOKEN: ${{ env.GH_TOKEN }}
