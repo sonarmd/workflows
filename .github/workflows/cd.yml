@@ -122,7 +122,8 @@ jobs:
 
       - name: Package release.tar.gz
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG:     ${{ steps.tag.outputs.tag }}
+          TAG_ENV: ${{ steps.tag.outputs.env }}
         run: |
           set -euo pipefail
 
@@ -132,12 +133,22 @@ jobs:
             exit 1
           fi
 
-          # Collect paths to package: deploy.json + dist/ + package.json
-          # Lambda bundles live under dist/lambdas/ per the build scripts — no special handling needed
+          # Resolve {env} placeholder in deploy.json → produces a final artifact-specific copy
+          python3 -c "
+          import json, sys
+          with open('deploy.json') as f:
+            raw = f.read().replace('{env}', '$TAG_ENV')
+          data = json.loads(raw)
+          with open('deploy.json', 'w') as f:
+            json.dump(data, f, indent=2)
+          "
+          echo "deploy.json resolved for env=$TAG_ENV"
+
+          # Collect paths: deploy.json always included; dist/ and cdk.out/ if present
           PATHS="deploy.json"
-          [ -f package.json ]    && PATHS="$PATHS package.json"
-          [ -d dist ]            && PATHS="$PATHS dist/"
-          [ -d cdk.out ]         && PATHS="$PATHS cdk.out/"
+          [ -f package.json ] && PATHS="$PATHS package.json"
+          [ -d dist ]         && PATHS="$PATHS dist/"
+          [ -d cdk.out ]      && PATHS="$PATHS cdk.out/"
 
           tar czf release.tar.gz $PATHS
           echo "Packaged: $PATHS"
