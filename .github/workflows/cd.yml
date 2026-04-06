@@ -1,0 +1,350 @@
+name: CD
+
+# Universal reusable CD pipeline.
+#
+# Usage (thin wrapper in each repo):
+#
+#   uses: sonarmd/workflows/.github/workflows/cd.yml@<commit-sha>
+#   with:
+#     repo-identifier: api   # api | fe | mobile | infra | hubot
+#   secrets: inherit
+#
+# What this does:
+#   1. Resolves env from branch (release/* → stg, master → prd) or explicit input
+#   2. Resolves tag: {env}-{repo-identifier}-{semver}-b{run_number}
+#   3. Runs repo-specific pre-build + build (keyed by repo-identifier)
+#   4. Generates deploy.json + manifest.json inside the artifact
+#   5. Packages release.tar.gz
+#   6. Creates git tag + GitHub release (asset: release.tar.gz)
+#   7. Notifies Slack: "@r2-d2 {env} {app} {deploy_tag} {artifact_url}"
+
+on:
+  workflow_call:
+    inputs:
+      repo-identifier:
+        description: 'Short repo identifier: api | fe | mobile | infra | hubot'
+        type: string
+        required: true
+      environment:
+        description: 'Override environment (dev/stg/prd). If empty, inferred from branch.'
+        type: string
+        default: ''
+
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: '1Password service account token'
+        required: true
+
+    outputs:
+      tag:
+        description: 'Generated deploy tag'
+        value: ${{ jobs.cd.outputs.tag }}
+      artifact-url:
+        description: 'GitHub release artifact URL'
+        value: ${{ jobs.cd.outputs.artifact-url }}
+
+permissions: {}
+
+jobs:
+  cd:
+    name: cd
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      artifact-url: ${{ steps.release.outputs.artifact-url }}
+
+    steps:
+      # ── Resolve env + tag ──────────────────────────────────────────────────
+
+      - name: Resolve environment and tag
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.environment }}" ]; then
+            TAG_ENV="${{ inputs.environment }}"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            case "$BRANCH" in
+              release/*) TAG_ENV="stg" ;;
+              master|main) TAG_ENV="prd" ;;
+              *) echo "::error::Cannot infer env from branch '$BRANCH'. Expected release/* or master." ; exit 1 ;;
+            esac
+          fi
+          echo "env=$TAG_ENV" >> "$GITHUB_OUTPUT"
+
+      # ── Per-repo build config ──────────────────────────────────────────────
+      # Centralised here so each repo's cd.yml is a one-liner.
+      # New repo? Add a case block and update docs/cd-repos.md.
+
+      - name: Set build config for ${{ inputs.repo-identifier }}
+        id: config
+        run: |
+          REPO_ID="${{ inputs.repo-identifier }}"
+          case "$REPO_ID" in
+            api)
+              echo "app-name=triggr_api"                                                           >> "$GITHUB_OUTPUT"
+              echo "node-version=22"                                                                >> "$GITHUB_OUTPUT"
+              echo "pre-build=sudo apt-get update -qq && sudo apt-get install -y graphicsmagick"   >> "$GITHUB_OUTPUT"
+              echo "build=yarn install --frozen-lockfile && yarn build"                             >> "$GITHUB_OUTPUT"
+              echo "artifact-paths=dist/ package.json deploy.json manifest.json"                   >> "$GITHUB_OUTPUT"
+              ;;
+            fe)
+              echo "app-name=frontend"                                                              >> "$GITHUB_OUTPUT"
+              echo "node-version=20"                                                                >> "$GITHUB_OUTPUT"
+              echo "pre-build="                                                                     >> "$GITHUB_OUTPUT"
+              echo "build=yarn install --frozen-lockfile && yarn build"                             >> "$GITHUB_OUTPUT"
+              echo "artifact-paths=dist/ package.json deploy.json manifest.json"                   >> "$GITHUB_OUTPUT"
+              ;;
+            mobile)
+              echo "app-name=patient-mobile"                                                        >> "$GITHUB_OUTPUT"
+              echo "node-version=22"                                                                >> "$GITHUB_OUTPUT"
+              echo "pre-build="                                                                     >> "$GITHUB_OUTPUT"
+              echo "build="                                                                         >> "$GITHUB_OUTPUT"
+              echo "artifact-paths=deploy.json manifest.json"                                      >> "$GITHUB_OUTPUT"
+              ;;
+            infra)
+              echo "app-name=infra-cdk"                                                             >> "$GITHUB_OUTPUT"
+              echo "node-version=22"                                                                >> "$GITHUB_OUTPUT"
+              echo "pre-build="                                                                     >> "$GITHUB_OUTPUT"
+              echo "build=yarn install --frozen-lockfile && yarn build"                             >> "$GITHUB_OUTPUT"
+              echo "artifact-paths=cdk.out/ package.json deploy.json manifest.json"                >> "$GITHUB_OUTPUT"
+              ;;
+            hubot)
+              echo "app-name=hubot-deploy-triggr"                                                  >> "$GITHUB_OUTPUT"
+              echo "node-version=20"                                                                >> "$GITHUB_OUTPUT"
+              echo "pre-build="                                                                     >> "$GITHUB_OUTPUT"
+              echo "build=yarn install --frozen-lockfile"                                           >> "$GITHUB_OUTPUT"
+              echo "artifact-paths=scripts/ node_modules/ package.json deploy.json manifest.json"  >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unknown repo-identifier '$REPO_ID'. Known: api, fe, mobile, infra, hubot"
+              exit 1
+              ;;
+          esac
+
+      # ── Credentials ───────────────────────────────────────────────────────
+
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APP_ID:          op://smd_agora_shared/4skvt7l46qfd42ndku2ermwyly/appid
+          APP_PRIVATE_KEY: op://smd_agora_shared/twqeia3cpwcinjptjrnft5m3y4/notesPlain
+          SLACK_WEBHOOK_URL: op://smd_agora_shared/SLACK_WEBHOOK_URL/credential
+        with:
+          export-env: true
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+
+      # ── Checkout ──────────────────────────────────────────────────────────
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      # ── Resolve semver + final tag ─────────────────────────────────────────
+
+      - name: Resolve semver and build tag
+        id: tag
+        run: |
+          TAG_ENV="${{ steps.resolve.outputs.env }}"
+          REPO_ID="${{ inputs.repo-identifier }}"
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+          TAG="${TAG_ENV}-${REPO_ID}-${VERSION}-b${{ github.run_number }}"
+          echo "tag=$TAG"          >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
+          echo "env=$TAG_ENV"      >> "$GITHUB_OUTPUT"
+
+      # ── Pre-build ─────────────────────────────────────────────────────────
+
+      - name: Pre-build
+        if: steps.config.outputs.pre-build != ''
+        run: ${{ steps.config.outputs.pre-build }}
+
+      # ── Node setup + build ─────────────────────────────────────────────────
+
+      - uses: sonarmd/workflows/actions/setup-node@main
+        if: steps.config.outputs.build != ''
+        with:
+          node-version: ${{ steps.config.outputs.node-version }}
+
+      - name: Build
+        if: steps.config.outputs.build != ''
+        run: ${{ steps.config.outputs.build }}
+
+      # ── Generate deploy.json ──────────────────────────────────────────────
+      # Self-describing artifact. Ansible reads this at deploy time.
+      # Units vary by repo-identifier and environment.
+
+      - name: Generate deploy.json
+        env:
+          TAG_ENV:  ${{ steps.tag.outputs.env }}
+          REPO_ID:  ${{ inputs.repo-identifier }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          env     = os.environ["TAG_ENV"]   # dev | stg | prd
+          repo_id = os.environ["REPO_ID"]
+
+          # Hostname tag pattern: {role}-{n}.{resource-type}.{env}
+          # (domain appended by Route 53 — Ansible uses the tag value without domain)
+          def ec2(role, n, resource="ec2"):
+            return f"{role}-{n:02d}.{resource}.{env}"
+
+          configs = {
+            "api": {
+              "units": [
+                {
+                  "name": "api",
+                  "target": "ec2",
+                  "hosts": [ec2("api", 1), ec2("jobs", 1)]
+                },
+                {
+                  "name": "escalation",
+                  "target": "lambda",
+                  "bundlePath": "dist/lambdas/escalation"
+                },
+                {
+                  "name": "signal",
+                  "target": "lambda",
+                  "bundlePath": "dist/lambdas/signal"
+                }
+              ]
+            },
+            "fe": {
+              "units": [
+                {
+                  "name": "frontend",
+                  "target": "s3",
+                  "bundlePath": "dist",
+                  "hosts": [f"sonarmd-frontend-{env}"]
+                }
+              ]
+            },
+            "mobile": {
+              "units": [
+                {
+                  "name": "patient-mobile",
+                  "target": "eas",
+                  "eas_profile": env
+                }
+              ]
+            },
+            "infra": {
+              "units": [
+                {
+                  "name": "InfraStack",
+                  "target": "cdk",
+                  "bundlePath": "cdk.out",
+                  "hosts": ["InfraStack"]
+                }
+              ]
+            },
+            "hubot": {
+              "units": [
+                {
+                  "name": "hubot",
+                  "target": "ec2",
+                  "hosts": [ec2("deploy", 1)]
+                }
+              ]
+            }
+          }
+
+          cfg = configs.get(repo_id)
+          if not cfg:
+            raise SystemExit(f"Unknown repo-identifier: {repo_id}")
+
+          with open("deploy.json", "w") as f:
+            json.dump(cfg, f, indent=2)
+
+          print(json.dumps(cfg, indent=2))
+          PYEOF
+
+      # ── Generate manifest.json (ci-sign stub) ─────────────────────────────
+
+      - name: Generate manifest.json
+        run: |
+          cat > manifest.json << EOF
+          {
+            "actor":  "${{ github.actor }}",
+            "sha":    "${{ github.sha }}",
+            "ref":    "${{ github.ref }}",
+            "tag":    "${{ steps.tag.outputs.tag }}",
+            "run_id": "${{ github.run_id }}"
+          }
+          EOF
+
+      # ── Package ───────────────────────────────────────────────────────────
+
+      - name: Package release.tar.gz
+        run: tar czf release.tar.gz ${{ steps.config.outputs.artifact-paths }}
+
+      # ── Tag + release ──────────────────────────────────────────────────────
+
+      - name: Create git tag and GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG:      ${{ steps.tag.outputs.tag }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Auto-release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" release.tar.gz \
+            --title "$TAG" \
+            --generate-notes \
+            $([ "${{ steps.tag.outputs.env }}" != "prd" ] && echo "--prerelease")
+          ARTIFACT_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG"
+          echo "artifact-url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+
+      # ── Notify Slack ───────────────────────────────────────────────────────
+      # Format: @r2-d2 {env} {app} {deploy_tag} {artifact_url}
+
+      - name: Notify Slack
+        env:
+          TAG:          ${{ steps.tag.outputs.tag }}
+          TAG_ENV:      ${{ steps.tag.outputs.env }}
+          APP_NAME:     ${{ steps.config.outputs.app-name }}
+          ARTIFACT_URL: ${{ steps.release.outputs.artifact-url }}
+          RUN_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR:        ${{ github.actor }}
+        run: |
+          DEPLOY_MSG="@r2-d2 $TAG_ENV $APP_NAME $TAG $ARTIFACT_URL"
+
+          PAYLOAD=$(jq -n \
+            --arg channel "#ops" \
+            --arg text    "$DEPLOY_MSG" \
+            --arg app     "$APP_NAME" \
+            --arg env     "$TAG_ENV" \
+            --arg tag     "$TAG" \
+            --arg actor   "$ACTOR" \
+            --arg run_url "$RUN_URL" \
+            '{
+              channel: $channel,
+              text: $text,
+              attachments: [{
+                color: "#36a64f",
+                fields: [
+                  {title: "App",         value: $app,     short: true},
+                  {title: "Environment", value: $env,     short: true},
+                  {title: "Tag",         value: ("`" + $tag + "`"), short: false},
+                  {title: "Actor",       value: $actor,   short: true}
+                ],
+                actions: [{type: "button", text: "View Run", url: $run_url}]
+              }]
+            }')
+
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
