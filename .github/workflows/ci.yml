@@ -166,8 +166,6 @@ on:
         type: string
         default: ''
 
-permissions: {}
-
 jobs:
   # ════════════════════════════════════════════════════════════════════════
   # SETUP — generate shard matrix for test job
