@@ -1,0 +1,110 @@
+name: Ping Slack
+description: |
+  CI workflow notifier. Fires on workflow start (status=started) and on
+  completion (status=success|failure|cancelled). On failure, includes a
+  direct link to the run so the problem can be addressed without hunting
+  through workflow logs.
+
+  Usage:
+    # At workflow start
+    - uses: sonarmd/workflows/actions/ping-slack@<sha>
+      with:
+        webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        status: started
+        app: my-repo
+
+    # At workflow end (always runs)
+    - uses: sonarmd/workflows/actions/ping-slack@<sha>
+      if: always()
+      with:
+        webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        status: ${{ job.status }}
+        app: my-repo
+        details: ${{ steps.test.outputs.summary }}   # optional — shown on failure
+
+inputs:
+  webhook-url:
+    description: Slack Incoming Webhook URL
+    required: true
+  status:
+    description: 'Workflow status: started | success | failure | cancelled'
+    required: true
+  app:
+    description: Application or repo name
+    required: true
+  details:
+    description: Optional failure context — shown in the Slack message on failure
+    required: false
+    default: ''
+  channel:
+    description: Slack channel override
+    required: false
+    default: '#ops'
+
+runs:
+  using: composite
+  steps:
+    - name: Send notification
+      shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ inputs.webhook-url }}
+        INPUT_STATUS:      ${{ inputs.status }}
+        INPUT_APP:         ${{ inputs.app }}
+        INPUT_DETAILS:     ${{ inputs.details }}
+        INPUT_CHANNEL:     ${{ inputs.channel }}
+        RUN_URL:           ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ACTOR:             ${{ github.actor }}
+        BRANCH:            ${{ github.ref_name }}
+        SHA:               ${{ github.sha }}
+      run: |
+        case "$INPUT_STATUS" in
+          started)   COLOR="#439fe0"; EMOJI=":building_construction:"; TITLE="CI started" ;;
+          success)   COLOR="#36a64f"; EMOJI=":white_check_mark:";      TITLE="CI passed"  ;;
+          failure)   COLOR="#dc3545"; EMOJI=":x:";                     TITLE="CI failed"  ;;
+          cancelled) COLOR="#ffc107"; EMOJI=":warning:";               TITLE="CI cancelled" ;;
+          *)         COLOR="#6c757d"; EMOJI=":grey_question:";         TITLE="CI $INPUT_STATUS" ;;
+        esac
+
+        SHORT_SHA="${SHA:0:8}"
+
+        # Build fields array
+        FIELDS=$(jq -n \
+          --arg app    "$INPUT_APP" \
+          --arg branch "$BRANCH" \
+          --arg sha    "$SHORT_SHA" \
+          --arg actor  "$ACTOR" \
+          '[
+            {title: "App",    value: $app,    short: true},
+            {title: "Branch", value: $branch, short: true},
+            {title: "Commit", value: ("`" + $sha + "`"), short: true},
+            {title: "Actor",  value: $actor,  short: true}
+          ]')
+
+        # Append failure details if present
+        if [ -n "$INPUT_DETAILS" ] && [ "$INPUT_STATUS" = "failure" ]; then
+          FIELDS=$(echo "$FIELDS" | jq \
+            --arg details "$INPUT_DETAILS" \
+            '. + [{title: "Details", value: $details, short: false}]')
+        fi
+
+        PAYLOAD=$(jq -n \
+          --arg channel "$INPUT_CHANNEL" \
+          --arg title   "$EMOJI $TITLE — $INPUT_APP" \
+          --arg color   "$COLOR" \
+          --argjson fields "$FIELDS" \
+          --arg run_url "$RUN_URL" \
+          '{
+            channel: $channel,
+            text: $title,
+            attachments: [{
+              color: $color,
+              title: $title,
+              title_link: $run_url,
+              fields: $fields,
+              actions: [{type: "button", text: "View Run", url: $run_url}]
+            }]
+          }')
+
+        curl -sf -X POST -H 'Content-type: application/json' \
+          --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" \
+          || echo "::warning::ping-slack: notification failed (non-fatal)"

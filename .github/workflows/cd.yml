@@ -1,0 +1,251 @@
+name: CD
+
+# Universal reusable CD pipeline.
+#
+# Each repo calls this with one input — its identifier — and nothing else.
+# Build is driven by the repo's own package.json scripts.
+# Deploy targets are driven by the repo's own deploy.json.
+#
+# Tag format: {stg|prd}-{identifier}-b{run_number}
+# Release:    release.tar.gz attached to GitHub release
+# Notify:     @r2-d2 {env} {identifier} {tag} {artifact_url} in #ops
+#
+# Thin wrapper (per repo):
+#   jobs:
+#     cd:
+#       uses: sonarmd/workflows/.github/workflows/cd.yml@<sha>
+#       with:
+#         repo-identifier: api
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      repo-identifier:
+        description: 'Short identifier: api | fe | mobile | cdk'
+        type: string
+        required: true
+      environment:
+        description: 'Override env (stg/prd). If empty, inferred from branch.'
+        type: string
+        default: ''
+
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: '1Password service account token'
+        required: true
+
+    outputs:
+      tag:
+        description: 'Generated deploy tag'
+        value: ${{ jobs.cd.outputs.tag }}
+      artifact-url:
+        description: 'GitHub API artifact URL'
+        value: ${{ jobs.cd.outputs.artifact-url }}
+
+permissions: {}
+
+jobs:
+  cd:
+    name: cd
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write   # required for Sigstore attestation of the release
+
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      artifact-url: ${{ steps.release.outputs.artifact-url }}
+
+    steps:
+      # ── Credentials ────────────────────────────────────────────────────────
+
+      - name: Load secrets
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APP_ID:            op://smd_agora_shared/4skvt7l46qfd42ndku2ermwyly/appid
+          APP_PRIVATE_KEY:   op://smd_agora_shared/twqeia3cpwcinjptjrnft5m3y4/notesPlain
+          SLACK_WEBHOOK_URL: op://smd_agora_shared/SLACK_WEBHOOK_URL/credential
+        with:
+          export-env: true
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+
+      # ── Checkout ───────────────────────────────────────────────────────────
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      # ── Resolve env + tag ──────────────────────────────────────────────────
+
+      - name: Resolve env and build tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.environment }}" ]; then
+            TAG_ENV="${{ inputs.environment }}"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            case "$BRANCH" in
+              release/*) TAG_ENV="stg" ;;
+              master|main) TAG_ENV="prd" ;;
+              *)
+                echo "::error::Cannot infer env from branch '$BRANCH'. Expected release/* or master/main."
+                exit 1
+                ;;
+            esac
+          fi
+          TAG="${TAG_ENV}-${{ inputs.repo-identifier }}-b${{ github.run_number }}"
+          echo "env=$TAG_ENV"  >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"      >> "$GITHUB_OUTPUT"
+
+      # ── Build ─────────────────────────────────────────────────────────────
+      # Repo owns its build. setup-node reads version from package.json volta/engines.
+      # yarn build is the contract — every repo exposes this script.
+
+      - uses: ./actions/setup-node
+
+      - name: Build
+        run: yarn build
+
+      # ── Package ────────────────────────────────────────────────────────────
+      # Packages everything defined in deploy.json units.
+      # deploy.json + dist/ are always included. Lambda bundles live under dist/.
+
+      - name: Package release.tar.gz
+        env:
+          TAG:     ${{ steps.tag.outputs.tag }}
+          TAG_ENV: ${{ steps.tag.outputs.env }}
+        run: |
+          set -euo pipefail
+
+          # Always include deploy.json — Ansible reads this at deploy time
+          if [ ! -f deploy.json ]; then
+            echo "::error::deploy.json not found. Every repo must commit a deploy.json."
+            exit 1
+          fi
+
+          # Resolve {env} placeholder in deploy.json → produces a final artifact-specific copy
+          python3 - <<EOF
+import json
+with open('deploy.json') as f:
+    raw = f.read().replace('{env}', '$TAG_ENV')
+data = json.loads(raw)
+with open('deploy.json', 'w') as f:
+    json.dump(data, f, indent=2)
+EOF
+          echo "deploy.json resolved for env=$TAG_ENV"
+
+          # Collect paths: deploy.json always included; dist/ and cdk.out/ if present
+          PATHS="deploy.json"
+          [ -f package.json ] && PATHS="$PATHS package.json"
+          [ -d dist ]         && PATHS="$PATHS dist/"
+          [ -d cdk.out ]      && PATHS="$PATHS cdk.out/"
+
+          tar czf release.tar.gz $PATHS
+          echo "Packaged: $PATHS"
+          echo "Size: $(du -sh release.tar.gz | cut -f1)"
+
+      # ── Tag + Release ──────────────────────────────────────────────────────
+
+      - name: Create git tag and GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG:      ${{ steps.tag.outputs.tag }}
+          TAG_ENV:  ${{ steps.tag.outputs.env }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Auto-release $TAG"
+          git push origin "$TAG"
+
+          PRERELEASE=""
+          [ "$TAG_ENV" != "prd" ] && PRERELEASE="--prerelease"
+
+          gh release create "$TAG" release.tar.gz \
+            --title "$TAG" \
+            --generate-notes \
+            $PRERELEASE
+
+          ARTIFACT_URL="https://github.com/${{ github.repository }}/releases/download/$TAG/release.tar.gz"
+          echo "artifact-url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+
+      # ── Notify Slack ───────────────────────────────────────────────────────
+      # @r2-d2 picks this up and triggers the Ansible deploy
+
+      - name: Notify Slack
+        env:
+          TAG:          ${{ steps.tag.outputs.tag }}
+          TAG_ENV:      ${{ steps.tag.outputs.env }}
+          REPO_ID:      ${{ inputs.repo-identifier }}
+          ARTIFACT_URL: ${{ steps.release.outputs.artifact-url }}
+          RUN_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR:        ${{ github.actor }}
+        run: |
+          DEPLOY_MSG="@r2-d2 deploy $TAG_ENV $REPO_ID $TAG $ARTIFACT_URL"
+
+          PAYLOAD=$(jq -n \
+            --arg text    "$DEPLOY_MSG" \
+            --arg tag     "$TAG" \
+            --arg env     "$TAG_ENV" \
+            --arg repo_id "$REPO_ID" \
+            --arg actor   "$ACTOR" \
+            --arg run_url "$RUN_URL" \
+            '{
+              channel: "#ops",
+              text: $text,
+              attachments: [{
+                color: "#36a64f",
+                fields: [
+                  {title: "App",    value: $repo_id, short: true},
+                  {title: "Env",    value: $env,     short: true},
+                  {title: "Tag",    value: ("`" + $tag + "`"), short: false},
+                  {title: "Actor",  value: $actor,   short: true}
+                ],
+                actions: [{type: "button", text: "View Run", url: $run_url}]
+              }]
+            }')
+
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" || true
+
+      # ── Notify failure ─────────────────────────────────────────────────────
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          TAG_ENV:  ${{ steps.tag.outputs.env }}
+          REPO_ID:  ${{ inputs.repo-identifier }}
+          RUN_URL:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR:    ${{ github.actor }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg env     "$TAG_ENV" \
+            --arg repo_id "$REPO_ID" \
+            --arg actor   "$ACTOR" \
+            --arg run_url "$RUN_URL" \
+            '{
+              channel: "#ops",
+              text: (":x: CD failed — " + $repo_id + " (" + $env + ")"),
+              attachments: [{
+                color: "#dc3545",
+                fields: [
+                  {title: "App",   value: $repo_id, short: true},
+                  {title: "Env",   value: $env,     short: true},
+                  {title: "Actor", value: $actor,   short: true}
+                ],
+                actions: [{type: "button", text: "View Failure", url: $run_url}]
+              }]
+            }')
+
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" || true
