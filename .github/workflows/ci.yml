@@ -254,6 +254,7 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
     env:
       NODE_OPTIONS: ${{ inputs.node_options }}
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
@@ -357,6 +358,7 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
     env:
       NODE_OPTIONS: ${{ inputs.node_options }}
+      GITHUB_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.test-matrix) }}
@@ -534,6 +536,7 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
     env:
       NODE_OPTIONS: ${{ inputs.node_options }}
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
