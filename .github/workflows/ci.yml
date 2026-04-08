@@ -166,6 +166,12 @@ on:
         type: string
         default: ''
 
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+  attestations: write
+
 jobs:
   # ════════════════════════════════════════════════════════════════════════
   # SETUP — generate shard matrix for test job
