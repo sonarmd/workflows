@@ -1,0 +1,204 @@
+name: 'Release Lifecycle (release++)'
+description: |
+  Manages branch lifecycle for the release flow:
+    feature/SONMD-123 ──ff──► release/v1.0.1 ──ff──► main
+
+  Phase 1 — merge to release/*:
+    feature/SONMD-123  →  feature/SONMD-123__rc  (parked as release candidate)
+
+  Phase 2 — merge to main/master:
+    feature/SONMD-123__rc  →  __a__feature/SONMD-123  (archived)
+    release/v1.0.1         →  __a__release/v1.0.1     (archived)
+    (new) release/v1.0.2   ←  main HEAD               (next release branch)
+
+inputs:
+  token:
+    description: 'GitHub token with repo write access (use a GitHub App token, not GITHUB_TOKEN)'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Detect phase and source branch
+      id: detect
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        TARGET_BRANCH: ${{ github.ref_name }}
+        REPO: ${{ github.repository }}
+        SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+
+        echo "target_branch=$TARGET_BRANCH" >> "$GITHUB_OUTPUT"
+
+        # Find the PR that was just merged into this branch
+        PR_JSON=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[0] // empty' 2>/dev/null || true)
+
+        if [ -z "$PR_JSON" ]; then
+          echo "::warning::No merged PR found for commit $SHA — skipping release lifecycle"
+          echo "phase=skip" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        SOURCE_BRANCH=$(echo "$PR_JSON" | jq -r '.head.ref')
+        PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+        echo "source_branch=$SOURCE_BRANCH" >> "$GITHUB_OUTPUT"
+        echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+        # Determine phase
+        if [[ "$TARGET_BRANCH" =~ ^release/ ]]; then
+          echo "phase=rc" >> "$GITHUB_OUTPUT"
+          echo "Phase 1: feature → release (mark as RC)"
+        elif [[ "$TARGET_BRANCH" == "main" || "$TARGET_BRANCH" == "master" ]]; then
+          if [[ "$SOURCE_BRANCH" =~ ^release/ ]]; then
+            echo "phase=archive" >> "$GITHUB_OUTPUT"
+            echo "Phase 2: release → main (archive + increment)"
+          else
+            echo "::notice::Merge to main from non-release branch ($SOURCE_BRANCH) — skipping"
+            echo "phase=skip" >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "phase=skip" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ── Phase 1: Mark feature branch as release candidate ──────────────────
+    - name: 'Phase 1: Rename feature → __rc'
+      if: steps.detect.outputs.phase == 'rc'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        SOURCE: ${{ steps.detect.outputs.source_branch }}
+      run: |
+        set -euo pipefail
+
+        # Only rename feature branches, not hotfix/bugfix/etc merging into release
+        if [[ ! "$SOURCE" =~ ^feature/ ]]; then
+          echo "::notice::Source branch '$SOURCE' is not a feature branch — skipping RC rename"
+          exit 0
+        fi
+
+        RC_NAME="${SOURCE}__rc"
+
+        # Get the SHA of the source branch tip
+        SOURCE_SHA=$(gh api "repos/$REPO/git/ref/heads/$SOURCE" --jq '.object.sha' 2>/dev/null || true)
+        if [ -z "$SOURCE_SHA" ]; then
+          echo "::warning::Source branch '$SOURCE' already deleted — skipping RC rename"
+          exit 0
+        fi
+
+        # Create the __rc branch at the same SHA
+        gh api "repos/$REPO/git/refs" \
+          -f "ref=refs/heads/$RC_NAME" \
+          -f "sha=$SOURCE_SHA" \
+          --silent
+
+        # Delete the original feature branch
+        gh api "repos/$REPO/git/refs/heads/$SOURCE" -X DELETE --silent
+
+        echo "✓ $SOURCE → $RC_NAME"
+
+    # ── Phase 2: Archive branches + create next release ────────────────────
+    - name: 'Phase 2: Archive RC branches'
+      if: steps.detect.outputs.phase == 'archive'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        # Find all __rc branches and archive them
+        RC_BRANCHES=$(gh api "repos/$REPO/git/matching-refs/heads/" \
+          --jq '.[].ref' \
+          --paginate | grep '__rc$' || true)
+
+        if [ -z "$RC_BRANCHES" ]; then
+          echo "No __rc branches to archive"
+          exit 0
+        fi
+
+        for REF in $RC_BRANCHES; do
+          BRANCH="${REF#refs/heads/}"
+          # feature/SONMD-123__rc → __a__feature/SONMD-123
+          ARCHIVE_NAME="__a__${BRANCH%__rc}"
+
+          BRANCH_SHA=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq '.object.sha')
+
+          # Create archived branch
+          gh api "repos/$REPO/git/refs" \
+            -f "ref=refs/heads/$ARCHIVE_NAME" \
+            -f "sha=$BRANCH_SHA" \
+            --silent
+
+          # Delete __rc branch
+          gh api "repos/$REPO/git/refs/heads/$BRANCH" -X DELETE --silent
+
+          echo "✓ $BRANCH → $ARCHIVE_NAME"
+        done
+
+    - name: 'Phase 2: Archive release branch + create next'
+      if: steps.detect.outputs.phase == 'archive'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        RELEASE_BRANCH: ${{ steps.detect.outputs.source_branch }}
+        MAIN_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+
+        # Archive the release branch: release/v1.0.1 → __a__release/v1.0.1
+        ARCHIVE_NAME="__a__${RELEASE_BRANCH}"
+
+        RELEASE_SHA=$(gh api "repos/$REPO/git/ref/heads/$RELEASE_BRANCH" --jq '.object.sha' 2>/dev/null || true)
+        if [ -n "$RELEASE_SHA" ]; then
+          gh api "repos/$REPO/git/refs" \
+            -f "ref=refs/heads/$ARCHIVE_NAME" \
+            -f "sha=$RELEASE_SHA" \
+            --silent
+
+          gh api "repos/$REPO/git/refs/heads/$RELEASE_BRANCH" -X DELETE --silent
+
+          echo "✓ $RELEASE_BRANCH → $ARCHIVE_NAME"
+        else
+          echo "::warning::Release branch '$RELEASE_BRANCH' already deleted"
+        fi
+
+        # Parse version and increment: release/v1.0.1 → release/v1.0.2
+        VERSION_PART="${RELEASE_BRANCH#release/}"
+
+        # Strip leading 'v' if present for parsing
+        RAW_VERSION="${VERSION_PART#v}"
+
+        # Parse semver components
+        if [[ "$RAW_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(.*)$ ]]; then
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          SUFFIX="${BASH_REMATCH[4]}"
+          NEXT_PATCH=$((PATCH + 1))
+
+          # Preserve the original prefix (v or no v)
+          if [[ "$VERSION_PART" == v* ]]; then
+            NEXT_BRANCH="release/v${MAJOR}.${MINOR}.${NEXT_PATCH}${SUFFIX}"
+          else
+            NEXT_BRANCH="release/${MAJOR}.${MINOR}.${NEXT_PATCH}${SUFFIX}"
+          fi
+        else
+          # Non-semver release branch — just append .1
+          NEXT_BRANCH="${RELEASE_BRANCH}.1"
+        fi
+
+        # Create next release branch from main HEAD
+        gh api "repos/$REPO/git/refs" \
+          -f "ref=refs/heads/$NEXT_BRANCH" \
+          -f "sha=$MAIN_SHA" \
+          --silent
+
+        echo "✓ Created $NEXT_BRANCH from main ($MAIN_SHA)"
+        echo ""
+        echo "Release lifecycle complete:"
+        echo "  archived: $RELEASE_BRANCH → $ARCHIVE_NAME"
+        echo "  created:  $NEXT_BRANCH (from main)"
