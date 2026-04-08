@@ -21,7 +21,7 @@ Examples: `prd-api-b188`, `stg-fe-b44`, `prd-mobile-b12`
 No semver. Build number is monotonically incrementing across all runs of the workflow — it goes up forever.
 
 - `stg` tags are created on merge to `release/*`
-- `prd` tags are created on merge to `master`
+- `prd` tags are created on merge to `master` or `main`
 
 ---
 
@@ -45,7 +45,8 @@ jobs:
     uses: sonarmd/workflows/.github/workflows/cd.yml@<sha>
     with:
       repo-identifier: api   # api | fe | mobile | cdk
-    secrets: inherit
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_AGORA }}
 ```
 
 That's it. One input. Everything else is driven by the repo's own files.
@@ -142,18 +143,19 @@ Defines every deployable unit in this repo. Ansible reads this from the release 
 
 ```json
 {
-  "units": [
+  "app": "my-repo",
+  "bundles": [
     {
       "name": "api",
       "target": "ec2",
-      "hosts": ["api-01.ec2.{env}"],
-      "bundlePath": "dist"
+      "path": "dist",
+      "hosts": ["api-{env}.sonarmd.net"]
     },
     {
       "name": "my-lambda",
       "target": "lambda",
-      "hosts": ["my-lambda-01.lambda.{env}"],
-      "bundlePath": "dist/lambdas/my-lambda"
+      "path": "lambdas/my-lambda/artifact",
+      "hosts": ["my-lambda-{env}"]
     }
   ]
 }
@@ -165,11 +167,11 @@ Defines every deployable unit in this repo. Ansible reads this from the release 
 
 | `target` | What Ansible does | Required fields |
 |----------|-------------------|-----------------|
-| `ec2` | Rolling deploy via SSH | `hosts`, `bundlePath` |
-| `lambda` | Zip + update function code | `hosts`, `bundlePath` |
-| `s3` | Sync to S3 + CloudFront invalidation | `hosts` (bucket name), `bundlePath` |
+| `ec2` | Rolling deploy via SSH | `hosts`, `path` |
+| `lambda` | Zip + update function code | `hosts`, `path` |
+| `s3` | Sync to S3 + CloudFront invalidation | `hosts` (bucket name), `path` |
 | `eas` | EAS cloud build via CLI | `eas_profile` |
-| `cdk` | CloudFormation stack update | `hosts` (stack name), `bundlePath` |
+| `cdk` | CloudFormation stack update | `hosts` (stack name), `path` |
 
 `hosts` values match the `Hostname` AWS tag on the target resource (without the domain). The CD workflow resolves `{env}` at build time.
 
@@ -206,7 +208,7 @@ Defines every deployable unit in this repo. Ansible reads this from the release 
 1. **Install the SonarMD deploy GitHub App** on the repo
 2. **Add required secrets** to the repo:
    - `SLACK_WEBHOOK_URL`
-   - `OP_SERVICE_ACCOUNT_TOKEN_AGORA`
+   - `OP_SERVICE_ACCOUNT_TOKEN_AGORA` (mapped to `OP_SERVICE_ACCOUNT_TOKEN` in the CD wrapper — see stub above)
 3. **Add `deploy.json`** — define the units this repo deploys
 4. **Add `ci.yml`** and **`cd.yml`** from the stubs above
 5. **Ensure `yarn build` builds everything** — all lambda bundles, all output — in one command

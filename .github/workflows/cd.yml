@@ -98,7 +98,7 @@ jobs:
               release/*) TAG_ENV="stg" ;;
               master|main) TAG_ENV="prd" ;;
               *)
-                echo "::error::Cannot infer env from branch '$BRANCH'. Expected release/* or master."
+                echo "::error::Cannot infer env from branch '$BRANCH'. Expected release/* or master/main."
                 exit 1
                 ;;
             esac
@@ -111,7 +111,7 @@ jobs:
       # Repo owns its build. setup-node reads version from package.json volta/engines.
       # yarn build is the contract — every repo exposes this script.
 
-      - uses: sonarmd/workflows/actions/setup-node@main
+      - uses: ./actions/setup-node
 
       - name: Build
         run: yarn build
@@ -134,14 +134,14 @@ jobs:
           fi
 
           # Resolve {env} placeholder in deploy.json → produces a final artifact-specific copy
-          python3 -c "
-          import json, sys
-          with open('deploy.json') as f:
-            raw = f.read().replace('{env}', '$TAG_ENV')
-          data = json.loads(raw)
-          with open('deploy.json', 'w') as f:
-            json.dump(data, f, indent=2)
-          "
+          python3 - <<EOF
+import json
+with open('deploy.json') as f:
+    raw = f.read().replace('{env}', '$TAG_ENV')
+data = json.loads(raw)
+with open('deploy.json', 'w') as f:
+    json.dump(data, f, indent=2)
+EOF
           echo "deploy.json resolved for env=$TAG_ENV"
 
           # Collect paths: deploy.json always included; dist/ and cdk.out/ if present
@@ -176,7 +176,7 @@ jobs:
             --generate-notes \
             $PRERELEASE
 
-          ARTIFACT_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG"
+          ARTIFACT_URL="https://github.com/${{ github.repository }}/releases/download/$TAG/release.tar.gz"
           echo "artifact-url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
 
       # ── Notify Slack ───────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ jobs:
           RUN_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ACTOR:        ${{ github.actor }}
         run: |
-          DEPLOY_MSG="@r2-d2 $TAG_ENV $REPO_ID $TAG $ARTIFACT_URL"
+          DEPLOY_MSG="@r2-d2 deploy $TAG_ENV $REPO_ID $TAG $ARTIFACT_URL"
 
           PAYLOAD=$(jq -n \
             --arg text    "$DEPLOY_MSG" \
@@ -216,7 +216,7 @@ jobs:
             }')
 
           curl -sf -X POST -H 'Content-type: application/json' \
-            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" || true
 
       # ── Notify failure ─────────────────────────────────────────────────────
 
