@@ -1,26 +1,8 @@
 name: Ping Slack
-description: |
+description: >
   CI workflow notifier. Fires on workflow start (status=started) and on
   completion (status=success|failure|cancelled). On failure, includes a
-  direct link to the run so the problem can be addressed without hunting
-  through workflow logs.
-
-  Usage:
-    # At workflow start
-    - uses: sonarmd/workflows/actions/ping-slack@<sha>
-      with:
-        webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-        status: started
-        app: my-repo
-
-    # At workflow end (always runs)
-    - uses: sonarmd/workflows/actions/ping-slack@<sha>
-      if: always()
-      with:
-        webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-        status: ${{ job.status }}
-        app: my-repo
-        details: ${{ steps.test.outputs.summary }}   # optional — shown on failure
+  direct link to the run. Pass webhook-url, status, and app as inputs.
 
 inputs:
   webhook-url:
