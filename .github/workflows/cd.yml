@@ -1,47 +1,37 @@
 name: CD
 
-# Universal reusable CD pipeline.
+# Reusable CD pipeline. Repos include this with one input.
 #
-# Each repo calls this with one input — its identifier — and nothing else.
-# Build is driven by the repo's own package.json scripts.
-# Deploy targets are driven by the repo's own deploy.json.
+# Per-repo cd.yml (that's the whole file):
 #
-# Tag format: {stg|prd}-{identifier}-b{run_number}
-# Release:    release.tar.gz attached to GitHub release
-# Notify:     @r2-d2 {env} {identifier} {tag} {artifact_url} in #ops
-#
-# Thin wrapper (per repo):
 #   jobs:
 #     cd:
 #       uses: sonarmd/workflows/.github/workflows/cd.yml@<sha>
 #       with:
-#         repo-identifier: api
+#         identifier: api
 #       secrets: inherit
+#
+# Steps (sequential, fail loud):
+#   1. autotag      — tag the merge commit: {prd|stg}-{identifier}-b{run}
+#   2. grab artifact — download the artifact CI already built for this commit
+#   3. release      — attach artifact to GitHub release
+#   4. notify       — ping #ops: @r2-d2 deploy {env} {tag} {artifact_url}
+#   5. next-branch  — cut release/b{n+1} from current staging (initial push skips CI)
 
 on:
   workflow_call:
     inputs:
-      repo-identifier:
-        description: 'Short identifier: api | fe | mobile | cdk'
+      identifier:
+        description: 'Short repo identifier: api | fe | mobile | cdk'
         type: string
         required: true
       environment:
-        description: 'Override env (stg/prd). If empty, inferred from branch.'
+        description: 'Override env (stg/prd). Inferred from branch if empty.'
         type: string
         default: ''
-
     secrets:
       OP_SERVICE_ACCOUNT_TOKEN:
-        description: '1Password service account token'
         required: true
-
-    outputs:
-      tag:
-        description: 'Generated deploy tag'
-        value: ${{ jobs.cd.outputs.tag }}
-      artifact-url:
-        description: 'GitHub API artifact URL'
-        value: ${{ jobs.cd.outputs.artifact-url }}
 
 permissions: {}
 
@@ -49,16 +39,12 @@ jobs:
   cd:
     name: cd
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: write
-      id-token: write   # required for Sigstore attestation of the release
-
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      artifact-url: ${{ steps.release.outputs.artifact-url }}
 
     steps:
+
       # ── Credentials ────────────────────────────────────────────────────────
 
       - name: Load secrets
@@ -78,138 +64,124 @@ jobs:
           app-id: ${{ env.APP_ID }}
           private-key: ${{ env.APP_PRIVATE_KEY }}
 
-      # ── Checkout ───────────────────────────────────────────────────────────
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
-      # ── Resolve env + tag ──────────────────────────────────────────────────
+      # ── 1. Autotag ─────────────────────────────────────────────────────────
 
       - name: Resolve env and build tag
         id: tag
         run: |
           if [ -n "${{ inputs.environment }}" ]; then
-            TAG_ENV="${{ inputs.environment }}"
+            ENV="${{ inputs.environment }}"
           else
             BRANCH="${GITHUB_REF#refs/heads/}"
             case "$BRANCH" in
-              release/*) TAG_ENV="stg" ;;
-              master|main) TAG_ENV="prd" ;;
+              release/*) ENV="stg" ;;
+              master|main) ENV="prd" ;;
               *)
-                echo "::error::Cannot infer env from branch '$BRANCH'. Expected release/* or master."
+                echo "::error::Cannot infer env from branch '$BRANCH'."
                 exit 1
                 ;;
             esac
           fi
-          TAG="${TAG_ENV}-${{ inputs.repo-identifier }}-b${{ github.run_number }}"
-          echo "env=$TAG_ENV"  >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG"      >> "$GITHUB_OUTPUT"
+          TAG="${ENV}-${{ inputs.identifier }}-b${{ github.run_number }}"
+          echo "env=$ENV"   >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
 
-      # ── Build ─────────────────────────────────────────────────────────────
-      # Repo owns its build. setup-node reads version from package.json volta/engines.
-      # yarn build is the contract — every repo exposes this script.
-
-      - uses: sonarmd/workflows/actions/setup-node@main
-
-      - name: Build
-        run: yarn build
-
-      # ── Package ────────────────────────────────────────────────────────────
-      # Packages everything defined in deploy.json units.
-      # deploy.json + dist/ are always included. Lambda bundles live under dist/.
-
-      - name: Package release.tar.gz
+      - name: Create and push tag
         env:
-          TAG:     ${{ steps.tag.outputs.tag }}
-          TAG_ENV: ${{ steps.tag.outputs.env }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG:      ${{ steps.tag.outputs.tag }}
         run: |
-          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
 
-          # Always include deploy.json — Ansible reads this at deploy time
-          if [ ! -f deploy.json ]; then
-            echo "::error::deploy.json not found. Every repo must commit a deploy.json."
+      # ── 2. Grab CI artifact for this commit ────────────────────────────────
+      # CI ran on the PR and uploaded release.tar.gz as a workflow artifact.
+      # We find the run by commit SHA and download it.
+
+      - name: Find CI artifact for this commit
+        id: artifact
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHA:      ${{ github.sha }}
+        run: |
+          echo "Looking for CI artifact on commit $SHA"
+
+          # Find the most recent successful CI workflow run for this commit
+          RUN_ID=$(gh api \
+            "/repos/${{ github.repository }}/actions/runs?head_sha=$SHA&status=success&per_page=20" \
+            --jq '[.workflow_runs[] | select(.name == "CI")] | first | .id // empty')
+
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::No successful CI run found for commit $SHA. Did CI pass before merge?"
             exit 1
           fi
 
-          # Resolve {env} placeholder in deploy.json → produces a final artifact-specific copy
-          python3 -c "
-          import json, sys
-          with open('deploy.json') as f:
-            raw = f.read().replace('{env}', '$TAG_ENV')
-          data = json.loads(raw)
-          with open('deploy.json', 'w') as f:
-            json.dump(data, f, indent=2)
-          "
-          echo "deploy.json resolved for env=$TAG_ENV"
+          echo "CI run: $RUN_ID"
 
-          # Collect paths: deploy.json always included; dist/ and cdk.out/ if present
-          PATHS="deploy.json"
-          [ -f package.json ] && PATHS="$PATHS package.json"
-          [ -d dist ]         && PATHS="$PATHS dist/"
-          [ -d cdk.out ]      && PATHS="$PATHS cdk.out/"
+          # Download the release artifact
+          gh run download "$RUN_ID" \
+            --repo "${{ github.repository }}" \
+            --name release \
+            --dir artifact/
 
-          tar czf release.tar.gz $PATHS
-          echo "Packaged: $PATHS"
-          echo "Size: $(du -sh release.tar.gz | cut -f1)"
+          ls -lh artifact/
 
-      # ── Tag + Release ──────────────────────────────────────────────────────
+      # ── 3. Create GitHub release ───────────────────────────────────────────
 
-      - name: Create git tag and GitHub release
+      - name: Create GitHub release
         id: release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG:      ${{ steps.tag.outputs.tag }}
-          TAG_ENV:  ${{ steps.tag.outputs.env }}
+          ENV:      ${{ steps.tag.outputs.env }}
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Auto-release $TAG"
-          git push origin "$TAG"
-
           PRERELEASE=""
-          [ "$TAG_ENV" != "prd" ] && PRERELEASE="--prerelease"
+          [ "$ENV" != "prd" ] && PRERELEASE="--prerelease"
 
-          gh release create "$TAG" release.tar.gz \
+          gh release create "$TAG" artifact/release.tar.gz \
             --title "$TAG" \
             --generate-notes \
             $PRERELEASE
 
-          ARTIFACT_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG"
-          echo "artifact-url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+          URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG"
+          echo "artifact-url=$URL" >> "$GITHUB_OUTPUT"
 
-      # ── Notify Slack ───────────────────────────────────────────────────────
-      # @r2-d2 picks this up and triggers the Ansible deploy
+      # ── 4. Notify Slack ────────────────────────────────────────────────────
+      # @r2-d2 picks this up and triggers the Ansible deploy.
+      # Format: @r2-d2 deploy {env} {tag} {artifact_url}
 
       - name: Notify Slack
         env:
           TAG:          ${{ steps.tag.outputs.tag }}
-          TAG_ENV:      ${{ steps.tag.outputs.env }}
-          REPO_ID:      ${{ inputs.repo-identifier }}
+          ENV:          ${{ steps.tag.outputs.env }}
           ARTIFACT_URL: ${{ steps.release.outputs.artifact-url }}
           RUN_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ACTOR:        ${{ github.actor }}
         run: |
-          DEPLOY_MSG="@r2-d2 $TAG_ENV $REPO_ID $TAG $ARTIFACT_URL"
+          DEPLOY_MSG="@r2-d2 deploy $ENV $TAG $ARTIFACT_URL"
 
           PAYLOAD=$(jq -n \
-            --arg text    "$DEPLOY_MSG" \
-            --arg tag     "$TAG" \
-            --arg env     "$TAG_ENV" \
-            --arg repo_id "$REPO_ID" \
-            --arg actor   "$ACTOR" \
-            --arg run_url "$RUN_URL" \
+            --arg text     "$DEPLOY_MSG" \
+            --arg env      "$ENV" \
+            --arg tag      "$TAG" \
+            --arg actor    "$ACTOR" \
+            --arg run_url  "$RUN_URL" \
             '{
               channel: "#ops",
               text: $text,
               attachments: [{
                 color: "#36a64f",
                 fields: [
-                  {title: "App",    value: $repo_id, short: true},
-                  {title: "Env",    value: $env,     short: true},
                   {title: "Tag",    value: ("`" + $tag + "`"), short: false},
-                  {title: "Actor",  value: $actor,   short: true}
+                  {title: "Env",    value: $env,   short: true},
+                  {title: "Actor",  value: $actor, short: true}
                 ],
                 actions: [{type: "button", text: "View Run", url: $run_url}]
               }]
@@ -218,30 +190,52 @@ jobs:
           curl -sf -X POST -H 'Content-type: application/json' \
             --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
-      # ── Notify failure ─────────────────────────────────────────────────────
+      # ── 5. Cut next release branch ─────────────────────────────────────────
+      # Only runs on prd deploys. Creates release/b{n+1} from current master.
+      # [skip ci] on the initial push so CI doesn't fire on an empty branch.
+
+      - name: Cut next release branch
+        if: steps.tag.outputs.env == 'prd'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          NEXT_B=${{ github.run_number }}
+          BRANCH="release/b${NEXT_B}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git commit --allow-empty -m "chore: open release branch $BRANCH [skip ci]"
+          git push origin "$BRANCH"
+          echo "Created $BRANCH — CI suppressed on initial push via [skip ci]"
+
+      # ── Failure notification ───────────────────────────────────────────────
 
       - name: Notify Slack on failure
         if: failure()
         env:
-          TAG_ENV:  ${{ steps.tag.outputs.env }}
-          REPO_ID:  ${{ inputs.repo-identifier }}
-          RUN_URL:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ACTOR:    ${{ github.actor }}
+          ENV:     ${{ steps.tag.outputs.env }}
+          TAG:     ${{ steps.tag.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR:   ${{ github.actor }}
         run: |
           PAYLOAD=$(jq -n \
-            --arg env     "$TAG_ENV" \
-            --arg repo_id "$REPO_ID" \
+            --arg env     "$ENV" \
+            --arg tag     "$TAG" \
             --arg actor   "$ACTOR" \
             --arg run_url "$RUN_URL" \
             '{
               channel: "#ops",
-              text: (":x: CD failed — " + $repo_id + " (" + $env + ")"),
+              text: (":x: CD failed — " + $tag),
               attachments: [{
                 color: "#dc3545",
                 fields: [
-                  {title: "App",   value: $repo_id, short: true},
-                  {title: "Env",   value: $env,     short: true},
-                  {title: "Actor", value: $actor,   short: true}
+                  {title: "Tag",   value: ("`" + $tag + "`"), short: false},
+                  {title: "Env",   value: $env,   short: true},
+                  {title: "Who",   value: $actor, short: true},
+                  {title: "What",  value: "CD pipeline failure", short: true},
+                  {title: "When",  value: "'$(date -u +"%Y-%m-%d %H:%M UTC")'", short: true}
                 ],
                 actions: [{type: "button", text: "View Failure", url: $run_url}]
               }]
