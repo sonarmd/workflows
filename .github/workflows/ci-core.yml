@@ -10,8 +10,8 @@ name: CI
 #           sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
 #         steps: |
 #           yarn lint
+#           yarn typecheck
 #           yarn test:ci
-#           yarn build
 #       secrets: inherit
 
 on:
@@ -26,11 +26,6 @@ on:
         description: 'Repo-specific lint/test/build shell.'
         required: true
         type: string
-      test_report_path:
-        description: 'JUnit XML path.'
-        required: false
-        type: string
-        default: 'junit.xml'
       timeout:
         description: 'Job timeout in minutes.'
         required: false
@@ -74,9 +69,3 @@ jobs:
       - name: Steps
         shell: bash
         run: ${{ inputs.steps }}
-
-      - name: Bundle release
-        if: hashFiles('deploy.json') != ''
-        uses: sonarmd/workflows/actions/bundle-release@main
-        with:
-          test_report_path: ${{ inputs.test_report_path }}

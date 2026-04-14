@@ -12,12 +12,33 @@ name: CD
 #   jobs:
 #     cd:
 #       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
+#       with:
+#         build: yarn build
 #       secrets: inherit
 #
 # Required repo variable: DEPLOY_IDENTIFIER (e.g. "api", "fe", "mobile")
 
 on:
   workflow_call:
+    inputs:
+      build:
+        description: 'Shell command to produce the build output (e.g. yarn build).'
+        required: true
+        type: string
+      setup:
+        description: 'Repo-specific setup shell (system deps, etc.)'
+        required: false
+        type: string
+        default: ''
+      test_report_path:
+        description: 'JUnit XML path to include in the release bundle.'
+        required: false
+        type: string
+        default: 'junit.xml'
+      working_directory:
+        required: false
+        type: string
+        default: '.'
     secrets:
       SLACK_WEBHOOK_URL:
         required: false
@@ -29,15 +50,25 @@ permissions:
 jobs:
   cd:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
 
     steps:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          sparse-checkout: deploy.json
-          sparse-checkout-cone-mode: false
           fetch-depth: 2
+
+      - name: Setup Node.js
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        uses: sonarmd/workflows/actions/setup-node@main
+
+      - name: Setup
+        if: inputs.setup != ''
+        shell: bash
+        run: ${{ inputs.setup }}
 
       - name: Resolve context
         id: ctx
@@ -85,8 +116,14 @@ jobs:
           echo "tag=$TAG"               >> "$GITHUB_OUTPUT"
           echo "cd-core: $TAG"
 
-      - name: Download CI artifact
-        uses: sonarmd/workflows/actions/download-ci-artifact@main
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+
+      - name: Bundle release
+        uses: sonarmd/workflows/actions/bundle-release@main
+        with:
+          test_report_path: ${{ inputs.test_report_path }}
 
       - name: Create tag and release
         id: release
