@@ -129,7 +129,16 @@ jobs:
         uses: ./actions/open-ci
 
       # ═══════════════════════════════════════════════════════════
-      # 5. RUN SHELL BLOCK — SETUP
+      # 5. SETUP NODE (if Node project)
+      # ═══════════════════════════════════════════════════════════
+      - name: Setup Node.js
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        uses: ./actions/setup-node
+        with:
+          working-directory: ${{ inputs.working_directory }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 6. RUN SHELL BLOCK — SETUP
       # ═══════════════════════════════════════════════════════════
       - name: Run setup
         if: inputs.setup != '' && steps.open-ci.outputs.should_skip != 'true'
@@ -141,7 +150,7 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
 
       # ═══════════════════════════════════════════════════════════
-      # 6. RUN SHELL BLOCK — STEPS
+      # 7. RUN SHELL BLOCK — STEPS
       # ═══════════════════════════════════════════════════════════
       - name: Run steps
         if: steps.open-ci.outputs.should_skip != 'true'
@@ -153,7 +162,7 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
 
       # ═══════════════════════════════════════════════════════════
-      # 7. VALIDATE RELEASE CONTRACT
+      # 8. VALIDATE RELEASE CONTRACT
       # ═══════════════════════════════════════════════════════════
       - name: Validate release contract
         if: steps.open-ci.outputs.should_skip != 'true'
@@ -161,7 +170,7 @@ jobs:
         uses: ./actions/validate-release-contract
 
       # ═══════════════════════════════════════════════════════════
-      # 8. BUNDLE PIPELINE
+      # 9. BUNDLE PIPELINE
       # ═══════════════════════════════════════════════════════════
       - name: Bundle pipeline
         if: steps.open-ci.outputs.should_skip != 'true'
@@ -171,7 +180,7 @@ jobs:
           test_report_path: ${{ inputs.test_report_path }}
 
       # ═══════════════════════════════════════════════════════════
-      # 9. CLOSE CI
+      # 10. CLOSE CI
       # ═══════════════════════════════════════════════════════════
       - name: Close CI
         if: always()
