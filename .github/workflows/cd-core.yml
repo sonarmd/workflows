@@ -21,6 +21,8 @@ on:
     secrets:
       SLACK_WEBHOOK_URL:
         required: false
+      PLATFORM_TOKEN:
+        required: false
 
 permissions:
   contents: write
@@ -40,12 +42,22 @@ jobs:
           fetch-depth: 2
 
       - name: Checkout platform actions
+        id: platform-checkout
         uses: actions/checkout@v4
         with:
           repository: sonarmd/workflows
           ref: main
           path: _platform
-          token: ${{ github.token }}
+          token: ${{ secrets.PLATFORM_TOKEN || github.token }}
+        continue-on-error: true
+
+      - name: Assert platform checkout succeeded
+        if: steps.platform-checkout.outcome != 'success'
+        shell: bash
+        run: |
+          echo "::error::cd-core: failed to checkout sonarmd/workflows."
+          echo "::error::  Create org secret PLATFORM_TOKEN with contents:read on sonarmd/workflows."
+          exit 1
 
       - name: Resolve context
         id: ctx

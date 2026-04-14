@@ -79,6 +79,9 @@ on:
     secrets:
       OP_SERVICE_ACCOUNT_TOKEN:
         required: false
+      PLATFORM_TOKEN:
+        description: 'GitHub token with read access to sonarmd/workflows (required for private repo). Use a GitHub App or PAT stored as an org secret.'
+        required: false
 
 permissions: {}
 
@@ -110,12 +113,24 @@ jobs:
       # from an external runner — they must be in the workspace.
       # ═══════════════════════════════════════════════════════════
       - name: Checkout platform actions
+        id: platform-checkout
         uses: actions/checkout@v4
         with:
           repository: sonarmd/workflows
           ref: main
           path: _platform
-          token: ${{ github.token }}
+          token: ${{ secrets.PLATFORM_TOKEN || github.token }}
+        continue-on-error: true
+
+      - name: Assert platform checkout succeeded
+        if: steps.platform-checkout.outcome != 'success'
+        shell: bash
+        run: |
+          echo "::error::ci-core: failed to checkout sonarmd/workflows."
+          echo "::error::  The GITHUB_TOKEN is repo-scoped and cannot access private org repos."
+          echo "::error::  Fix: create an org secret PLATFORM_TOKEN (GitHub App token or PAT"
+          echo "::error::  with 'contents: read' on sonarmd/workflows) and add to this repo."
+          exit 1
 
       # ═══════════════════════════════════════════════════════════
       # 3. TIMEOUT HANDLER
