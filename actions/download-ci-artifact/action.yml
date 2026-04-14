@@ -39,8 +39,8 @@ runs:
         echo "download-ci-artifact: looking for CI artifact on commit $SHA"
 
         RUN_ID=$(gh api \
-          "/repos/$REPO/actions/runs?head_sha=$SHA&status=success&per_page=20" \
-          --jq '[.workflow_runs[] | select(.name == "CI")] | first | .id // empty')
+          "/repos/$REPO/actions/runs?head_sha=$SHA&status=completed&per_page=20" \
+          --jq '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | first | .id // empty')
 
         if [ -z "$RUN_ID" ]; then
           echo "::error::download-ci-artifact: no successful CI run found for commit $SHA"

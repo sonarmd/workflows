@@ -78,7 +78,7 @@ on:
 
     secrets:
       OP_SERVICE_ACCOUNT_TOKEN:
-        required: true
+        required: false
 
 permissions: {}
 

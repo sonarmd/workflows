@@ -212,7 +212,7 @@ runs:
         print(f"BUNDLE_MODE={mode}")
         print(f"ERRORS={len(errors)}")
         PYEOF
-        ) > /tmp/vrc-output.txt 2>&1 || true
+         > /tmp/vrc-output.txt 2>&1 || true
 
         # Show any error annotations
         grep "^::error" /tmp/vrc-output.txt >&2 || true

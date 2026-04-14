@@ -1,18 +1,17 @@
 name: Create Tag Release
 description: |
-  Generates and publishes tag/release metadata consistent with platform
-  policy. Creates an annotated git tag, pushes it, and creates a GitHub
-  Release with the release artifact attached. Does NOT deploy.
+  Creates a git tag and GitHub Release with the release artifact attached.
+  Does NOT deploy.
 
 inputs:
   tag:
-    description: 'Tag name to create (e.g. prd-api-b188).'
+    description: 'Tag name to create (e.g. prd-api-v1.0.0-b5).'
     required: true
   environment:
     description: 'Target environment (stg, prd). Controls prerelease flag.'
     required: true
   release_notes:
-    description: 'Markdown release notes body. Falls back to --generate-notes if empty.'
+    description: 'Markdown release notes body. Auto-generated if empty.'
     required: false
     default: ''
   artifact_path:
@@ -32,74 +31,104 @@ outputs:
     description: 'GitHub Release URL.'
     value: ${{ steps.release.outputs.release_url }}
   artifact_url:
-    description: 'Release asset download URL.'
+    description: 'Release API URL.'
     value: ${{ steps.release.outputs.artifact_url }}
 
 runs:
   using: composite
   steps:
+
     - name: Create tag and release
       id: release
-      shell: bash
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
       env:
-        TAG: ${{ inputs.tag }}
-        ENV: ${{ inputs.environment }}
+        TAG:          ${{ inputs.tag }}
+        ENVIRONMENT:  ${{ inputs.environment }}
         RELEASE_NOTES: ${{ inputs.release_notes }}
         ARTIFACT_PATH: ${{ inputs.artifact_path }}
-        PRERELEASE_INPUT: ${{ inputs.prerelease }}
+        PRERELEASE_OVERRIDE: ${{ inputs.prerelease }}
+      with:
+        script: |
+          const tag          = process.env.TAG;
+          const environment  = process.env.ENVIRONMENT;
+          const releaseNotes = process.env.RELEASE_NOTES;
+          const preOverride  = process.env.PRERELEASE_OVERRIDE;
+          const isPrerelease = preOverride !== '' ? preOverride === 'true' : environment !== 'prd';
+
+          const { owner, repo } = context.repo;
+
+          // ── Create or verify tag ──────────────────────────────────────────
+          let tagExists = false;
+          try {
+            await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+            tagExists = true;
+            core.notice(`create-tag-release: tag '${tag}' already exists`);
+          } catch (e) {
+            if (e.status !== 404) throw e;
+          }
+
+          if (!tagExists) {
+            await github.rest.git.createRef({
+              owner, repo,
+              ref: `refs/tags/${tag}`,
+              sha: context.sha,
+            });
+            core.info(`create-tag-release: created tag ${tag}`);
+          }
+
+          // ── Create or update release ──────────────────────────────────────
+          let release;
+          try {
+            const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            release = existing.data;
+            core.notice(`create-tag-release: release for '${tag}' already exists — skipping creation`);
+          } catch (e) {
+            if (e.status !== 404) throw e;
+            const body = releaseNotes !== ''
+              ? releaseNotes
+              : undefined;  // undefined → GitHub auto-generates notes
+
+            const created = await github.rest.repos.createRelease({
+              owner, repo,
+              tag_name:               tag,
+              name:                   tag,
+              body,
+              generate_release_notes: releaseNotes === '',
+              prerelease:             isPrerelease,
+              draft:                  false,
+            });
+            release = created.data;
+            core.info(`create-tag-release: created release ${release.html_url}`);
+          }
+
+          core.setOutput('tag',          tag);
+          core.setOutput('release_url',  release.html_url);
+          core.setOutput('artifact_url', `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`);
+
+    - name: Upload release asset
+      if: inputs.artifact_path != ''
+      shell: bash
+      env:
         GH_TOKEN: ${{ github.token }}
-        REPO: ${{ github.repository }}
+        REPO:     ${{ github.repository }}
+        TAG:      ${{ inputs.tag }}
+        ASSET:    ${{ inputs.artifact_path }}
       run: |
-        set -euo pipefail
+        if [ ! -f "$ASSET" ]; then
+          echo "::warning::create-tag-release: artifact '$ASSET' not found — skipping upload"
+          exit 0
+        fi
 
-        # ── Create tag via API (no checkout required) ───────────
-        EXISTS=$(gh api "repos/$REPO/git/refs/tags/$TAG" --jq '.ref' 2>/dev/null || echo "")
+        RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$TAG" --jq '.id')
+        ASSET_NAME=$(basename "$ASSET")
+
+        # Check if asset already uploaded (idempotent re-runs)
+        EXISTS=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" \
+          --jq ".[] | select(.name == \"$ASSET_NAME\") | .id" 2>/dev/null || echo "")
+
         if [ -n "$EXISTS" ]; then
-          echo "::notice::create-tag-release: tag '$TAG' already exists — using existing tag"
+          echo "::notice::create-tag-release: asset '$ASSET_NAME' already uploaded"
         else
-          gh api "repos/$REPO/git/refs" \
-            -f "ref=refs/tags/$TAG" \
-            -f "sha=${{ github.sha }}"
-          echo "create-tag-release: created tag $TAG"
+          gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber
+          echo "create-tag-release: uploaded $ASSET_NAME"
         fi
-
-        # ── Determine prerelease ─────────────────────────────────
-        if [ -n "$PRERELEASE_INPUT" ]; then
-          PRERELEASE_FLAG=""
-          [ "$PRERELEASE_INPUT" = "true" ] && PRERELEASE_FLAG="--prerelease"
-        else
-          PRERELEASE_FLAG=""
-          [ "$ENV" != "prd" ] && PRERELEASE_FLAG="--prerelease"
-        fi
-
-        # ── Build gh release command ─────────────────────────────
-        RELEASE_CMD="gh release create \"$TAG\""
-
-        if [ -n "$ARTIFACT_PATH" ] && [ -f "$ARTIFACT_PATH" ]; then
-          RELEASE_CMD="$RELEASE_CMD \"$ARTIFACT_PATH\""
-        fi
-
-        RELEASE_CMD="$RELEASE_CMD --title \"$TAG\""
-
-        if [ -n "$RELEASE_NOTES" ]; then
-          echo "$RELEASE_NOTES" > /tmp/release-notes-body.md
-          RELEASE_CMD="$RELEASE_CMD --notes-file /tmp/release-notes-body.md"
-        else
-          RELEASE_CMD="$RELEASE_CMD --generate-notes"
-        fi
-
-        if [ -n "$PRERELEASE_FLAG" ]; then
-          RELEASE_CMD="$RELEASE_CMD $PRERELEASE_FLAG"
-        fi
-
-        # ── Create release ───────────────────────────────────────
-        eval "$RELEASE_CMD"
-
-        RELEASE_URL="https://github.com/$REPO/releases/tag/$TAG"
-        ARTIFACT_URL="https://api.github.com/repos/$REPO/releases/tags/$TAG"
-
-        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-        echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
-        echo "artifact_url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
-
-        echo "create-tag-release: $TAG — $RELEASE_URL"

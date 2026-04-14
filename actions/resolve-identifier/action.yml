@@ -36,21 +36,22 @@ runs:
         set -euo pipefail
 
         IDENTIFIER=$(python3 - <<'PYEOF'
-        import yaml, sys, os
+        import re, sys, os
 
         with open('_platform/.github/repo-identity.yml') as f:
-            data = yaml.safe_load(f)
+            content = f.read()
 
-        mapping = data.get('repo_identifier_map', {})
         repo = os.environ['REPO_NAME']
-        ident = mapping.get(repo, '')
+        # Parse flat YAML mapping without PyYAML
+        pattern = re.compile(r'^\s+' + re.escape(repo) + r'\s*:\s*(\S+)', re.MULTILINE)
+        match = pattern.search(content)
 
-        if not ident:
+        if not match:
             print(f'::error::resolve-identifier: repo "{repo}" not found in platform identity mapping', file=sys.stderr)
             print(f'::error::  Add it to sonarmd/workflows/.github/repo-identity.yml', file=sys.stderr)
             sys.exit(1)
 
-        print(ident)
+        print(match.group(1))
         PYEOF
         )
 

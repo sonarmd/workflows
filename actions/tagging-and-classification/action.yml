@@ -87,7 +87,7 @@ runs:
             if re.match(r'^feat!:', subject) or "BREAKING CHANGE" in subject:
                 category = "features"
                 has_breaking = True
-                bump = "minor"
+                bump = "major"
             elif re.match(r'^feat(\(.+\))?:', subject):
                 category = "features"
                 if bump == "patch":
