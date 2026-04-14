@@ -101,7 +101,7 @@ jobs:
       # 1. TIMEOUT HANDLER
       # ═══════════════════════════════════════════════════════════
       - name: Timeout handler
-        uses: sonarmd/workflows/actions/timeout-handler@main
+        uses: ./actions/timeout-handler
         with:
           timeout_minutes: ${{ inputs.timeout }}
 
@@ -110,7 +110,7 @@ jobs:
       # ═══════════════════════════════════════════════════════════
       - name: Start monitoring
         id: monitoring
-        uses: sonarmd/workflows/actions/start-monitoring@main
+        uses: ./actions/start-monitoring
         with:
           repo_short: ${{ github.event.repository.name }}
 
@@ -126,7 +126,7 @@ jobs:
       # ═══════════════════════════════════════════════════════════
       - name: Open CI
         id: open-ci
-        uses: sonarmd/workflows/actions/open-ci@main
+        uses: ./actions/open-ci
 
       # ═══════════════════════════════════════════════════════════
       # 5. RUN SHELL BLOCK — SETUP
@@ -134,7 +134,7 @@ jobs:
       - name: Run setup
         if: inputs.setup != '' && steps.open-ci.outputs.should_skip != 'true'
         id: setup-block
-        uses: sonarmd/workflows/actions/run-shell-block@main
+        uses: ./actions/run-shell-block
         with:
           name: setup
           script: ${{ inputs.setup }}
@@ -146,7 +146,7 @@ jobs:
       - name: Run steps
         if: steps.open-ci.outputs.should_skip != 'true'
         id: steps-block
-        uses: sonarmd/workflows/actions/run-shell-block@main
+        uses: ./actions/run-shell-block
         with:
           name: steps
           script: ${{ inputs.steps }}
@@ -158,7 +158,7 @@ jobs:
       - name: Validate release contract
         if: steps.open-ci.outputs.should_skip != 'true'
         id: validate
-        uses: sonarmd/workflows/actions/validate-release-contract@main
+        uses: ./actions/validate-release-contract
 
       # ═══════════════════════════════════════════════════════════
       # 8. BUNDLE PIPELINE
@@ -166,7 +166,7 @@ jobs:
       - name: Bundle pipeline
         if: steps.open-ci.outputs.should_skip != 'true'
         id: bundles
-        uses: sonarmd/workflows/actions/bundle-release@main
+        uses: ./actions/bundle-release
         with:
           test_report_path: ${{ inputs.test_report_path }}
 
@@ -175,6 +175,6 @@ jobs:
       # ═══════════════════════════════════════════════════════════
       - name: Close CI
         if: always()
-        uses: sonarmd/workflows/actions/close-ci@main
+        uses: ./actions/close-ci
         with:
           status: ${{ job.status }}
