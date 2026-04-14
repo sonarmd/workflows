@@ -1,0 +1,142 @@
+name: Resolve Build Tag
+description: |
+  Derives env, version, build number, and tag from the current branch and
+  existing git tags. Enforces the tagging convention:
+
+    {env}-{identifier}-v{version}-b{build}
+
+  Build numbers are shared across stg and prd for the same identifier +
+  version so every tag is globally unique and monotonically ordered.
+  Includes a collision guard that re-fetches tags before writing.
+
+inputs:
+  identifier:
+    description: 'Platform identifier (from resolve-identifier).'
+    required: true
+
+outputs:
+  env:
+    description: 'Resolved environment: stg or prd.'
+    value: ${{ steps.resolve.outputs.env }}
+  version:
+    description: 'Resolved semver version (e.g. 1.0.0).'
+    value: ${{ steps.resolve.outputs.version }}
+  build:
+    description: 'Build number (integer).'
+    value: ${{ steps.resolve.outputs.build }}
+  tag:
+    description: 'Full tag string (e.g. prd-api-v1.0.0-b5).'
+    value: ${{ steps.resolve.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve env and build tag
+      id: resolve
+      shell: bash
+      env:
+        IDENTIFIER: ${{ inputs.identifier }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        git fetch --tags --force
+        echo "resolve-build-tag: $(git tag -l | wc -l | tr -d ' ') tags fetched"
+
+        BRANCH="${GITHUB_REF#refs/heads/}"
+
+        case "$BRANCH" in
+          release/v*)
+            ENV="stg"
+            VERSION="${BRANCH#release/v}"
+            if ! echo "$VERSION" | grep -qP '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::resolve-build-tag: malformed release branch '$BRANCH'"
+              echo "::error::  Expected: release/vX.Y.Z"
+              exit 1
+            fi
+            ;;
+
+          master|main)
+            ENV="prd"
+
+            SOURCE_BRANCH=""
+
+            # Method 0: GitHub PR event context (most reliable)
+            PR_HEAD_REF="${{ github.event.pull_request.head.ref || '' }}"
+            if [ -n "$PR_HEAD_REF" ] && echo "$PR_HEAD_REF" | grep -qP '^release/v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              SOURCE_BRANCH="$PR_HEAD_REF"
+            fi
+
+            # Method 1: merge commit message
+            if [ -z "$SOURCE_BRANCH" ]; then
+              MERGE_MSG=$(git log -1 --pretty=%B HEAD 2>/dev/null || echo "")
+              SOURCE_BRANCH=$(echo "$MERGE_MSG" | grep -oP 'release/v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+            fi
+
+            # Method 2: second parent branch inspection
+            if [ -z "$SOURCE_BRANCH" ]; then
+              PARENT2=$(git rev-parse HEAD^2 2>/dev/null || echo "")
+              if [ -n "$PARENT2" ]; then
+                SOURCE_BRANCH=$(git branch -r --contains "$PARENT2" 2>/dev/null \
+                  | grep -oP 'origin/release/v[0-9]+\.[0-9]+\.[0-9]+' \
+                  | head -1 | sed 's|^origin/||' || echo "")
+              fi
+            fi
+
+            # Method 3: merged branch containment (last resort)
+            if [ -z "$SOURCE_BRANCH" ]; then
+              SOURCE_BRANCH=$(git branch -r --merged HEAD 2>/dev/null \
+                | grep -oP 'origin/release/v[0-9]+\.[0-9]+\.[0-9]+' \
+                | sort -V | tail -1 | sed 's|^origin/||' || echo "")
+            fi
+
+            if [ -z "$SOURCE_BRANCH" ]; then
+              echo "::error::resolve-build-tag: cannot determine which release branch was merged into $BRANCH"
+              echo "::error::  Production CD requires a merge from release/vX.Y.Z"
+              echo "::error::  Tried: PR event context, merge message, parent branch, containment"
+              echo "::error::  Merge commit: $(git log -1 --oneline HEAD 2>/dev/null)"
+              exit 1
+            fi
+
+            VERSION="${SOURCE_BRANCH#release/v}"
+            if ! echo "$VERSION" | grep -qP '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::resolve-build-tag: malformed source branch '$SOURCE_BRANCH'"
+              exit 1
+            fi
+
+            echo "resolve-build-tag: prd version $VERSION (merged from $SOURCE_BRANCH)"
+            ;;
+
+          *)
+            echo "::error::resolve-build-tag: cannot infer env from branch '$BRANCH'."
+            echo "::error::  Must be 'master', 'main', or 'release/vX.Y.Z'."
+            exit 1
+            ;;
+        esac
+
+        # Build number: monotonically incrementing across stg+prd per identifier+version
+        MAX_BUILD=0
+        for existing_tag in $(git tag -l "*-${IDENTIFIER}-v${VERSION}-b*" 2>/dev/null); do
+          BUILD_NUM=$(echo "$existing_tag" | grep -oP 'b\K[0-9]+$' || echo "0")
+          if [ "$BUILD_NUM" -gt "$MAX_BUILD" ] 2>/dev/null; then
+            MAX_BUILD="$BUILD_NUM"
+          fi
+        done
+        NEXT_BUILD=$((MAX_BUILD + 1))
+
+        TAG="${ENV}-${IDENTIFIER}-v${VERSION}-b${NEXT_BUILD}"
+
+        # Collision guard: re-fetch to catch races
+        git fetch --tags --force --quiet
+        if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+          echo "::error::resolve-build-tag: tag '$TAG' already exists — probable race condition"
+          echo "::error::  Re-run this workflow to get the next build number."
+          exit 1
+        fi
+
+        echo "env=$ENV" >> "$GITHUB_OUTPUT"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "build=$NEXT_BUILD" >> "$GITHUB_OUTPUT"
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+        echo "resolve-build-tag: env=$ENV version=$VERSION build=b$NEXT_BUILD tag=$TAG"

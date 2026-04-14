@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sonarmd/workflows/schemas/deploy.schema.json",
+  "title": "SonarMD Deploy Manifest",
+  "description": "Bundle-based release contract. Validated by validate-release-contract. See docs/platform-spec.md.",
+  "type": "object",
+  "required": ["app", "identifier", "bundles"],
+  "additionalProperties": false,
+  "properties": {
+    "build_root": {
+      "type": "string",
+      "description": "Build output root directory. Default: dist.",
+      "default": "dist",
+      "minLength": 1
+    },
+    "app": {
+      "type": "string",
+      "description": "Application name.",
+      "minLength": 1
+    },
+    "identifier": {
+      "type": "string",
+      "description": "Short identifier for tag/release naming (api, fe, mobile, cdk).",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+    },
+    "bundles": {
+      "type": "array",
+      "description": "Deployable bundles produced by the build.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "path", "target", "hosts"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Bundle name. Must be unique within this manifest.",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "path": {
+            "type": "string",
+            "description": "Bundle directory path relative to build root.",
+            "minLength": 1
+          },
+          "target": {
+            "type": "string",
+            "description": "Deployment target type.",
+            "enum": ["s3", "ec2", "eas", "cdk", "lambda"]
+          },
+          "hosts": {
+            "type": "object",
+            "description": "Label → Ansible inventory match key. Values are opaque identifiers resolved by the deployment system. Only ${env} template variable allowed.",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,62 @@
+name: Download CI Artifact
+description: |
+  Locates the successful CI run for the current commit SHA and downloads
+  the named artifact. Fails loudly if no successful CI run is found.
+
+inputs:
+  artifact_name:
+    description: 'Name of the artifact to download (must match the upload name in CI).'
+    required: false
+    default: 'release'
+  output_dir:
+    description: 'Directory to download the artifact into.'
+    required: false
+    default: 'artifact'
+
+outputs:
+  path:
+    description: 'Path to the downloaded artifact directory.'
+    value: ${{ steps.download.outputs.path }}
+  run_id:
+    description: 'GitHub Actions run ID that produced the artifact.'
+    value: ${{ steps.download.outputs.run_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download CI artifact
+      id: download
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SHA: ${{ github.sha }}
+        ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        OUTPUT_DIR: ${{ inputs.output_dir }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        echo "download-ci-artifact: looking for CI artifact on commit $SHA"
+
+        RUN_ID=$(gh api \
+          "/repos/$REPO/actions/runs?head_sha=$SHA&status=success&per_page=20" \
+          --jq '[.workflow_runs[] | select(.name == "CI")] | first | .id // empty')
+
+        if [ -z "$RUN_ID" ]; then
+          echo "::error::download-ci-artifact: no successful CI run found for commit $SHA"
+          echo "::error::  The CI workflow must complete successfully before CD can run."
+          exit 1
+        fi
+
+        echo "download-ci-artifact: CI run $RUN_ID — downloading '$ARTIFACT_NAME'"
+
+        gh run download "$RUN_ID" \
+          --repo "$REPO" \
+          --name "$ARTIFACT_NAME" \
+          --dir "$OUTPUT_DIR"
+
+        echo "download-ci-artifact: downloaded to $OUTPUT_DIR/"
+        ls -lh "$OUTPUT_DIR/"
+
+        echo "path=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
+        echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"

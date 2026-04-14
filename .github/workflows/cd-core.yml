@@ -1,0 +1,124 @@
+name: CD
+
+# ── Caller example ────────────────────────────────────────────────────────
+#
+#   name: CD
+#   on:
+#     push:
+#       branches: [master, 'release/**']
+#   concurrency:
+#     group: cd-${{ github.ref_name }}
+#     cancel-in-progress: false
+#   jobs:
+#     cd:
+#       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
+#       secrets: inherit
+
+on:
+  workflow_call:
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  cd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve context
+        id: ctx
+        run: |
+          set -euo pipefail
+
+          case "${{ github.ref_name }}" in
+            main|master)   ENV=prd ; VERSION="unknown" ;;
+            release/v*)    ENV=stg ; VERSION="${{ github.ref_name }}" ; VERSION="${VERSION#release/v}" ;;
+            *) echo "::error::cd-core: unexpected branch '${{ github.ref_name }}'"; exit 1 ;;
+          esac
+
+          IDENTIFIER=$(jq -r '.identifier' deploy.json)
+          if [ -z "$IDENTIFIER" ] || [ "$IDENTIFIER" = "null" ]; then
+            echo "::error::cd-core: deploy.json missing 'identifier' field"
+            exit 1
+          fi
+
+          TAG="${ENV}-${IDENTIFIER}-v${VERSION}-b${GITHUB_RUN_NUMBER}"
+
+          echo "env=$ENV"               >> "$GITHUB_OUTPUT"
+          echo "identifier=$IDENTIFIER" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"               >> "$GITHUB_OUTPUT"
+          echo "cd-core: $TAG"
+
+      - name: Notify Slack — deploying
+        uses: sonarmd/workflows/actions/notify-slack@main
+        with:
+          webhook_url:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          status:       started
+          app_name:     ${{ steps.ctx.outputs.identifier }}
+          environment:  ${{ steps.ctx.outputs.env }}
+          tag:          ${{ steps.ctx.outputs.tag }}
+
+      - name: Download CI artifact
+        uses: sonarmd/workflows/actions/download-ci-artifact@main
+
+      - name: Create tag and release
+        id: release
+        uses: sonarmd/workflows/actions/create-tag-release@main
+        with:
+          tag:           ${{ steps.ctx.outputs.tag }}
+          environment:   ${{ steps.ctx.outputs.env }}
+          artifact_path: artifact/release.tar.gz
+
+      - name: Notify Slack — deploy ready
+        uses: sonarmd/workflows/actions/notify-slack@main
+        with:
+          webhook_url:    ${{ secrets.SLACK_WEBHOOK_URL }}
+          status:         success
+          app_name:       ${{ steps.ctx.outputs.identifier }}
+          environment:    ${{ steps.ctx.outputs.env }}
+          tag:            ${{ steps.ctx.outputs.tag }}
+          deploy_command: 'deploy ${{ steps.ctx.outputs.env }} ${{ steps.ctx.outputs.identifier }} ${{ steps.ctx.outputs.tag }} ${{ steps.release.outputs.artifact_url }}'
+
+      - name: Draft next release branch
+        if: steps.ctx.outputs.env == 'prd'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          SHA:      ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Next release branch is cut from the commit that just merged to main.
+          # Version comes from the caller — prd doesn't know version without it.
+          # TODO: wire version through when prd version resolution is decided.
+          BRANCH="release/next"
+          if ! gh api "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null 2>&1; then
+            gh api "repos/$REPO/git/refs" \
+              -f "ref=refs/heads/$BRANCH" \
+              -f "sha=$SHA"
+            echo "cd-core: created $BRANCH"
+          else
+            echo "cd-core: $BRANCH already exists — skipping"
+          fi
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: sonarmd/workflows/actions/notify-slack@main
+        with:
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          status:      failure
+          app_name:    ${{ steps.ctx.outputs.identifier }}
+          environment: ${{ steps.ctx.outputs.env }}
+          tag:         ${{ steps.ctx.outputs.tag }}
+          details:     'oh no failed on deploy: ${{ job.status }}'

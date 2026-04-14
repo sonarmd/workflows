@@ -1,0 +1,180 @@
+name: CI
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CI-CORE — sonarmd/workflows
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Universal CI workflow. Every sonarmd project calls this.
+#
+# The repo provides:
+#   - setup:  shell for environment prep (deps, system packages, etc.)
+#   - steps:  shell for lint, test, build
+#
+# The platform owns everything else.
+#
+# ── Caller example ───────────────────────────────────────────────────────
+#
+#   jobs:
+#     ci:
+#       uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
+#       with:
+#         setup: |
+#           sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
+#           yarn install --frozen-lockfile
+#         steps: |
+#           yarn lint
+#           yarn build
+#           yarn test --ci --reporters=jest-junit
+#       secrets: inherit
+#
+# ── Python project ───────────────────────────────────────────────────────
+#
+#   jobs:
+#     ci:
+#       uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
+#       with:
+#         setup: |
+#           pip install -r requirements.txt
+#         steps: |
+#           ruff check .
+#           python -m build
+#           pytest --junitxml=junit.xml -q
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      # ── Shell blocks ───────────────────────────────────────────
+      setup:
+        description: 'Repository-specific environment setup shell.'
+        required: false
+        type: string
+        default: ''
+
+      steps:
+        description: 'Repository-specific validation/build/test shell. Required.'
+        required: true
+        type: string
+
+      # ── Evidence ───────────────────────────────────────────────
+      test_report_path:
+        description: 'JUnit XML path produced by test command.'
+        required: false
+        type: string
+        default: 'junit.xml'
+
+      # ── Tuning ─────────────────────────────────────────────────
+      timeout:
+        description: 'Job timeout in minutes. Max 30, default 15.'
+        required: false
+        type: number
+        default: 15
+
+      working_directory:
+        description: 'Working directory.'
+        required: false
+        type: string
+        default: '.'
+
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      actions: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      # ═══════════════════════════════════════════════════════════
+      # 1. TIMEOUT HANDLER
+      # ═══════════════════════════════════════════════════════════
+      - name: Timeout handler
+        uses: sonarmd/workflows/actions/timeout-handler@main
+        with:
+          timeout_minutes: ${{ inputs.timeout }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 2. START MONITORING
+      # ═══════════════════════════════════════════════════════════
+      - name: Start monitoring
+        id: monitoring
+        uses: sonarmd/workflows/actions/start-monitoring@main
+        with:
+          repo_short: ${{ github.event.repository.name }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 3. CHECKOUT
+      # ═══════════════════════════════════════════════════════════
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ═══════════════════════════════════════════════════════════
+      # 4. OPEN CI
+      # ═══════════════════════════════════════════════════════════
+      - name: Open CI
+        id: open-ci
+        uses: sonarmd/workflows/actions/open-ci@main
+
+      # ═══════════════════════════════════════════════════════════
+      # 5. RUN SHELL BLOCK — SETUP
+      # ═══════════════════════════════════════════════════════════
+      - name: Run setup
+        if: inputs.setup != '' && steps.open-ci.outputs.should_skip != 'true'
+        id: setup-block
+        uses: sonarmd/workflows/actions/run-shell-block@main
+        with:
+          name: setup
+          script: ${{ inputs.setup }}
+          working_directory: ${{ inputs.working_directory }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 6. RUN SHELL BLOCK — STEPS
+      # ═══════════════════════════════════════════════════════════
+      - name: Run steps
+        if: steps.open-ci.outputs.should_skip != 'true'
+        id: steps-block
+        uses: sonarmd/workflows/actions/run-shell-block@main
+        with:
+          name: steps
+          script: ${{ inputs.steps }}
+          working_directory: ${{ inputs.working_directory }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 7. VALIDATE RELEASE CONTRACT
+      # ═══════════════════════════════════════════════════════════
+      - name: Validate release contract
+        if: steps.open-ci.outputs.should_skip != 'true'
+        id: validate
+        uses: sonarmd/workflows/actions/validate-release-contract@main
+
+      # ═══════════════════════════════════════════════════════════
+      # 8. BUNDLE PIPELINE
+      # ═══════════════════════════════════════════════════════════
+      - name: Bundle pipeline
+        if: steps.open-ci.outputs.should_skip != 'true'
+        id: bundles
+        uses: sonarmd/workflows/actions/bundle-release@main
+        with:
+          test_report_path: ${{ inputs.test_report_path }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 9. CLOSE CI
+      # ═══════════════════════════════════════════════════════════
+      - name: Close CI
+        if: always()
+        uses: sonarmd/workflows/actions/close-ci@main
+        with:
+          status: ${{ job.status }}

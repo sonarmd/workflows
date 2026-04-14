@@ -1,0 +1,164 @@
+name: Notify Slack
+description: |
+  Unified Slack notification for all CI/CD pipeline events.
+  Replaces both ping-slack (CI status) and slack-notify (deploy status)
+  with a single action supporting all lifecycle states.
+
+  Usage (CI start):
+    - uses: sonarmd/workflows/actions/notify-slack@v1
+      with:
+        webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+        status: started
+        app_name: my-repo
+
+  Usage (CD with @r2-d2 deploy trigger):
+    - uses: sonarmd/workflows/actions/notify-slack@v1
+      with:
+        webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+        status: success
+        app_name: api
+        environment: prd
+        tag: prd-api-b188
+        deploy_command: '@r2-d2 deploy prd prd-api-b188 https://...'
+
+inputs:
+  webhook_url:
+    description: 'Slack Incoming Webhook URL.'
+    required: true
+  status:
+    description: 'Pipeline status: started | success | failure | cancelled | rollback'
+    required: true
+  app_name:
+    description: 'Application or repository name.'
+    required: true
+  environment:
+    description: 'Target environment (dev, stg, prd).'
+    required: false
+    default: ''
+  tag:
+    description: 'Version tag or ref.'
+    required: false
+    default: ''
+  channel:
+    description: 'Slack channel override.'
+    required: false
+    default: '#ops'
+  details:
+    description: 'Additional context — shown on failure.'
+    required: false
+    default: ''
+  deploy_command:
+    description: 'Deploy command for @r2-d2 (included as message text when set).'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Send notification
+      shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ inputs.webhook_url }}
+        INPUT_STATUS:      ${{ inputs.status }}
+        INPUT_APP:         ${{ inputs.app_name }}
+        INPUT_ENV:         ${{ inputs.environment }}
+        INPUT_TAG:         ${{ inputs.tag }}
+        INPUT_CHANNEL:     ${{ inputs.channel }}
+        INPUT_DETAILS:     ${{ inputs.details }}
+        INPUT_DEPLOY_CMD:  ${{ inputs.deploy_command }}
+        RUN_URL:           ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ACTOR:             ${{ github.actor }}
+        BRANCH:            ${{ github.ref_name }}
+        SHA:               ${{ github.sha }}
+        CORRELATION_ID:    ${{ env.CORRELATION_ID }}
+      run: |
+        # ── Status → visual mapping ─────────────────────────────
+        case "$INPUT_STATUS" in
+          started)   COLOR="#439fe0"; TITLE="CI started"     ;;
+          success)   COLOR="#36a64f"; TITLE="CI passed"      ;;
+          failure)   COLOR="#dc3545"; TITLE="CI failed"      ;;
+          cancelled) COLOR="#ffc107"; TITLE="CI cancelled"   ;;
+          rollback)  COLOR="#ff6600"; TITLE="Rollback"       ;;
+          *)         COLOR="#6c757d"; TITLE="CI $INPUT_STATUS" ;;
+        esac
+
+        # If environment is set, use deploy-style titles
+        if [ -n "$INPUT_ENV" ]; then
+          case "$INPUT_STATUS" in
+            started)   TITLE="Deploy started"   ;;
+            success)   TITLE="Deploy complete"  ;;
+            failure)   TITLE="Deploy failed"    ;;
+            cancelled) TITLE="Deploy cancelled" ;;
+            rollback)  TITLE="Rollback"         ;;
+          esac
+        fi
+
+        SHORT_SHA="${SHA:0:8}"
+
+        # ── Build fields array ───────────────────────────────────
+        FIELDS=$(jq -n \
+          --arg app    "$INPUT_APP" \
+          --arg branch "$BRANCH" \
+          --arg sha    "$SHORT_SHA" \
+          --arg actor  "$ACTOR" \
+          '[
+            {title: "App",    value: $app,                    short: true},
+            {title: "Branch", value: $branch,                 short: true},
+            {title: "Commit", value: ("`" + $sha + "`"),      short: true},
+            {title: "Actor",  value: $actor,                  short: true}
+          ]')
+
+        # Add environment field if present
+        if [ -n "$INPUT_ENV" ]; then
+          FIELDS=$(echo "$FIELDS" | jq --arg env "$INPUT_ENV" \
+            '. + [{title: "Env", value: $env, short: true}]')
+        fi
+
+        # Add tag field if present
+        if [ -n "$INPUT_TAG" ]; then
+          FIELDS=$(echo "$FIELDS" | jq --arg tag "$INPUT_TAG" \
+            '. + [{title: "Tag", value: ("`" + $tag + "`"), short: true}]')
+        fi
+
+        # Add failure details if present
+        if [ -n "$INPUT_DETAILS" ] && [ "$INPUT_STATUS" = "failure" ]; then
+          FIELDS=$(echo "$FIELDS" | jq --arg details "$INPUT_DETAILS" \
+            '. + [{title: "Details", value: $details, short: false}]')
+        fi
+
+        # Add correlation ID if present
+        if [ -n "$CORRELATION_ID" ]; then
+          FIELDS=$(echo "$FIELDS" | jq --arg cid "$CORRELATION_ID" \
+            '. + [{title: "Trace", value: ("`" + $cid + "`"), short: false}]')
+        fi
+
+        # ── Message text ─────────────────────────────────────────
+        if [ -n "$INPUT_DEPLOY_CMD" ]; then
+          MSG_TEXT="$INPUT_DEPLOY_CMD"
+        else
+          MSG_TEXT="$TITLE — $INPUT_APP"
+        fi
+
+        # ── Build and send payload ───────────────────────────────
+        PAYLOAD=$(jq -n \
+          --arg channel "$INPUT_CHANNEL" \
+          --arg text    "$MSG_TEXT" \
+          --arg title   "$TITLE — $INPUT_APP" \
+          --arg color   "$COLOR" \
+          --argjson fields "$FIELDS" \
+          --arg run_url "$RUN_URL" \
+          '{
+            channel: $channel,
+            text: $text,
+            attachments: [{
+              color: $color,
+              title: $title,
+              title_link: $run_url,
+              fields: $fields,
+              actions: [{type: "button", text: "View Run", url: $run_url}]
+            }]
+          }')
+
+        curl -sf -X POST -H 'Content-type: application/json' \
+          --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" \
+          || echo "::warning::notify-slack: notification failed (non-fatal)"

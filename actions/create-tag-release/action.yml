@@ -1,0 +1,105 @@
+name: Create Tag Release
+description: |
+  Generates and publishes tag/release metadata consistent with platform
+  policy. Creates an annotated git tag, pushes it, and creates a GitHub
+  Release with the release artifact attached. Does NOT deploy.
+
+inputs:
+  tag:
+    description: 'Tag name to create (e.g. prd-api-b188).'
+    required: true
+  environment:
+    description: 'Target environment (stg, prd). Controls prerelease flag.'
+    required: true
+  release_notes:
+    description: 'Markdown release notes body. Falls back to --generate-notes if empty.'
+    required: false
+    default: ''
+  artifact_path:
+    description: 'Path to release asset file to attach.'
+    required: false
+    default: ''
+  prerelease:
+    description: 'Force prerelease flag. Auto-set for non-prd if not specified.'
+    required: false
+    default: ''
+
+outputs:
+  tag:
+    description: 'Confirmed tag name.'
+    value: ${{ steps.release.outputs.tag }}
+  release_url:
+    description: 'GitHub Release URL.'
+    value: ${{ steps.release.outputs.release_url }}
+  artifact_url:
+    description: 'Release asset download URL.'
+    value: ${{ steps.release.outputs.artifact_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create tag and release
+      id: release
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        ENV: ${{ inputs.environment }}
+        RELEASE_NOTES: ${{ inputs.release_notes }}
+        ARTIFACT_PATH: ${{ inputs.artifact_path }}
+        PRERELEASE_INPUT: ${{ inputs.prerelease }}
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        # ── Create tag via API (no checkout required) ───────────
+        EXISTS=$(gh api "repos/$REPO/git/refs/tags/$TAG" --jq '.ref' 2>/dev/null || echo "")
+        if [ -n "$EXISTS" ]; then
+          echo "::notice::create-tag-release: tag '$TAG' already exists — using existing tag"
+        else
+          gh api "repos/$REPO/git/refs" \
+            -f "ref=refs/tags/$TAG" \
+            -f "sha=${{ github.sha }}"
+          echo "create-tag-release: created tag $TAG"
+        fi
+
+        # ── Determine prerelease ─────────────────────────────────
+        if [ -n "$PRERELEASE_INPUT" ]; then
+          PRERELEASE_FLAG=""
+          [ "$PRERELEASE_INPUT" = "true" ] && PRERELEASE_FLAG="--prerelease"
+        else
+          PRERELEASE_FLAG=""
+          [ "$ENV" != "prd" ] && PRERELEASE_FLAG="--prerelease"
+        fi
+
+        # ── Build gh release command ─────────────────────────────
+        RELEASE_CMD="gh release create \"$TAG\""
+
+        if [ -n "$ARTIFACT_PATH" ] && [ -f "$ARTIFACT_PATH" ]; then
+          RELEASE_CMD="$RELEASE_CMD \"$ARTIFACT_PATH\""
+        fi
+
+        RELEASE_CMD="$RELEASE_CMD --title \"$TAG\""
+
+        if [ -n "$RELEASE_NOTES" ]; then
+          echo "$RELEASE_NOTES" > /tmp/release-notes-body.md
+          RELEASE_CMD="$RELEASE_CMD --notes-file /tmp/release-notes-body.md"
+        else
+          RELEASE_CMD="$RELEASE_CMD --generate-notes"
+        fi
+
+        if [ -n "$PRERELEASE_FLAG" ]; then
+          RELEASE_CMD="$RELEASE_CMD $PRERELEASE_FLAG"
+        fi
+
+        # ── Create release ───────────────────────────────────────
+        eval "$RELEASE_CMD"
+
+        RELEASE_URL="https://github.com/$REPO/releases/tag/$TAG"
+        ARTIFACT_URL="https://api.github.com/repos/$REPO/releases/tags/$TAG"
+
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
+        echo "artifact_url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+
+        echo "create-tag-release: $TAG — $RELEASE_URL"

@@ -1,0 +1,88 @@
+name: Open CI
+description: |
+  Initializes CI-specific context before repo-defined execution begins.
+  Performs circuit breaker check (skips CI if last 3 runs all failed)
+  and records lifecycle start.
+
+inputs:
+  deploy_manifest:
+    description: 'Path to deploy.json. Checked for existence but not validated here.'
+    required: false
+    default: 'deploy.json'
+
+outputs:
+  should_skip:
+    description: 'true if the circuit breaker tripped and CI should be skipped.'
+    value: ${{ steps.check.outputs.should_skip }}
+  run_context:
+    description: 'JSON blob with run metadata.'
+    value: ${{ steps.check.outputs.run_context }}
+
+runs:
+  using: composite
+  steps:
+    - name: CI preflight checks
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DEPLOY_MANIFEST: ${{ inputs.deploy_manifest }}
+        REPO: ${{ github.repository }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        SHA: ${{ github.sha }}
+        REF: ${{ github.ref }}
+        ACTOR: ${{ github.actor }}
+        RUN_ID: ${{ github.run_id }}
+        CORRELATION_ID: ${{ env.CORRELATION_ID }}
+      run: |
+        set -euo pipefail
+        SHOULD_SKIP=false
+
+        # ── Circuit breaker: check last 3 CI runs ───────────────
+        CI_FILE=$(gh api "repos/${REPO}/actions/workflows" \
+          --jq '.workflows[] | select(.name == "CI") | .path' 2>/dev/null | head -1 || true)
+
+        if [ -n "$CI_FILE" ]; then
+          WORKFLOW_FILE=$(basename "$CI_FILE")
+          CONCLUSIONS=$(gh api "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/runs?branch=${BRANCH}&per_page=3&status=completed" \
+            --jq '[.workflow_runs[].conclusion] | join(",")' 2>/dev/null || echo "")
+
+          if [ "$CONCLUSIONS" = "failure,failure,failure" ]; then
+            echo "::warning::open-ci: Circuit breaker tripped — 3 consecutive CI failures on ${BRANCH}."
+            echo "::warning::Fix your code locally before pushing again."
+            SHOULD_SKIP=true
+
+            cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+        ### CI: Circuit Breaker Tripped
+
+        The last 3 CI runs on this branch all failed. CI is being skipped
+        to conserve runner minutes. Fix the issue locally and push a clean
+        commit to reset the breaker.
+        SUMMARY
+          else
+            echo "open-ci: circuit breaker OK (last 3: ${CONCLUSIONS:-no history})"
+          fi
+        fi
+
+        # ── Deploy manifest check ────────────────────────────────
+        if [ -n "$DEPLOY_MANIFEST" ] && [ ! -f "$DEPLOY_MANIFEST" ]; then
+          echo "::notice::open-ci: deploy manifest '$DEPLOY_MANIFEST' not found. validate-release-contract will handle this."
+        fi
+
+        # ── Build run context ────────────────────────────────────
+        RUN_CONTEXT=$(python3 -c "
+        import json
+        ctx = {
+          'repo': '$REPO',
+          'sha': '$SHA',
+          'ref': '$REF',
+          'actor': '$ACTOR',
+          'run_id': '$RUN_ID',
+          'correlation_id': '${CORRELATION_ID:-unknown}',
+          'branch': '$BRANCH'
+        }
+        print(json.dumps(ctx))
+        ")
+
+        echo "should_skip=$SHOULD_SKIP" >> "$GITHUB_OUTPUT"
+        echo "run_context=$RUN_CONTEXT" >> "$GITHUB_OUTPUT"
