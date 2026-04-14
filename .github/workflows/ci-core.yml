@@ -1,20 +1,6 @@
 name: CI
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CI-CORE — sonarmd/workflows
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Universal CI workflow. Every sonarmd project calls this.
-# Self-contained — no private composite action deps, only public actions/*.
-#
-# The repo provides:
-#   - setup:  shell for environment prep (system packages, etc.)
-#   - steps:  shell for lint, test, build
-#
-# The platform owns everything else: Node setup, yarn cache, bundling,
-# artifact upload, attestation.
-#
-# ── Node/Yarn example ────────────────────────────────────────────────────
+# ── Caller example ───────────────────────────────────────────────────────
 #
 #   jobs:
 #     ci:
@@ -24,52 +10,33 @@ name: CI
 #           sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
 #         steps: |
 #           yarn lint
+#           yarn test:ci
 #           yarn build
-#           yarn test --ci
-#       secrets: inherit
-#
-# ── Python example ───────────────────────────────────────────────────────
-#
-#   jobs:
-#     ci:
-#       uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
-#       with:
-#         setup: |
-#           pip install -r requirements.txt
-#         steps: |
-#           ruff check .
-#           python -m build
-#           pytest --junitxml=junit.xml -q
 #       secrets: inherit
 
 on:
   workflow_call:
     inputs:
       setup:
-        description: 'Repo-specific environment setup shell (system deps, etc.).'
+        description: 'Repo-specific setup shell (system deps, etc.)'
         required: false
         type: string
         default: ''
-
       steps:
-        description: 'Repo-specific validation/build/test shell.'
+        description: 'Repo-specific lint/test/build shell.'
         required: true
         type: string
-
       test_report_path:
-        description: 'JUnit XML path produced by test command.'
+        description: 'JUnit XML path.'
         required: false
         type: string
         default: 'junit.xml'
-
       timeout:
-        description: 'Job timeout in minutes (default 15, max 30).'
+        description: 'Job timeout in minutes.'
         required: false
         type: number
         default: 15
-
       working_directory:
-        description: 'Working directory.'
         required: false
         type: string
         default: '.'
@@ -91,155 +58,25 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
 
     steps:
-      # ── Checkout ────────────────────────────────────────────────────────
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      # ── Node + yarn cache (Node projects only) ───────────────────────────
-      - name: Detect Node version
-        id: node-detect
-        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
-        working-directory: ${{ inputs.working_directory }}
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').volta?.node || require('./package.json').engines?.node || '18'" | tr -d '^~>=x ')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Setup Node.js
-        if: steps.node-detect.outputs.version != ''
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ steps.node-detect.outputs.version }}
-          registry-url: 'https://npm.pkg.github.com'
-          scope: '@sonarmd'
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        uses: sonarmd/workflows/actions/setup-node@main
 
-      - name: Restore yarn cache
-        if: steps.node-detect.outputs.version != ''
-        id: yarn-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.yarn/cache
-            ${{ inputs.working_directory }}/node_modules
-          key: yarn-${{ runner.os }}-${{ hashFiles(format('{0}/yarn.lock', inputs.working_directory)) }}
-          restore-keys: yarn-${{ runner.os }}-
-
-      - name: Install dependencies
-        if: steps.node-detect.outputs.version != ''
-        working-directory: ${{ inputs.working_directory }}
-        shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
-        run: yarn install --frozen-lockfile
-
-      # ── Repo setup shell ─────────────────────────────────────────────────
       - name: Setup
         if: inputs.setup != ''
         shell: bash
         run: ${{ inputs.setup }}
 
-      # ── Repo steps shell ─────────────────────────────────────────────────
       - name: Steps
         shell: bash
         run: ${{ inputs.steps }}
 
-      # ── Bundle pipeline ──────────────────────────────────────────────────
       - name: Bundle release
-        id: bundle
-        shell: bash
-        env:
-          TEST_REPORT: ${{ inputs.test_report_path }}
-          SHA: ${{ github.sha }}
-          REF: ${{ github.ref }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          ACTOR: ${{ github.actor }}
-        run: |
-          set -euo pipefail
-
-          if [ ! -f deploy.json ]; then
-            echo "::notice::ci-core: no deploy.json — skipping bundle pipeline"
-            exit 0
-          fi
-
-          RELEASE_DIR="./release"
-          rm -rf "$RELEASE_DIR" && mkdir -p "$RELEASE_DIR"
-
-          APP=$(python3 -c "import json; print(json.load(open('deploy.json'))['app'])")
-          BUNDLE_COUNT=$(python3 -c "import json; print(len(json.load(open('deploy.json'))['bundles']))")
-          echo "ci-core bundle: $BUNDLE_COUNT bundle(s) for $APP"
-
-          python3 -c "
-          import json
-          for b in json.load(open('deploy.json'))['bundles']:
-              print(f\"{b['name']}|{b['path']}|{b['target']}|{json.dumps(b['hosts'])}\")
-          " | while IFS='|' read -r NAME PATH TARGET HOSTS_JSON; do
-            echo "━━━ $NAME ━━━"
-            if [ ! -d "$PATH" ]; then
-              echo "::error::ci-core: bundle '$NAME' path '$PATH' not found"
-              exit 1
-            fi
-            FILE_COUNT=$(find "$PATH" -type f | wc -l | tr -d ' ')
-            if [ "$FILE_COUNT" -eq 0 ]; then
-              echo "::error::ci-core: bundle '$NAME' at '$PATH' is empty"
-              exit 1
-            fi
-            echo "  $PATH ($FILE_COUNT files)"
-
-            # SHA-512 checksum
-            find "$PATH" -type f -print0 | sort -z | xargs -0 sha512sum > "$RELEASE_DIR/${NAME}.sha512"
-            DIGEST=$(sha512sum "$RELEASE_DIR/${NAME}.sha512" | cut -d' ' -f1)
-
-            # Bundle manifest
-            python3 -c "
-          import json
-          json.dump({'name':'$NAME','target':'$TARGET','hosts':json.loads('$HOSTS_JSON'),
-            'sha512':'$DIGEST','file_count':$FILE_COUNT,'commit':'$SHA','repository':'$REPO',
-            'run_id':'$RUN_ID','timestamp':'$(date -u +%Y-%m-%dT%H:%M:%SZ)'},
-            open('$RELEASE_DIR/${NAME}.manifest.json','w'),indent=2)"
-
-            # Tar bundle
-            tar czf "$RELEASE_DIR/${NAME}.tar.gz" -C "$(dirname "$PATH")" "$(basename "$PATH")"
-            echo "  tar: $RELEASE_DIR/${NAME}.tar.gz"
-          done
-
-          # Copy test report + deploy.json into release
-          [ -f "$TEST_REPORT" ] && cp "$TEST_REPORT" "$RELEASE_DIR/test-report.xml"
-          cp deploy.json "$RELEASE_DIR/deploy.json"
-
-          # Outer release manifest
-          python3 -c "
-          import json
-          d = json.load(open('deploy.json'))
-          json.dump({'app':d['app'],'commit':'$SHA','ref':'$REF','repository':'$REPO',
-            'run_id':'$RUN_ID','actor':'$ACTOR','bundle_count':len(d['bundles']),
-            'bundles':[b['name'] for b in d['bundles']],
-            'timestamp':'$(date -u +%Y-%m-%dT%H:%M:%SZ)'},
-            open('$RELEASE_DIR/manifest.json','w'),indent=2)"
-
-          # Outer tarball
-          tar czf release.tar.gz -C "$RELEASE_DIR" .
-          sha512sum release.tar.gz | cut -d' ' -f1 > release.tar.gz.checksum
-          RELEASE_SIZE=$(ls -lh release.tar.gz | awk '{print $5}')
-          echo "  release.tar.gz: $RELEASE_SIZE"
-
-          echo "artifact_ready=true" >> "$GITHUB_OUTPUT"
-
-      - name: Attest release
-        if: steps.bundle.outputs.artifact_ready == 'true'
-        continue-on-error: true
-        uses: actions/attest-build-provenance@v2
+        if: hashFiles('deploy.json') != ''
+        uses: sonarmd/workflows/actions/bundle-release@main
         with:
-          subject-path: release.tar.gz
-
-      - name: Upload release artifact
-        if: steps.bundle.outputs.artifact_ready == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release
-          path: |
-            release.tar.gz
-            release.tar.gz.checksum
-          if-no-files-found: error
-          retention-days: 90
+          test_report_path: ${{ inputs.test_report_path }}
