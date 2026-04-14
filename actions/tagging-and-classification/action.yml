@@ -1,0 +1,165 @@
+name: Tagging and Classification
+description: |
+  Classifies commits, diffs, and PR-level changes. Determines version
+  bump type from conventional commit messages and categorizes changes
+  by file path. Outputs structured metadata for release notes and
+  downstream tooling.
+
+inputs:
+  identifier:
+    description: 'Short repo identifier (api, fe, mobile).'
+    required: false
+    default: ''
+  base_ref:
+    description: 'Base ref for diff (auto-detected from latest tag if empty).'
+    required: false
+    default: ''
+
+outputs:
+  bump_type:
+    description: 'Recommended version bump: major | minor | patch'
+    value: ${{ steps.classify.outputs.bump_type }}
+  change_summary:
+    description: 'JSON summary of classified changes.'
+    value: ${{ steps.classify.outputs.change_summary }}
+  has_breaking_changes:
+    description: 'Whether breaking changes were detected.'
+    value: ${{ steps.classify.outputs.has_breaking_changes }}
+  commit_count:
+    description: 'Number of commits classified.'
+    value: ${{ steps.classify.outputs.commit_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Classify changes
+      id: classify
+      shell: bash
+      env:
+        IDENTIFIER: ${{ inputs.identifier }}
+        BASE_REF: ${{ inputs.base_ref }}
+      run: |
+        set -euo pipefail
+
+        # ── Find base ref ────────────────────────────────────────
+        if [ -z "$BASE_REF" ]; then
+          # Find the latest tag for this identifier, or any tag
+          if [ -n "$IDENTIFIER" ]; then
+            BASE_REF=$(git tag -l "*-${IDENTIFIER}-*" --sort=-version:refname 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF=$(git tag -l 'v[0-9]*' --sort=-version:refname 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$BASE_REF" ]; then
+            # No tags at all — use first commit
+            BASE_REF=$(git rev-list --max-parents=0 HEAD 2>/dev/null | head -1 || echo "HEAD~10")
+          fi
+        fi
+
+        echo "tagging-and-classification: base ref = $BASE_REF"
+
+        # ── Parse commits ────────────────────────────────────────
+        RESULT=$(python3 <<'PYEOF'
+        import subprocess, json, re, hashlib
+
+        base_ref = "$BASE_REF"
+        cmd = ["git", "log", f"{base_ref}..HEAD", "--pretty=format:%H|%s|%an|%aI"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        commits = []
+        categories = {
+            "features": [], "fixes": [], "docs": [],
+            "deps": [], "ci": [], "refactor": [], "other": []
+        }
+        has_breaking = False
+        bump = "patch"
+
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split("|", 3)
+            if len(parts) < 4:
+                continue
+            sha, subject, author, date = parts
+
+            # Classify by conventional commit prefix
+            category = "other"
+            if re.match(r'^feat!:', subject) or "BREAKING CHANGE" in subject:
+                category = "features"
+                has_breaking = True
+                bump = "major"
+            elif re.match(r'^feat(\(.+\))?:', subject):
+                category = "features"
+                if bump == "patch":
+                    bump = "minor"
+            elif re.match(r'^fix(\(.+\))?:', subject):
+                category = "fixes"
+            elif re.match(r'^docs?(\(.+\))?:', subject):
+                category = "docs"
+            elif re.match(r'^(chore\(deps\)|build\(deps\)|deps)(\(.+\))?:', subject):
+                category = "deps"
+            elif re.match(r'^ci(\(.+\))?:', subject):
+                category = "ci"
+            elif re.match(r'^refactor(\(.+\))?:', subject):
+                category = "refactor"
+            elif re.match(r'^(chore|style|perf|test)(\(.+\))?:', subject):
+                category = "other"
+
+            entry = {
+                "sha": sha[:12],
+                "subject": subject,
+                "author": author,
+                "date": date,
+                "category": category
+            }
+            commits.append(entry)
+            categories[category].append(entry)
+
+        # File path classification
+        diff_cmd = ["git", "diff", "--name-only", f"{base_ref}..HEAD"]
+        diff_result = subprocess.run(diff_cmd, capture_output=True, text=True)
+        files = diff_result.stdout.strip().split("\n") if diff_result.stdout.strip() else []
+
+        file_categories = {"code": 0, "test": 0, "docs": 0, "deps": 0, "ci": 0, "other": 0}
+        for f in files:
+            if f.startswith("test/") or f.startswith("tests/") or f.startswith("__tests__/"):
+                file_categories["test"] += 1
+            elif f.startswith("docs/") or f.endswith(".md"):
+                file_categories["docs"] += 1
+            elif f in ("package.json", "yarn.lock", "package-lock.json", "requirements.txt", "Pipfile.lock", "poetry.lock"):
+                file_categories["deps"] += 1
+            elif f.startswith(".github/"):
+                file_categories["ci"] += 1
+            elif f.startswith("src/") or f.startswith("lib/") or f.endswith((".ts", ".js", ".py", ".go")):
+                file_categories["code"] += 1
+            else:
+                file_categories["other"] += 1
+
+        summary = {
+            "commit_count": len(commits),
+            "bump_type": bump,
+            "has_breaking_changes": has_breaking,
+            "categories": {k: len(v) for k, v in categories.items()},
+            "file_categories": file_categories,
+            "files_changed": len(files),
+            "base_ref": base_ref
+        }
+
+        print(f"BUMP={bump}")
+        print(f"BREAKING={'true' if has_breaking else 'false'}")
+        print(f"COUNT={len(commits)}")
+        print(f"SUMMARY={json.dumps(summary)}")
+        PYEOF
+        )
+
+        BUMP=$(echo "$RESULT" | grep "^BUMP=" | cut -d= -f2)
+        BREAKING=$(echo "$RESULT" | grep "^BREAKING=" | cut -d= -f2)
+        COUNT=$(echo "$RESULT" | grep "^COUNT=" | cut -d= -f2)
+        SUMMARY=$(echo "$RESULT" | grep "^SUMMARY=" | cut -d= -f2-)
+
+        echo "bump_type=$BUMP" >> "$GITHUB_OUTPUT"
+        echo "has_breaking_changes=$BREAKING" >> "$GITHUB_OUTPUT"
+        echo "commit_count=$COUNT" >> "$GITHUB_OUTPUT"
+        echo "change_summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+        echo "tagging-and-classification: $COUNT commits, bump=$BUMP, breaking=$BREAKING"

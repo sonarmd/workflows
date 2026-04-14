@@ -1,0 +1,165 @@
+name: Product Documentation
+description: |
+  Publishes release-adjacent documentation updates when required by
+  policy. Has a hard 5-minute execution cap. Non-blocking by default —
+  failure does not delay release unless the release class is explicitly
+  documentation-gated.
+
+inputs:
+  release_notes:
+    description: 'Markdown release notes to publish.'
+    required: false
+    default: ''
+  tag:
+    description: 'Release tag or version.'
+    required: false
+    default: ''
+  app_name:
+    description: 'Application name.'
+    required: false
+    default: ''
+  confluence_space:
+    description: 'Confluence space key for publication.'
+    required: false
+    default: ''
+  confluence_parent_page_id:
+    description: 'Confluence parent page ID.'
+    required: false
+    default: ''
+  timeout_minutes:
+    description: 'Hard execution cap in minutes. Maximum 5.'
+    required: false
+    default: '5'
+
+outputs:
+  published:
+    description: 'Whether documentation was published.'
+    value: ${{ steps.publish.outputs.published }}
+  confluence_url:
+    description: 'URL of the published Confluence page (if applicable).'
+    value: ${{ steps.publish.outputs.confluence_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish documentation
+      id: publish
+      shell: bash
+      env:
+        RELEASE_NOTES: ${{ inputs.release_notes }}
+        TAG: ${{ inputs.tag }}
+        APP_NAME: ${{ inputs.app_name }}
+        CONFLUENCE_SPACE: ${{ inputs.confluence_space }}
+        CONFLUENCE_PARENT_ID: ${{ inputs.confluence_parent_page_id }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        CONFLUENCE_USER: ${{ env.CONFLUENCE_USER }}
+        CONFLUENCE_TOKEN: ${{ env.CONFLUENCE_TOKEN }}
+      run: |
+        # Hard cap at 5 minutes regardless of input
+        MAX_MINUTES=5
+        if [ "$TIMEOUT_MINUTES" -gt "$MAX_MINUTES" ] 2>/dev/null; then
+          TIMEOUT_MINUTES=$MAX_MINUTES
+        fi
+        TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
+
+        # ── Check if Confluence credentials are available ────────
+        if [ -z "${CONFLUENCE_USER:-}" ] || [ -z "${CONFLUENCE_TOKEN:-}" ]; then
+          echo "product-documentation: no Confluence credentials — skipping"
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          echo "confluence_url=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [ -z "$CONFLUENCE_SPACE" ] || [ -z "$CONFLUENCE_PARENT_ID" ]; then
+          echo "product-documentation: no Confluence space/parent configured — skipping"
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          echo "confluence_url=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [ -z "$RELEASE_NOTES" ]; then
+          echo "product-documentation: no release notes to publish — skipping"
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          echo "confluence_url=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # ── Publish to Confluence with hard timeout ──────────────
+        timeout "$TIMEOUT_SECONDS" python3 <<'PYEOF' || {
+          EXIT_CODE=$?
+          if [ "$EXIT_CODE" -eq 124 ]; then
+            echo "::warning::product-documentation: timed out after ${TIMEOUT_MINUTES}m"
+          else
+            echo "::warning::product-documentation: publication failed (exit $EXIT_CODE)"
+          fi
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          echo "confluence_url=" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+        import json, os, urllib.request, urllib.error, base64
+
+        space = os.environ["CONFLUENCE_SPACE"]
+        parent_id = os.environ["CONFLUENCE_PARENT_ID"]
+        user = os.environ["CONFLUENCE_USER"]
+        token = os.environ["CONFLUENCE_TOKEN"]
+        tag = os.environ.get("TAG", "")
+        app = os.environ.get("APP_NAME", "")
+        notes = os.environ.get("RELEASE_NOTES", "")
+
+        title = f"Release: {app} {tag}" if app and tag else f"Release {tag or 'notes'}"
+
+        # Convert markdown to Confluence storage format (simple conversion)
+        body = notes.replace("\n", "<br/>")
+        body = f"<h2>{title}</h2><p>{body}</p>"
+
+        payload = json.dumps({
+            "type": "page",
+            "title": title,
+            "space": {"key": space},
+            "ancestors": [{"id": parent_id}],
+            "body": {
+                "storage": {
+                    "value": body,
+                    "representation": "storage"
+                }
+            }
+        }).encode()
+
+        auth = base64.b64encode(f"{user}:{token}".encode()).decode()
+        base_url = "https://sonarmd.atlassian.net/wiki/rest/api/content"
+
+        req = urllib.request.Request(
+            base_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Basic {auth}"
+            },
+            method="POST"
+        )
+
+        try:
+            resp = urllib.request.urlopen(req)
+            result = json.loads(resp.read())
+            page_id = result.get("id", "")
+            url = f"https://sonarmd.atlassian.net/wiki/spaces/{space}/pages/{page_id}"
+            print(f"CONFLUENCE_URL={url}")
+            print(f"product-documentation: published to {url}")
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else ""
+            print(f"::warning::product-documentation: Confluence API error {e.code}: {error_body[:200]}")
+            print("CONFLUENCE_URL=")
+        except Exception as e:
+            print(f"::warning::product-documentation: unexpected error: {e}")
+            print("CONFLUENCE_URL=")
+        PYEOF
+
+        # Parse output from Python
+        CONF_URL=$(grep "^CONFLUENCE_URL=" /dev/stdin 2>/dev/null | cut -d= -f2- || true)
+        if [ -n "$CONF_URL" ]; then
+          echo "published=true" >> "$GITHUB_OUTPUT"
+          echo "confluence_url=$CONF_URL" >> "$GITHUB_OUTPUT"
+        else
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          echo "confluence_url=" >> "$GITHUB_OUTPUT"
+        fi

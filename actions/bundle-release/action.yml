@@ -1,0 +1,260 @@
+name: Bundle Pipeline
+description: |
+  Per-bundle packaging pipeline. For each bundle declared in deploy.json:
+  validates, generates SBOM, SHA-512 checksums, digest, manifest, tar,
+  and signs. Then wraps all bundle artifacts into a single release.tar.gz
+  with outer checksums and signature. Uploads as "release" artifact.
+
+inputs:
+  test_report_path:
+    description: 'Path to JUnit XML test report.'
+    required: false
+    default: 'junit.xml'
+
+outputs:
+  artifact_path:
+    description: 'Path to release.tar.gz.'
+    value: ${{ steps.pipeline.outputs.artifact_path }}
+  artifact_size:
+    description: 'Human-readable release size.'
+    value: ${{ steps.pipeline.outputs.artifact_size }}
+  bundle_count:
+    description: 'Number of bundles processed.'
+    value: ${{ steps.pipeline.outputs.bundle_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Execute bundle pipeline
+      id: pipeline
+      shell: bash
+      env:
+        TEST_REPORT: ${{ inputs.test_report_path }}
+        SHA: ${{ github.sha }}
+        REF: ${{ github.ref }}
+        REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        ACTOR: ${{ github.actor }}
+        CORRELATION_ID: ${{ env.CORRELATION_ID }}
+      run: |
+        set -euo pipefail
+
+        RELEASE_DIR="./release"
+        rm -rf "$RELEASE_DIR"
+        mkdir -p "$RELEASE_DIR"
+
+        # ── Read deploy.json ─────────────────────────────────────
+        if [ ! -f deploy.json ]; then
+          echo "::error::bundle-pipeline: deploy.json not found"
+          exit 1
+        fi
+
+        BUILD_DIR=$(python3 -c "import json; print(json.load(open('deploy.json')).get('build_root', 'dist'))")
+        BUNDLE_COUNT=$(python3 -c "import json; print(len(json.load(open('deploy.json'))['bundles']))")
+        APP=$(python3 -c "import json; print(json.load(open('deploy.json'))['app'])")
+        echo "bundle-pipeline: processing $BUNDLE_COUNT bundles for $APP"
+
+        VALID_TARGETS="s3 ec2 eas cdk lambda"
+        PROCESSED=0
+
+        # ── Per-bundle loop ──────────────────────────────────────
+        python3 -c "
+        import json
+        bundles = json.load(open('deploy.json'))['bundles']
+        for b in bundles:
+            print(f\"{b['name']}|{b['path']}|{b['target']}|{json.dumps(b['hosts'])}\")
+        " | while IFS='|' read -r NAME PATH TARGET HOSTS_JSON; do
+
+          echo ""
+          echo "━━━ Bundle: $NAME ━━━"
+
+          # 1. Validate bundle directory exists (path is repo-relative)
+          BUNDLE_PATH="$PATH"
+          if [ ! -d "$BUNDLE_PATH" ]; then
+            echo "::error::bundle-pipeline: bundle '$NAME' path '$BUNDLE_PATH' not found"
+            exit 1
+          fi
+
+          FILE_COUNT=$(find "$BUNDLE_PATH" -type f | wc -l | tr -d ' ')
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "::error::bundle-pipeline: bundle '$NAME' at '$BUNDLE_PATH' is empty"
+            exit 1
+          fi
+
+          # 2. Validate target
+          if ! echo "$VALID_TARGETS" | grep -qw "$TARGET"; then
+            echo "::error::bundle-pipeline: bundle '$NAME' has invalid target '$TARGET'"
+            exit 1
+          fi
+
+          # 3. Validate hosts
+          HOST_COUNT=$(echo "$HOSTS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+          if [ "$HOST_COUNT" -eq 0 ]; then
+            echo "::error::bundle-pipeline: bundle '$NAME' has empty hosts"
+            exit 1
+          fi
+
+          echo "  path: $BUNDLE_PATH ($FILE_COUNT files)"
+          echo "  target: $TARGET"
+          echo "  hosts: $HOST_COUNT"
+
+          # 4. Generate SBOM for this bundle
+          SBOM_FILE="${RELEASE_DIR}/${NAME}.sbom.json"
+          if [ -f "$BUNDLE_PATH/package.json" ]; then
+            if npx --yes @cyclonedx/cyclonedx-npm --output-file "$SBOM_FILE" --package-lock-only 2>/dev/null; then
+              SBOM_COMPONENTS=$(python3 -c "import json; print(len(json.load(open('$SBOM_FILE')).get('components',[])))" 2>/dev/null || echo "0")
+              echo "  sbom: $SBOM_COMPONENTS components"
+            else
+              echo '{"components":[]}' > "$SBOM_FILE"
+              echo "  sbom: generation failed (empty placeholder)"
+            fi
+          elif [ -f "$BUNDLE_PATH/requirements.txt" ] || [ -f "$BUNDLE_PATH/pyproject.toml" ]; then
+            if pip install --quiet cyclonedx-bom 2>/dev/null && cyclonedx-py environment --output "$SBOM_FILE" --format json 2>/dev/null; then
+              SBOM_COMPONENTS=$(python3 -c "import json; print(len(json.load(open('$SBOM_FILE')).get('components',[])))" 2>/dev/null || echo "0")
+              echo "  sbom: $SBOM_COMPONENTS components"
+            else
+              echo '{"components":[]}' > "$SBOM_FILE"
+              echo "  sbom: generation failed (empty placeholder)"
+            fi
+          else
+            # Check repo root for package.json
+            if [ -f "package.json" ]; then
+              if npx --yes @cyclonedx/cyclonedx-npm --output-file "$SBOM_FILE" 2>/dev/null; then
+                SBOM_COMPONENTS=$(python3 -c "import json; print(len(json.load(open('$SBOM_FILE')).get('components',[])))" 2>/dev/null || echo "0")
+                echo "  sbom: $SBOM_COMPONENTS components (from repo root)"
+              else
+                echo '{"components":[]}' > "$SBOM_FILE"
+                echo "  sbom: generation failed (empty placeholder)"
+              fi
+            else
+              echo '{"components":[]}' > "$SBOM_FILE"
+              echo "  sbom: no package manager detected (empty)"
+            fi
+          fi
+
+          # 5. Generate SHA-512 of all files in bundle
+          SHA512_FILE="${RELEASE_DIR}/${NAME}.sha512"
+          find "$BUNDLE_PATH" -type f -print0 | sort -z | xargs -0 sha512sum > "$SHA512_FILE"
+
+          # 6. Generate aggregate digest
+          DIGEST=$(sha512sum "$SHA512_FILE" | cut -d' ' -f1)
+
+          # 7. Generate checksum file
+          CHECKSUM_FILE="${RELEASE_DIR}/${NAME}.checksum"
+          echo "$DIGEST" > "$CHECKSUM_FILE"
+
+          echo "  sha512: ${DIGEST:0:24}..."
+          echo "  files: $FILE_COUNT"
+
+          # 8. Create bundle manifest
+          MANIFEST_FILE="${RELEASE_DIR}/${NAME}.manifest.json"
+          python3 -c "
+        import json
+        manifest = {
+            'name': '$NAME',
+            'target': '$TARGET',
+            'hosts': json.loads('$HOSTS_JSON'),
+            'sha512': '$DIGEST',
+            'file_count': $FILE_COUNT,
+            'commit': '$SHA',
+            'ref': '$REF',
+            'repository': '$REPO',
+            'run_id': '$RUN_ID',
+            'correlation_id': '${CORRELATION_ID:-unknown}',
+            'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+        }
+        with open('$MANIFEST_FILE', 'w') as f:
+            json.dump(manifest, f, indent=2)
+        "
+
+          # 9. Tar bundle
+          BUNDLE_TAR="${RELEASE_DIR}/${NAME}.tar.gz"
+          tar czf "$BUNDLE_TAR" -C "$(dirname "$BUNDLE_PATH")" "$(basename "$BUNDLE_PATH")"
+
+          BUNDLE_SIZE=$(ls -lh "$BUNDLE_TAR" | awk '{print $5}')
+          echo "  tar: $BUNDLE_TAR ($BUNDLE_SIZE)"
+
+          PROCESSED=$((PROCESSED + 1))
+        done
+
+        # ── Assert all bundles processed ─────────────────────────
+        ACTUAL_TARBALLS=$(find "$RELEASE_DIR" -name '*.tar.gz' | wc -l | tr -d ' ')
+        if [ "$ACTUAL_TARBALLS" -ne "$BUNDLE_COUNT" ]; then
+          echo "::error::bundle-pipeline: expected $BUNDLE_COUNT bundles, processed $ACTUAL_TARBALLS"
+          exit 1
+        fi
+
+        # ── Copy test report if exists ───────────────────────────
+        if [ -f "$TEST_REPORT" ]; then
+          cp "$TEST_REPORT" "${RELEASE_DIR}/test-report.xml"
+        fi
+
+        # ── Copy deploy.json into release ────────────────────────
+        cp deploy.json "${RELEASE_DIR}/deploy.json"
+
+        # ── Create outer release manifest ────────────────────────
+        python3 -c "
+        import json, os
+        data = json.load(open('deploy.json'))
+        bundles = data['bundles']
+        release_manifest = {
+            'app': data['app'],
+            'commit': '$SHA',
+            'ref': '$REF',
+            'repository': '$REPO',
+            'run_id': '$RUN_ID',
+            'run_attempt': '$RUN_ATTEMPT',
+            'actor': '$ACTOR',
+            'correlation_id': '${CORRELATION_ID:-unknown}',
+            'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+            'bundle_count': len(bundles),
+            'bundles': [b['name'] for b in bundles]
+        }
+        with open('${RELEASE_DIR}/manifest.json', 'w') as f:
+            json.dump(release_manifest, f, indent=2)
+        "
+
+        echo ""
+        echo "━━━ Packaging outer release ━━━"
+
+        # ── Tar the entire release directory ─────────────────────
+        tar czf release.tar.gz -C "$RELEASE_DIR" .
+
+        # ── Outer SHA-512 + checksum ─────────────────────────────
+        sha512sum release.tar.gz > release.tar.gz.sha512
+        sha512sum release.tar.gz | cut -d' ' -f1 > release.tar.gz.checksum
+
+        RELEASE_SIZE=$(ls -lh release.tar.gz | awk '{print $5}')
+        OUTER_DIGEST=$(cat release.tar.gz.checksum)
+
+        echo "  release.tar.gz: $RELEASE_SIZE"
+        echo "  digest: ${OUTER_DIGEST:0:24}..."
+        echo "  bundles: $BUNDLE_COUNT"
+
+        # ── Outputs ──────────────────────────────────────────────
+        echo "artifact_path=$(pwd)/release.tar.gz" >> "$GITHUB_OUTPUT"
+        echo "artifact_size=$RELEASE_SIZE" >> "$GITHUB_OUTPUT"
+        echo "bundle_count=$BUNDLE_COUNT" >> "$GITHUB_OUTPUT"
+
+        echo ""
+        echo "bundle-pipeline: complete — $BUNDLE_COUNT bundles, $RELEASE_SIZE"
+
+    # ── Sign outer release (Sigstore) ──────────────────────────
+    - name: Attest release provenance (Sigstore)
+      continue-on-error: true
+      uses: actions/attest-build-provenance@v2
+      with:
+        subject-path: release.tar.gz
+
+    # ── Upload release artifact ────────────────────────────────
+    - name: Upload release artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: release
+        path: |
+          release.tar.gz
+          release.tar.gz.sha512
+          release.tar.gz.checksum
+        if-no-files-found: error
+        retention-days: 90

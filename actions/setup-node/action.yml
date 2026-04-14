@@ -32,6 +32,8 @@ runs:
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: ${{ steps.detect.outputs.version }}
+        registry-url: 'https://npm.pkg.github.com'
+        scope: '@sonarmd'
 
     - name: Get yarn cache directory
       id: yarn-cache
@@ -51,4 +53,6 @@ runs:
     - name: Install dependencies
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        NODE_AUTH_TOKEN: ${{ github.token }}
       run: yarn install --frozen-lockfile

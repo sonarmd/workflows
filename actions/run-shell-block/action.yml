@@ -1,0 +1,158 @@
+name: Run Shell Block
+description: |
+  Executes raw shell supplied by the consuming repository without
+  inventing a fake syntax layer. On failure, emits structured
+  diagnostics for close-ci consumption.
+
+  The action wraps the shell content with error trapping that captures:
+  - The exact failing command
+  - The line number in the script
+  - The exit code
+  - The last lines of stderr
+
+  Usage:
+    - uses: sonarmd/workflows/actions/run-shell-block@v1
+      with:
+        name: setup
+        script: |
+          sudo apt-get update -qq
+          sudo apt-get install -y graphicsmagick
+          yarn install --frozen-lockfile
+
+inputs:
+  name:
+    description: 'Block name for diagnostics (e.g. setup, steps).'
+    required: true
+  script:
+    description: 'Multi-line shell content to execute.'
+    required: true
+  working_directory:
+    description: 'Working directory for execution.'
+    required: false
+    default: '.'
+
+outputs:
+  status:
+    description: 'Execution result: success or failure.'
+    value: ${{ steps.execute.outputs.status }}
+  diagnostics_path:
+    description: 'Path to JSON diagnostics file (on failure only).'
+    value: ${{ steps.execute.outputs.diagnostics_path }}
+  classification:
+    description: 'Auto-detected failure classification.'
+    value: ${{ steps.execute.outputs.classification }}
+
+runs:
+  using: composite
+  steps:
+    - name: Execute ${{ inputs.name }}
+      id: execute
+      shell: bash
+      env:
+        RSB_NAME: ${{ inputs.name }}
+        RSB_SCRIPT: ${{ inputs.script }}
+        RSB_WORKDIR: ${{ inputs.working_directory }}
+      run: |
+        set -uo pipefail
+
+        DIAG_FILE="/tmp/.rsb-failure-${RSB_NAME}.json"
+        STDERR_LOG="/tmp/.rsb-stderr-${RSB_NAME}.log"
+        SCRIPT_FILE="/tmp/.rsb-script-${RSB_NAME}.sh"
+
+        # ── Write the script with error trapping ─────────────────
+        cat > "$SCRIPT_FILE" <<'SCRIPT_HEADER'
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # ERR trap: capture failing command details
+        __rsb_on_err() {
+          local line="$1"
+          local cmd="$2"
+          local code="$?"
+
+          # Extract last 30 lines of stderr for diagnostics
+          local last_stderr=""
+          if [ -f "$RSB_STDERR_LOG" ]; then
+            last_stderr=$(tail -30 "$RSB_STDERR_LOG" 2>/dev/null || true)
+          fi
+
+          # Auto-classify the failure based on the failing command
+          local classification="user-code"
+          case "$cmd" in
+            *"yarn install"*|*"npm install"*|*"npm ci"*|*"pip install"*|*"pip3 install"*)
+              classification="dependency-resolution" ;;
+            *"yarn test"*|*"npm test"*|*"jest"*|*"mocha"*|*"pytest"*|*"vitest"*)
+              classification="test" ;;
+            *"yarn build"*|*"npm run build"*|*"webpack"*|*"esbuild"*|*"vite"*|*"tsc"*|*"python -m build"*)
+              classification="build" ;;
+            *"yarn lint"*|*"npm run lint"*|*"eslint"*|*"ruff"*)
+              classification="user-code" ;;
+            *"apt-get"*|*"apt "*|*"brew "*)
+              classification="environment" ;;
+            *"curl"*|*"wget"*|*"fetch"*)
+              classification="external-service" ;;
+            *"docker"*)
+              classification="environment" ;;
+          esac
+
+          # Write structured diagnostics
+          python3 -c "
+        import json, sys
+        diag = {
+          'action': 'run-shell-block',
+          'block_name': '$RSB_NAME',
+          'failing_command': '''$cmd''',
+          'line_number': $line,
+          'exit_code': $code,
+          'classification': '$classification',
+          'last_stderr': '''$(echo "$last_stderr" | head -20)'''
+        }
+        with open('$RSB_DIAG_FILE', 'w') as f:
+          json.dump(diag, f, indent=2)
+        " 2>/dev/null || true
+
+          # Emit GHA error annotation
+          echo "::error::run-shell-block($RSB_NAME): command failed at line $line — $cmd (exit $code)"
+          echo "::error::classification: $classification"
+
+          exit "$code"
+        }
+
+        trap '__rsb_on_err $LINENO "$BASH_COMMAND"' ERR
+        SCRIPT_HEADER
+
+        # Append the actual user script
+        echo "$RSB_SCRIPT" >> "$SCRIPT_FILE"
+        chmod +x "$SCRIPT_FILE"
+
+        # ── Set up environment for the trap ──────────────────────
+        export RSB_STDERR_LOG="$STDERR_LOG"
+        export RSB_DIAG_FILE="$DIAG_FILE"
+        export RSB_NAME
+
+        echo "::group::run-shell-block ($RSB_NAME)"
+
+        # ── Execute with stderr capture ──────────────────────────
+        cd "$RSB_WORKDIR"
+        if bash "$SCRIPT_FILE" 2> >(tee "$STDERR_LOG" >&2); then
+          echo "::endgroup::"
+          echo "status=success" >> "$GITHUB_OUTPUT"
+          echo "diagnostics_path=" >> "$GITHUB_OUTPUT"
+          echo "classification=" >> "$GITHUB_OUTPUT"
+        else
+          EXIT_CODE=$?
+          echo "::endgroup::"
+
+          echo "status=failure" >> "$GITHUB_OUTPUT"
+          echo "diagnostics_path=$DIAG_FILE" >> "$GITHUB_OUTPUT"
+
+          # Read classification from diagnostics if written
+          if [ -f "$DIAG_FILE" ]; then
+            CLASS=$(python3 -c "import json; print(json.load(open('$DIAG_FILE')).get('classification','user-code'))" 2>/dev/null || echo "user-code")
+          else
+            CLASS="user-code"
+          fi
+          echo "classification=$CLASS" >> "$GITHUB_OUTPUT"
+
+          exit "$EXIT_CODE"
+        fi

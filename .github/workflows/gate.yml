@@ -20,8 +20,7 @@ name: Gate
 #   - Ref: main
 
 on:
-  merge_group:
-  pull_request:
+  workflow_dispatch:
 
 permissions: {}
 

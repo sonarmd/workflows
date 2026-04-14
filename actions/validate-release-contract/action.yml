@@ -1,0 +1,239 @@
+name: Validate Release Contract
+description: |
+  Validates deploy.json against the authoritative schema and validates
+  build output structure alignment with bundle declarations.
+
+  Two validation phases:
+  1. Schema validation — deploy.json structure and field rules
+  2. Build structure validation — declared bundles vs actual directories
+
+outputs:
+  valid:
+    description: 'Whether the manifest and build structure passed validation.'
+    value: ${{ steps.validate.outputs.valid }}
+  identifier:
+    description: 'Identifier from deploy.json.'
+    value: ${{ steps.validate.outputs.identifier }}
+  app:
+    description: 'App name from deploy.json.'
+    value: ${{ steps.validate.outputs.app }}
+  bundle_count:
+    description: 'Number of bundles declared.'
+    value: ${{ steps.validate.outputs.bundle_count }}
+  bundle_mode:
+    description: 'single or multi.'
+    value: ${{ steps.validate.outputs.bundle_mode }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate deploy manifest and build structure
+      id: validate
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        MANIFEST="deploy.json"
+
+        # ── File must exist at repo root ─────────────────────────
+        if [ ! -f "$MANIFEST" ]; then
+          echo "::error::validate-release-contract: deploy.json not found at repo root."
+          echo "::error::  Every repository MUST have a deploy.json. See docs/platform-spec.md."
+          echo "valid=false" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        # ── Must be valid JSON ───────────────────────────────────
+        if ! python3 -c "import json; json.load(open('$MANIFEST'))" 2>/dev/null; then
+          echo "::error::validate-release-contract: deploy.json is not valid JSON."
+          echo "valid=false" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        # ── Schema + build structure validation ──────────────────
+        python3 <<'PYEOF'
+        import json, sys, re, os
+
+        manifest = json.load(open("deploy.json"))
+        build_dir = manifest.get("build_root", "dist")
+        errors = []
+
+        VALID_TARGETS = {"s3", "ec2", "eas", "cdk", "lambda"}
+        IDENT_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
+        NAME_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,63}$')
+
+        # ── Top-level fields ─────────────────────────────────────
+        valid_keys = {"app", "identifier", "bundles", "build_root"}
+        for key in manifest:
+            if key not in valid_keys:
+                errors.append(f"Unknown top-level field: '{key}' (allowed: {valid_keys})")
+
+        if "app" not in manifest:
+            errors.append("Missing required field: 'app'")
+        elif not isinstance(manifest["app"], str) or not manifest["app"].strip():
+            errors.append("'app' must be a non-empty string")
+
+        if "identifier" not in manifest:
+            errors.append("Missing required field: 'identifier'")
+        elif not isinstance(manifest["identifier"], str):
+            errors.append("'identifier' must be a string")
+        elif not IDENT_PATTERN.match(manifest["identifier"]):
+            errors.append(f"'identifier' value '{manifest['identifier']}' does not match pattern ^[a-z][a-z0-9_-]{{0,31}}$")
+
+        if "bundles" not in manifest:
+            errors.append("Missing required field: 'bundles'")
+        elif not isinstance(manifest["bundles"], list):
+            errors.append("'bundles' must be an array")
+        elif len(manifest["bundles"]) == 0:
+            errors.append("'bundles' must have at least one entry")
+        else:
+            seen_names = set()
+            for i, bundle in enumerate(manifest["bundles"]):
+                pfx = f"bundles[{i}]"
+
+                if not isinstance(bundle, dict):
+                    errors.append(f"{pfx}: must be an object")
+                    continue
+
+                # Unknown fields
+                valid_bundle_keys = {"name", "path", "target", "hosts"}
+                for key in bundle:
+                    if key not in valid_bundle_keys:
+                        errors.append(f"{pfx}: unknown field '{key}' (allowed: {valid_bundle_keys})")
+
+                # name
+                if "name" not in bundle:
+                    errors.append(f"{pfx}: missing required field 'name'")
+                elif not NAME_PATTERN.match(bundle["name"]):
+                    errors.append(f"{pfx}.name: '{bundle['name']}' does not match pattern")
+                elif bundle["name"] in seen_names:
+                    errors.append(f"{pfx}.name: duplicate bundle name '{bundle['name']}'")
+                else:
+                    seen_names.add(bundle["name"])
+
+                # path
+                if "path" not in bundle:
+                    errors.append(f"{pfx}: missing required field 'path'")
+                elif not isinstance(bundle["path"], str) or not bundle["path"].strip():
+                    errors.append(f"{pfx}.path: must be a non-empty string")
+
+                # target
+                if "target" not in bundle:
+                    errors.append(f"{pfx}: missing required field 'target'")
+                elif bundle["target"] not in VALID_TARGETS:
+                    errors.append(f"{pfx}.target: '{bundle['target']}' not allowed. Must be one of: {sorted(VALID_TARGETS)}")
+
+                # hosts
+                if "hosts" not in bundle:
+                    errors.append(f"{pfx}: missing required field 'hosts'")
+                elif not isinstance(bundle["hosts"], dict):
+                    errors.append(f"{pfx}.hosts: must be an object (label → match_key), not {type(bundle['hosts']).__name__}")
+                elif len(bundle["hosts"]) == 0:
+                    errors.append(f"{pfx}.hosts: must not be empty")
+                else:
+                    host_values = list(bundle["hosts"].values())
+                    for label, value in bundle["hosts"].items():
+                        if not isinstance(value, str) or not value.strip():
+                            errors.append(f"{pfx}.hosts.{label}: must be a non-empty string")
+                    if len(host_values) != len(set(host_values)):
+                        errors.append(f"{pfx}.hosts: values must be unique within bundle")
+
+                    # Template variable check
+                    for label, value in bundle["hosts"].items():
+                        # Only ${env} allowed
+                        for match in re.finditer(r'\$\{([^}]+)\}', value):
+                            var = match.group(1)
+                            if var != "env":
+                                errors.append(f"{pfx}.hosts.{label}: only ${{env}} template variable allowed, found ${{{var}}}")
+
+        # ── Build structure validation ───────────────────────────
+        if os.path.isdir(build_dir) and not errors:
+            bundles = manifest.get("bundles", [])
+
+            # Detect mode: subdirectories = multi, no subdirectories = single
+            subdirs = [d for d in os.listdir(build_dir)
+                       if os.path.isdir(os.path.join(build_dir, d))]
+
+            if subdirs:
+                # MULTI-BUNDLE MODE
+                mode = "multi"
+
+                # Every declared bundle path must exist
+                for b in bundles:
+                    bundle_path = os.path.join(build_dir, b.get("path", ""))
+                    if not os.path.isdir(bundle_path):
+                        # Also try path directly (it may be relative to build root)
+                        alt_path = b.get("path", "")
+                        if not os.path.isdir(alt_path):
+                            errors.append(f"Bundle '{b.get('name','')}': path '{b.get('path','')}' not found in build output")
+
+                # Every actual subdirectory must be declared
+                declared_paths = {b.get("path", "") for b in bundles}
+                for subdir in subdirs:
+                    rel_path = subdir
+                    full_rel = os.path.join(build_dir, subdir)
+                    if rel_path not in declared_paths and subdir not in declared_paths:
+                        # Check if any declared path resolves to this subdir
+                        found = False
+                        for dp in declared_paths:
+                            if dp == rel_path or dp == subdir or os.path.join(build_dir, dp) == full_rel:
+                                found = True
+                                break
+                        if not found:
+                            errors.append(f"Build directory '{subdir}' exists but is not declared in deploy.json bundles")
+            else:
+                # SINGLE-BUNDLE MODE
+                mode = "single"
+
+                if len(bundles) != 1:
+                    errors.append(f"Single-bundle mode (no subdirectories in {build_dir}) requires exactly 1 bundle in deploy.json, got {len(bundles)}")
+        elif not os.path.isdir(build_dir):
+            mode = "unknown"
+            # Build dir may not exist yet during schema-only validation
+            print(f"::notice::validate-release-contract: build directory '{build_dir}' not found — skipping structure validation", file=sys.stderr)
+        else:
+            mode = "unknown"
+
+        # ── Output ───────────────────────────────────────────────
+        identifier = manifest.get("identifier", "")
+        app = manifest.get("app", "")
+        bundle_count = len(manifest.get("bundles", []))
+
+        if errors:
+            for e in errors:
+                print(f"::error::validate-release-contract: {e}", file=sys.stderr)
+            print(f"VALID=false")
+        else:
+            print(f"VALID=true")
+
+        print(f"IDENTIFIER={identifier}")
+        print(f"APP={app}")
+        print(f"BUNDLE_COUNT={bundle_count}")
+        print(f"BUNDLE_MODE={mode}")
+        print(f"ERRORS={len(errors)}")
+        PYEOF
+         > /tmp/vrc-output.txt 2>&1 || true
+
+        # Show any error annotations
+        grep "^::error" /tmp/vrc-output.txt >&2 || true
+        grep "^::notice" /tmp/vrc-output.txt >&2 || true
+
+        VALID=$(grep "^VALID=" /tmp/vrc-output.txt | cut -d= -f2)
+        IDENTIFIER=$(grep "^IDENTIFIER=" /tmp/vrc-output.txt | cut -d= -f2)
+        APP=$(grep "^APP=" /tmp/vrc-output.txt | cut -d= -f2)
+        BUNDLE_COUNT=$(grep "^BUNDLE_COUNT=" /tmp/vrc-output.txt | cut -d= -f2)
+        BUNDLE_MODE=$(grep "^BUNDLE_MODE=" /tmp/vrc-output.txt | cut -d= -f2)
+        ERROR_COUNT=$(grep "^ERRORS=" /tmp/vrc-output.txt | cut -d= -f2)
+
+        echo "valid=$VALID" >> "$GITHUB_OUTPUT"
+        echo "identifier=$IDENTIFIER" >> "$GITHUB_OUTPUT"
+        echo "app=$APP" >> "$GITHUB_OUTPUT"
+        echo "bundle_count=$BUNDLE_COUNT" >> "$GITHUB_OUTPUT"
+        echo "bundle_mode=$BUNDLE_MODE" >> "$GITHUB_OUTPUT"
+
+        if [ "$VALID" = "true" ]; then
+          echo "validate-release-contract: PASSED — $APP ($IDENTIFIER), $BUNDLE_COUNT bundles ($BUNDLE_MODE mode)"
+        else
+          echo "validate-release-contract: FAILED — $ERROR_COUNT error(s)"
+          exit 1
+        fi

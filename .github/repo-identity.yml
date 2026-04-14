@@ -1,0 +1,18 @@
+# Platform-owned repository identity mapping.
+#
+# This is the AUTHORITATIVE source for deploy identifiers.
+# Repos MUST NOT control their own deploy identity.
+#
+# The identifier is used to build deploy_tag:
+#   {env}-{identifier}-v{version}-b{build}
+#
+# To add a new repo: add a line here. That's it.
+# To rename an identifier: update the mapping. All downstream
+# consumers (Ansible, Slack, Hubot) see the change automatically.
+
+repo_identifier_map:
+  triggr_api: api
+  frontend: fe
+  frontend-patient-app: mobile
+  triggr_misc: infra
+  infra-cdk: cdk
