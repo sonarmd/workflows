@@ -11,7 +11,7 @@ name: CD
 #     cancel-in-progress: false
 #   jobs:
 #     cd:
-#       uses: sonarmd/workflows/.github/workflows/cd-core.yml
+#       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
 #       secrets: inherit
 #
 # Required repo variable: DEPLOY_IDENTIFIER (e.g. "api", "fe", "mobile")
@@ -20,8 +20,6 @@ on:
   workflow_call:
     secrets:
       SLACK_WEBHOOK_URL:
-        required: false
-      PLATFORM_TOKEN:
         required: false
 
 permissions:
@@ -41,26 +39,9 @@ jobs:
           sparse-checkout-cone-mode: false
           fetch-depth: 2
 
-      - name: Checkout platform actions
-        id: platform-checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: sonarmd/workflows
-          ref: main
-          path: _platform
-          token: ${{ secrets.PLATFORM_TOKEN || github.token }}
-        continue-on-error: true
-
-      - name: Assert platform checkout succeeded
-        if: steps.platform-checkout.outcome != 'success'
-        shell: bash
-        run: |
-          echo "::error::cd-core: failed to checkout sonarmd/workflows."
-          echo "::error::  Create org secret PLATFORM_TOKEN with contents:read on sonarmd/workflows."
-          exit 1
-
       - name: Resolve context
         id: ctx
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -74,12 +55,10 @@ jobs:
           case "${{ github.ref_name }}" in
             main|master)
               ENV=prd
-              # Version from PR merge context (most reliable)
               VERSION="${{ github.event.pull_request.head.ref }}"
               if echo "$VERSION" | grep -qP '^release/v[0-9]+\.[0-9]+\.[0-9]+$'; then
                 VERSION="${VERSION#release/v}"
               else
-                # Fallback: merge commit message
                 VERSION=$(git log -1 --pretty=%B | grep -oP 'release/v\K[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
               fi
               if [ -z "$VERSION" ]; then
@@ -107,18 +86,18 @@ jobs:
           echo "cd-core: $TAG"
 
       - name: Download CI artifact
-        uses: ./_platform/actions/download-ci-artifact
+        uses: sonarmd/workflows/actions/download-ci-artifact@main
 
       - name: Create tag and release
         id: release
-        uses: ./_platform/actions/create-tag-release
+        uses: sonarmd/workflows/actions/create-tag-release@main
         with:
           tag:           ${{ steps.ctx.outputs.tag }}
           environment:   ${{ steps.ctx.outputs.env }}
           artifact_path: artifact/release.tar.gz
 
       - name: Notify Slack
-        uses: ./_platform/actions/notify-slack
+        uses: sonarmd/workflows/actions/notify-slack@main
         with:
           webhook_url:    ${{ secrets.SLACK_WEBHOOK_URL }}
           status:         success
@@ -129,13 +108,13 @@ jobs:
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'
-        uses: ./_platform/actions/release-lifecycle
+        uses: sonarmd/workflows/actions/release-lifecycle@main
         with:
           token: ${{ github.token }}
 
       - name: Notify Slack on failure
         if: failure()
-        uses: ./_platform/actions/notify-slack
+        uses: sonarmd/workflows/actions/notify-slack@main
         with:
           webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
           status:      failure
