@@ -11,7 +11,7 @@ name: CD
 #     cancel-in-progress: false
 #   jobs:
 #     cd:
-#       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
+#       uses: sonarmd/workflows/.github/workflows/cd-core.yml
 #       secrets: inherit
 #
 # Required repo variable: DEPLOY_IDENTIFIER (e.g. "api", "fe", "mobile")
@@ -87,18 +87,18 @@ jobs:
           echo "cd-core: $TAG"
 
       - name: Download CI artifact
-        uses: ./actions/download-ci-artifact
+        uses: sonarmd/workflows/actions/download-ci-artifact@main
 
       - name: Create tag and release
         id: release
-        uses: ./actions/create-tag-release
+        uses: sonarmd/workflows/actions/create-tag-release@main
         with:
           tag:           ${{ steps.ctx.outputs.tag }}
           environment:   ${{ steps.ctx.outputs.env }}
           artifact_path: artifact/release.tar.gz
 
       - name: Notify Slack
-        uses: ./actions/notify-slack
+        uses: sonarmd/workflows/actions/notify-slack@main
         with:
           webhook_url:    ${{ secrets.SLACK_WEBHOOK_URL }}
           status:         success
@@ -109,13 +109,13 @@ jobs:
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'
-        uses: ./actions/release-lifecycle
+        uses: sonarmd/workflows/actions/release-lifecycle@main
         with:
           token: ${{ github.token }}
 
       - name: Notify Slack on failure
         if: failure()
-        uses: ./actions/notify-slack
+        uses: sonarmd/workflows/actions/notify-slack@main
         with:
           webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
           status:      failure
