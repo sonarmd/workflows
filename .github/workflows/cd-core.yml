@@ -39,6 +39,14 @@ jobs:
           sparse-checkout-cone-mode: false
           fetch-depth: 2
 
+      - name: Checkout platform actions
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: main
+          path: _platform
+          token: ${{ github.token }}
+
       - name: Resolve context
         id: ctx
         run: |
@@ -87,18 +95,18 @@ jobs:
           echo "cd-core: $TAG"
 
       - name: Download CI artifact
-        uses: sonarmd/workflows/actions/download-ci-artifact@main
+        uses: ./_platform/actions/download-ci-artifact
 
       - name: Create tag and release
         id: release
-        uses: sonarmd/workflows/actions/create-tag-release@main
+        uses: ./_platform/actions/create-tag-release
         with:
           tag:           ${{ steps.ctx.outputs.tag }}
           environment:   ${{ steps.ctx.outputs.env }}
           artifact_path: artifact/release.tar.gz
 
       - name: Notify Slack
-        uses: sonarmd/workflows/actions/notify-slack@main
+        uses: ./_platform/actions/notify-slack
         with:
           webhook_url:    ${{ secrets.SLACK_WEBHOOK_URL }}
           status:         success
@@ -109,13 +117,13 @@ jobs:
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'
-        uses: sonarmd/workflows/actions/release-lifecycle@main
+        uses: ./_platform/actions/release-lifecycle
         with:
           token: ${{ github.token }}
 
       - name: Notify Slack on failure
         if: failure()
-        uses: sonarmd/workflows/actions/notify-slack@main
+        uses: ./_platform/actions/notify-slack
         with:
           webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
           status:      failure

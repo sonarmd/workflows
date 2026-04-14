@@ -98,92 +98,105 @@ jobs:
 
     steps:
       # ═══════════════════════════════════════════════════════════
-      # 1. TIMEOUT HANDLER
-      # ═══════════════════════════════════════════════════════════
-      - name: Timeout handler
-        uses: sonarmd/workflows/actions/timeout-handler@main
-        with:
-          timeout_minutes: ${{ inputs.timeout }}
-
-      # ═══════════════════════════════════════════════════════════
-      # 2. START MONITORING
-      # ═══════════════════════════════════════════════════════════
-      - name: Start monitoring
-        id: monitoring
-        uses: sonarmd/workflows/actions/start-monitoring@main
-        with:
-          repo_short: ${{ github.event.repository.name }}
-
-      # ═══════════════════════════════════════════════════════════
-      # 3. CHECKOUT
+      # 1. CHECKOUT CALLING REPO
       # ═══════════════════════════════════════════════════════════
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ═══════════════════════════════════════════════════════════
-      # 4. OPEN CI
+      # 2. CHECKOUT PLATFORM ACTIONS
+      # Private composite actions can't be referenced by owner/repo@ref
+      # from an external runner — they must be in the workspace.
+      # ═══════════════════════════════════════════════════════════
+      - name: Checkout platform actions
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: main
+          path: _platform
+          token: ${{ github.token }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 3. TIMEOUT HANDLER
+      # ═══════════════════════════════════════════════════════════
+      - name: Timeout handler
+        uses: ./_platform/actions/timeout-handler
+        with:
+          timeout_minutes: ${{ inputs.timeout }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 4. START MONITORING
+      # ═══════════════════════════════════════════════════════════
+      - name: Start monitoring
+        id: monitoring
+        uses: ./_platform/actions/start-monitoring
+        with:
+          repo_short: ${{ github.event.repository.name }}
+
+      # ═══════════════════════════════════════════════════════════
+      # 5. OPEN CI
       # ═══════════════════════════════════════════════════════════
       - name: Open CI
         id: open-ci
-        uses: sonarmd/workflows/actions/open-ci@main
+        uses: ./_platform/actions/open-ci
 
       # ═══════════════════════════════════════════════════════════
-      # 5. SETUP NODE (if Node project)
+      # 6. SETUP NODE (if Node project)
       # ═══════════════════════════════════════════════════════════
       - name: Setup Node.js
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
-        uses: sonarmd/workflows/actions/setup-node@main
+        uses: ./_platform/actions/setup-node
         with:
           working-directory: ${{ inputs.working_directory }}
 
       # ═══════════════════════════════════════════════════════════
-      # 6. RUN SHELL BLOCK — SETUP
+      # 7. RUN SHELL BLOCK — SETUP
       # ═══════════════════════════════════════════════════════════
       - name: Run setup
         if: inputs.setup != '' && steps.open-ci.outputs.should_skip != 'true'
         id: setup-block
-        uses: sonarmd/workflows/actions/run-shell-block@main
+        uses: ./_platform/actions/run-shell-block
         with:
           name: setup
           script: ${{ inputs.setup }}
           working_directory: ${{ inputs.working_directory }}
 
       # ═══════════════════════════════════════════════════════════
-      # 7. RUN SHELL BLOCK — STEPS
+      # 8. RUN SHELL BLOCK — STEPS
       # ═══════════════════════════════════════════════════════════
       - name: Run steps
         if: steps.open-ci.outputs.should_skip != 'true'
         id: steps-block
-        uses: sonarmd/workflows/actions/run-shell-block@main
+        uses: ./_platform/actions/run-shell-block
         with:
           name: steps
           script: ${{ inputs.steps }}
           working_directory: ${{ inputs.working_directory }}
 
       # ═══════════════════════════════════════════════════════════
-      # 8. VALIDATE RELEASE CONTRACT
+      # 9. VALIDATE RELEASE CONTRACT
       # ═══════════════════════════════════════════════════════════
       - name: Validate release contract
         if: steps.open-ci.outputs.should_skip != 'true'
         id: validate
-        uses: sonarmd/workflows/actions/validate-release-contract@main
+        uses: ./_platform/actions/validate-release-contract
 
       # ═══════════════════════════════════════════════════════════
-      # 9. BUNDLE PIPELINE
+      # 10. BUNDLE PIPELINE
       # ═══════════════════════════════════════════════════════════
       - name: Bundle pipeline
         if: steps.open-ci.outputs.should_skip != 'true'
         id: bundles
-        uses: sonarmd/workflows/actions/bundle-release@main
+        uses: ./_platform/actions/bundle-release
         with:
           test_report_path: ${{ inputs.test_report_path }}
 
       # ═══════════════════════════════════════════════════════════
-      # 10. CLOSE CI
+      # 11. CLOSE CI
       # ═══════════════════════════════════════════════════════════
       - name: Close CI
         if: always()
-        uses: sonarmd/workflows/actions/close-ci@main
+        uses: ./_platform/actions/close-ci
         with:
           status: ${{ job.status }}
