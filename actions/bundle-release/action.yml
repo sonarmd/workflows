@@ -53,9 +53,7 @@ runs:
         BUILD_DIR=$(python3 -c "import json; print(json.load(open('deploy.json')).get('build_root', 'dist'))")
         BUNDLE_COUNT=$(python3 -c "import json; print(len(json.load(open('deploy.json'))['bundles']))")
         APP=$(python3 -c "import json; print(json.load(open('deploy.json'))['app'])")
-        IDENTIFIER=$(python3 -c "import json; print(json.load(open('deploy.json'))['identifier'])")
-
-        echo "bundle-pipeline: processing $BUNDLE_COUNT bundles for $APP ($IDENTIFIER)"
+        echo "bundle-pipeline: processing $BUNDLE_COUNT bundles for $APP"
 
         VALID_TARGETS="s3 ec2 eas cdk lambda"
         PROCESSED=0
@@ -71,16 +69,11 @@ runs:
           echo ""
           echo "━━━ Bundle: $NAME ━━━"
 
-          # 1. Validate bundle directory exists
-          BUNDLE_PATH="${BUILD_DIR}/${PATH}"
+          # 1. Validate bundle directory exists (path is repo-relative)
+          BUNDLE_PATH="$PATH"
           if [ ! -d "$BUNDLE_PATH" ]; then
-            # Try path directly (single-bundle mode)
-            if [ "$PATH" = "." ] || [ "$PATH" = "$BUILD_DIR" ]; then
-              BUNDLE_PATH="$BUILD_DIR"
-            else
-              echo "::error::bundle-pipeline: bundle '$NAME' path '$BUNDLE_PATH' not found"
-              exit 1
-            fi
+            echo "::error::bundle-pipeline: bundle '$NAME' path '$BUNDLE_PATH' not found"
+            exit 1
           fi
 
           FILE_COUNT=$(find "$BUNDLE_PATH" -type f | wc -l | tr -d ' ')
@@ -203,10 +196,10 @@ runs:
         # ── Create outer release manifest ────────────────────────
         python3 -c "
         import json, os
-        bundles = json.load(open('deploy.json'))['bundles']
+        data = json.load(open('deploy.json'))
+        bundles = data['bundles']
         release_manifest = {
-            'app': json.load(open('deploy.json'))['app'],
-            'identifier': json.load(open('deploy.json'))['identifier'],
+            'app': data['app'],
             'commit': '$SHA',
             'ref': '$REF',
             'repository': '$REPO',

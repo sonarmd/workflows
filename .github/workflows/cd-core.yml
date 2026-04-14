@@ -13,6 +13,8 @@ name: CD
 #     cd:
 #       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
 #       secrets: inherit
+#
+# Required repo variable: DEPLOY_IDENTIFIER (e.g. "api", "fe", "mobile")
 
 on:
   workflow_call:
@@ -34,23 +36,46 @@ jobs:
         with:
           sparse-checkout: deploy.json
           sparse-checkout-cone-mode: false
+          fetch-depth: 2
 
       - name: Resolve context
         id: ctx
         run: |
           set -euo pipefail
 
-          case "${{ github.ref_name }}" in
-            main|master)   ENV=prd ; VERSION="unknown" ;;
-            release/v*)    ENV=stg ; VERSION="${{ github.ref_name }}" ; VERSION="${VERSION#release/v}" ;;
-            *) echo "::error::cd-core: unexpected branch '${{ github.ref_name }}'"; exit 1 ;;
-          esac
-
-          IDENTIFIER=$(jq -r '.identifier' deploy.json)
-          if [ -z "$IDENTIFIER" ] || [ "$IDENTIFIER" = "null" ]; then
-            echo "::error::cd-core: deploy.json missing 'identifier' field"
+          IDENTIFIER="${{ vars.DEPLOY_IDENTIFIER }}"
+          if [ -z "$IDENTIFIER" ]; then
+            echo "::error::cd-core: repo variable DEPLOY_IDENTIFIER is not set"
+            echo "::error::  Set it in repo Settings → Variables → Actions"
             exit 1
           fi
+
+          case "${{ github.ref_name }}" in
+            main|master)
+              ENV=prd
+              # Version from PR merge context (most reliable)
+              VERSION="${{ github.event.pull_request.head.ref }}"
+              if echo "$VERSION" | grep -qP '^release/v[0-9]+\.[0-9]+\.[0-9]+$'; then
+                VERSION="${VERSION#release/v}"
+              else
+                # Fallback: merge commit message
+                VERSION=$(git log -1 --pretty=%B | grep -oP 'release/v\K[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+              fi
+              if [ -z "$VERSION" ]; then
+                echo "::error::cd-core: cannot determine version for prd — merge must be from release/vX.Y.Z"
+                exit 1
+              fi
+              ;;
+            release/v*)
+              ENV=stg
+              VERSION="${{ github.ref_name }}"
+              VERSION="${VERSION#release/v}"
+              ;;
+            *)
+              echo "::error::cd-core: unexpected branch '${{ github.ref_name }}' — must be main, master, or release/vX.Y.Z"
+              exit 1
+              ;;
+          esac
 
           TAG="${ENV}-${IDENTIFIER}-v${VERSION}-b${GITHUB_RUN_NUMBER}"
 
@@ -59,15 +84,6 @@ jobs:
           echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
           echo "tag=$TAG"               >> "$GITHUB_OUTPUT"
           echo "cd-core: $TAG"
-
-      - name: Notify Slack — deploying
-        uses: sonarmd/workflows/actions/notify-slack@main
-        with:
-          webhook_url:  ${{ secrets.SLACK_WEBHOOK_URL }}
-          status:       started
-          app_name:     ${{ steps.ctx.outputs.identifier }}
-          environment:  ${{ steps.ctx.outputs.env }}
-          tag:          ${{ steps.ctx.outputs.tag }}
 
       - name: Download CI artifact
         uses: sonarmd/workflows/actions/download-ci-artifact@main
@@ -80,7 +96,7 @@ jobs:
           environment:   ${{ steps.ctx.outputs.env }}
           artifact_path: artifact/release.tar.gz
 
-      - name: Notify Slack — deploy ready
+      - name: Notify Slack
         uses: sonarmd/workflows/actions/notify-slack@main
         with:
           webhook_url:    ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -90,27 +106,11 @@ jobs:
           tag:            ${{ steps.ctx.outputs.tag }}
           deploy_command: 'deploy ${{ steps.ctx.outputs.env }} ${{ steps.ctx.outputs.identifier }} ${{ steps.ctx.outputs.tag }} ${{ steps.release.outputs.artifact_url }}'
 
-      - name: Draft next release branch
+      - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO:     ${{ github.repository }}
-          SHA:      ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          # Next release branch is cut from the commit that just merged to main.
-          # Version comes from the caller — prd doesn't know version without it.
-          # TODO: wire version through when prd version resolution is decided.
-          BRANCH="release/next"
-          if ! gh api "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null 2>&1; then
-            gh api "repos/$REPO/git/refs" \
-              -f "ref=refs/heads/$BRANCH" \
-              -f "sha=$SHA"
-            echo "cd-core: created $BRANCH"
-          else
-            echo "cd-core: $BRANCH already exists — skipping"
-          fi
+        uses: sonarmd/workflows/actions/release-lifecycle@main
+        with:
+          token: ${{ github.token }}
 
       - name: Notify Slack on failure
         if: failure()
