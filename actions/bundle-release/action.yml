@@ -64,13 +64,13 @@ runs:
         bundles = json.load(open('deploy.json'))['bundles']
         for b in bundles:
             print(f\"{b['name']}|{b['path']}|{b['target']}|{json.dumps(b['hosts'])}\")
-        " | while IFS='|' read -r NAME PATH TARGET HOSTS_JSON; do
+        " | while IFS='|' read -r NAME BPATH TARGET HOSTS_JSON; do
 
           echo ""
           echo "━━━ Bundle: $NAME ━━━"
 
           # 1. Validate bundle directory exists (path is repo-relative)
-          BUNDLE_PATH="$PATH"
+          BUNDLE_PATH="$BPATH"
           if [ ! -d "$BUNDLE_PATH" ]; then
             echo "::error::bundle-pipeline: bundle '$NAME' path '$BUNDLE_PATH' not found"
             exit 1
