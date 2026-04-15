@@ -240,13 +240,6 @@ runs:
         echo ""
         echo "bundle-pipeline: complete — $BUNDLE_COUNT bundles, $RELEASE_SIZE"
 
-    # ── Sign outer release (Sigstore) ──────────────────────────
-    - name: Attest release provenance (Sigstore)
-      continue-on-error: true
-      uses: actions/attest-build-provenance@v2
-      with:
-        subject-path: release.tar.gz
-
     # ── Upload release artifact ────────────────────────────────
     - name: Upload release artifact
       uses: actions/upload-artifact@v4

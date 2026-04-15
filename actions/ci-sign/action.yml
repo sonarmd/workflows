@@ -1,13 +1,13 @@
 name: CI Sign
 description: |
-  Collects CI evidence, generates a CycloneDX SBOM, and signs everything
-  with GitHub's native Sigstore attestation. Add as the LAST step.
+  Collects CI evidence, generates a CycloneDX SBOM, and produces
+  SHA-512 checksums for artifact integrity. Add as the LAST step.
 
   The gate independently verifies:
-  - Sigstore signature (proves which workflow produced it — can't be faked)
   - JUnit XML has real test cases (can't pass with empty/missing tests)
   - SBOM exists (dependency inventory for compliance)
   - Build digest matches (artifact integrity)
+  - Evidence manifest ties commit, actor, and checksums together
 
   Example:
     - uses: sonarmd/workflows/actions/ci-sign@main
@@ -146,12 +146,6 @@ runs:
         if-no-files-found: error
         retention-days: 90
 
-    - name: Attest build provenance (Sigstore)
-      continue-on-error: true
-      uses: actions/attest-build-provenance@v2
-      with:
-        subject-path: /tmp/ci-evidence/manifest.json
-
     - name: Write job summary
       shell: bash
       run: |
@@ -178,7 +172,7 @@ runs:
         | Tests | $TEST_COUNT test cases | JUnit XML |
         $BUILD_LINE
         $SBOM_LINE
-        | Attestation | Sigstore | \`actions/attest-build-provenance\` |
+        | Attestation | SHA-512 | manifest + checksums |
 
         > Signed at $(date -u +%Y-%m-%dT%H:%M:%SZ) by \`${{ github.actor }}\`
         SUMMARY
