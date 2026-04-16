@@ -24,22 +24,18 @@ on:
     inputs:
       pre_build:
         description: 'Shell commands to run before the build (e.g. apt installs). Only used for fallback builds.'
-        type: string
         required: false
         default: ''
       build:
         description: 'Build command to run (e.g. yarn build). Required if fallback build is needed.'
-        type: string
         required: false
         default: ''
       artifact_paths:
         description: 'Space-separated paths to include in the release tarball (e.g. "dist/ node_modules/ package.json"). Required if fallback build is needed.'
-        type: string
         required: false
         default: ''
       node_version:
         description: 'Node.js version to use for fallback builds.'
-        type: string
         required: false
         default: '22'
     secrets:
