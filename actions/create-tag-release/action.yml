@@ -133,13 +133,17 @@ runs:
           echo "create-tag-release: uploaded $ASSET_NAME"
         fi
 
-        # Publish the release (no-op if already published)
-        DRAFT=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.draft')
-        if [ "$DRAFT" = "true" ]; then
-          gh api "repos/$REPO/releases/$RELEASE_ID" \
-            --method PATCH \
-            --field draft=false \
-            --field prerelease="$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.prerelease')" \
-            > /dev/null
-          echo "create-tag-release: published release"
+        # Publish the release only for production — staging stays as draft
+        if [ "${{ inputs.environment }}" = "prd" ]; then
+          DRAFT=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.draft')
+          if [ "$DRAFT" = "true" ]; then
+            gh api "repos/$REPO/releases/$RELEASE_ID" \
+              --method PATCH \
+              --field draft=false \
+              --field prerelease=false \
+              > /dev/null
+            echo "create-tag-release: published release"
+          fi
+        else
+          echo "create-tag-release: staging release left as draft"
         fi
