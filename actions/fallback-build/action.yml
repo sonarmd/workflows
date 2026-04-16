@@ -12,16 +12,19 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Full checkout
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      with:
-        fetch-depth: 0
+    - name: Populate full working tree
+      shell: bash
+      run: |
+        git -C "$GITHUB_WORKSPACE" sparse-checkout disable
+        git -C "$GITHUB_WORKSPACE" fetch --unshallow 2>/dev/null || true
+        git -C "$GITHUB_WORKSPACE" checkout HEAD -- .
 
     - name: Setup Node + install dependencies
       uses: sonarmd/workflows/actions/setup-node@main
 
     - name: Build
       shell: bash
+      working-directory: ${{ github.workspace }}
       run: yarn build
 
     - name: Bundle release
@@ -30,6 +33,7 @@ runs:
 
     - name: Stage artifact to match CI download path
       shell: bash
+      working-directory: ${{ github.workspace }}
       run: |
         mkdir -p artifact
         cp release.tar.gz artifact/release.tar.gz
