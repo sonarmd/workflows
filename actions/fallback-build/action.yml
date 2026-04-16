@@ -24,8 +24,7 @@ runs:
 
     - name: Build
       shell: bash
-      working-directory: ${{ github.workspace }}
-      run: yarn build
+      run: yarn --cwd "$GITHUB_WORKSPACE" build
 
     - name: Bundle release
       id: bundle
@@ -33,10 +32,11 @@ runs:
 
     - name: Stage artifact to match CI download path
       shell: bash
-      working-directory: ${{ github.workspace }}
+      env:
+        ARTIFACT_PATH: ${{ steps.bundle.outputs.artifact_path }}
       run: |
-        mkdir -p artifact
-        cp release.tar.gz artifact/release.tar.gz
-        [ -f release.tar.gz.sha512 ]   && cp release.tar.gz.sha512   artifact/
-        [ -f release.tar.gz.checksum ] && cp release.tar.gz.checksum artifact/
-        echo "fallback-build: staged $(du -sh artifact/release.tar.gz | cut -f1) → artifact/release.tar.gz"
+        mkdir -p "$GITHUB_WORKSPACE/artifact"
+        cp "$ARTIFACT_PATH"             "$GITHUB_WORKSPACE/artifact/release.tar.gz"
+        [ -f "${ARTIFACT_PATH}.sha512"   ] && cp "${ARTIFACT_PATH}.sha512"   "$GITHUB_WORKSPACE/artifact/"
+        [ -f "${ARTIFACT_PATH}.checksum" ] && cp "${ARTIFACT_PATH}.checksum" "$GITHUB_WORKSPACE/artifact/"
+        echo "fallback-build: staged $(du -sh "$GITHUB_WORKSPACE/artifact/release.tar.gz" | cut -f1) → artifact/release.tar.gz"
