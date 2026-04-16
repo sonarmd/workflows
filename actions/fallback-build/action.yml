@@ -1,0 +1,38 @@
+name: Fallback Build
+description: |
+  Full build + bundle when no CI artifact exists for this commit.
+  Mirrors the CI pipeline exactly: checkout → setup-node (+ install) → build → bundle-release.
+  Stages output to artifact/release.tar.gz to match download-ci-artifact's output path.
+
+outputs:
+  artifact_path:
+    description: 'Path to staged release.tar.gz.'
+    value: artifact/release.tar.gz
+
+runs:
+  using: composite
+  steps:
+    - name: Full checkout
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node + install dependencies
+      uses: sonarmd/workflows/actions/setup-node@main
+
+    - name: Build
+      shell: bash
+      run: yarn build
+
+    - name: Bundle release
+      id: bundle
+      uses: sonarmd/workflows/actions/bundle-release@main
+
+    - name: Stage artifact to match CI download path
+      shell: bash
+      run: |
+        mkdir -p artifact
+        cp release.tar.gz artifact/release.tar.gz
+        [ -f release.tar.gz.sha512 ]   && cp release.tar.gz.sha512   artifact/
+        [ -f release.tar.gz.checksum ] && cp release.tar.gz.checksum artifact/
+        echo "fallback-build: staged $(du -sh artifact/release.tar.gz | cut -f1) → artifact/release.tar.gz"

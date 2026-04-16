@@ -98,35 +98,10 @@ jobs:
           required: 'false'
 
       # ── Fallback build (only when no CI artifact exists) ─────────────────
-      # Checks out the exact commit, runs yarn install + yarn build,
-      # and packages the standard artifact paths.
 
-      - name: Fallback — checkout
+      - name: Fallback build
         if: steps.download.outputs.found == 'false'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Fallback — setup Node
-        if: steps.download.outputs.found == 'false'
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-
-      - name: Fallback — build
-        if: steps.download.outputs.found == 'false'
-        shell: bash
-        run: |
-          yarn install --frozen-lockfile
-          yarn build
-
-      - name: Fallback — package artifact
-        if: steps.download.outputs.found == 'false'
-        shell: bash
-        run: |
-          mkdir -p artifact
-          tar -czf artifact/release.tar.gz dist/ node_modules/ package.json
-          echo "cd-core: fallback artifact packaged ($(du -sh artifact/release.tar.gz | cut -f1))"
+        uses: sonarmd/workflows/actions/fallback-build@main
 
       # ─────────────────────────────────────────────────────────────────────
 
