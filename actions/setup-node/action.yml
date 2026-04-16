@@ -24,7 +24,7 @@ runs:
         if [ -n "$INPUT_NODE_VERSION" ]; then
           echo "version=$INPUT_NODE_VERSION" >> "$GITHUB_OUTPUT"
         else
-          VERSION=$(node -p "require('./package.json').volta?.node || require('./package.json').engines?.node || '18'" | tr -d '^~>=x ')
+          VERSION=$(jq -r '.volta.node // .engines.node // "22"' package.json | tr -d '^~>=x ')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
         fi
 
