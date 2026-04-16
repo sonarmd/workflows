@@ -7,14 +7,14 @@ description: |
   Usage (CI start):
     - uses: sonarmd/workflows/actions/notify-slack@v1
       with:
-        webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+        webhook_url: $\{{ env.SLACK_WEBHOOK_URL }}
         status: started
         app_name: my-repo
 
   Usage (CD with @r2-d2 deploy trigger):
     - uses: sonarmd/workflows/actions/notify-slack@v1
       with:
-        webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+        webhook_url: $\{{ env.SLACK_WEBHOOK_URL }}
         status: success
         app_name: api
         environment: prd
