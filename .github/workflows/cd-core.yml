@@ -18,25 +18,9 @@ name: CD
 #       secrets: inherit
 #
 # Required repo variable: DEPLOY_IDENTIFIER (e.g. "api", "fe", "mobile")
-#
-# Fallback build config (used when no CI artifact exists) is read from
-# deploy.json in the repo root:
-#   {
-#     "build": {
-#       "pre": "apt-get install -y ...",          // optional
-#       "command": "yarn build",                  // required for fallback
-#       "artifact_paths": "dist/ node_modules/"  // required for fallback
-#     }
-#   }
 
 on:
   workflow_call:
-    inputs:
-      node_version:
-        description: 'Node.js version for fallback builds.'
-        type: string
-        required: false
-        default: '22'
     secrets:
       SLACK_WEBHOOK_URL:
         required: false
@@ -101,18 +85,10 @@ jobs:
 
           TAG="${ENV}-${IDENTIFIER}-v${VERSION}-b${GITHUB_RUN_NUMBER}"
 
-          # Read fallback build config from deploy.json
-          BUILD_PRE=$(jq -r '.build.pre // ""' deploy.json)
-          BUILD_CMD=$(jq -r '.build.command // ""' deploy.json)
-          BUILD_PATHS=$(jq -r '.build.artifact_paths // ""' deploy.json)
-
           echo "env=$ENV"               >> "$GITHUB_OUTPUT"
           echo "identifier=$IDENTIFIER" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
           echo "tag=$TAG"               >> "$GITHUB_OUTPUT"
-          echo "build_pre=$BUILD_PRE"   >> "$GITHUB_OUTPUT"
-          echo "build_cmd=$BUILD_CMD"   >> "$GITHUB_OUTPUT"
-          echo "build_paths=$BUILD_PATHS" >> "$GITHUB_OUTPUT"
           echo "cd-core: $TAG"
 
       - name: Download CI artifact
@@ -122,48 +98,34 @@ jobs:
           required: 'false'
 
       # ── Fallback build (only when no CI artifact exists) ─────────────────
+      # Checks out the exact commit, runs yarn install + yarn build,
+      # and packages the standard artifact paths.
 
-      - name: Fallback — full checkout
+      - name: Fallback — checkout
         if: steps.download.outputs.found == 'false'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
 
       - name: Fallback — setup Node
         if: steps.download.outputs.found == 'false'
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ inputs.node_version }}
-
-      - name: Fallback — install dependencies
-        if: steps.download.outputs.found == 'false'
-        shell: bash
-        run: yarn install --frozen-lockfile
-
-      - name: Fallback — pre-build
-        if: steps.download.outputs.found == 'false' && steps.ctx.outputs.build_pre != ''
-        shell: bash
-        run: ${{ steps.ctx.outputs.build_pre }}
+          node-version-file: '.nvmrc'
 
       - name: Fallback — build
         if: steps.download.outputs.found == 'false'
         shell: bash
         run: |
-          if [ -z "${{ steps.ctx.outputs.build_cmd }}" ]; then
-            echo "::error::cd-core: no CI artifact found and deploy.json has no build.command"
-            exit 1
-          fi
-          ${{ steps.ctx.outputs.build_cmd }}
+          yarn install --frozen-lockfile
+          yarn build
 
       - name: Fallback — package artifact
         if: steps.download.outputs.found == 'false'
         shell: bash
         run: |
-          if [ -z "${{ steps.ctx.outputs.build_paths }}" ]; then
-            echo "::error::cd-core: no CI artifact found and deploy.json has no build.artifact_paths"
-            exit 1
-          fi
           mkdir -p artifact
-          # shellcheck disable=SC2086
-          tar -czf artifact/release.tar.gz ${{ steps.ctx.outputs.build_paths }}
+          tar -czf artifact/release.tar.gz dist/ node_modules/ package.json
           echo "cd-core: fallback artifact packaged ($(du -sh artifact/release.tar.gz | cut -f1))"
 
       # ─────────────────────────────────────────────────────────────────────
