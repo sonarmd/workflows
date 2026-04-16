@@ -17,14 +17,13 @@ runs:
     - name: Detect Node version from package.json
       id: detect
       shell: bash
-      working-directory: ${{ inputs.working-directory }}
       env:
         INPUT_NODE_VERSION: ${{ inputs.node-version }}
       run: |
         if [ -n "$INPUT_NODE_VERSION" ]; then
           echo "version=$INPUT_NODE_VERSION" >> "$GITHUB_OUTPUT"
         else
-          VERSION=$(jq -r '.volta.node // .engines.node // "22"' package.json | tr -d '^~>=x ')
+          VERSION=$(jq -r '.volta.node // .engines.node // "22"' "$GITHUB_WORKSPACE/package.json" | tr -d '^~>=x ')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
         fi
 
@@ -52,7 +51,7 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      working-directory: ${{ inputs.working-directory }}
+      working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       env:
         NODE_AUTH_TOKEN: ${{ github.token }}
       run: yarn install --frozen-lockfile
