@@ -95,10 +95,10 @@ runs:
               body,
               generate_release_notes: releaseNotes === '',
               prerelease:             isPrerelease,
-              draft:                  false,
+              draft:                  true,  // draft first — publish after asset upload
             });
             release = created.data;
-            core.info(`create-tag-release: created release ${release.html_url}`);
+            core.info(`create-tag-release: created draft release ${release.html_url}`);
           }
 
           core.setOutput('tag',          tag);
@@ -131,4 +131,15 @@ runs:
         else
           gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber
           echo "create-tag-release: uploaded $ASSET_NAME"
+        fi
+
+        # Publish the release (no-op if already published)
+        DRAFT=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.draft')
+        if [ "$DRAFT" = "true" ]; then
+          gh api "repos/$REPO/releases/$RELEASE_ID" \
+            --method PATCH \
+            --field draft=false \
+            --field prerelease="$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.prerelease')" \
+            > /dev/null
+          echo "create-tag-release: published release"
         fi
