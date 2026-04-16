@@ -95,10 +95,10 @@ runs:
               body,
               generate_release_notes: releaseNotes === '',
               prerelease:             isPrerelease,
-              draft:                  true,  // draft first — publish after asset upload
+              draft:                  false,
             });
             release = created.data;
-            core.info(`create-tag-release: created draft release ${release.html_url}`);
+            core.info(`create-tag-release: created release ${release.html_url}`);
           }
 
           core.setOutput('tag',          tag);
@@ -133,17 +133,3 @@ runs:
           echo "create-tag-release: uploaded $ASSET_NAME"
         fi
 
-        # Publish the release only for production — staging stays as draft
-        if [ "${{ inputs.environment }}" = "prd" ]; then
-          DRAFT=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.draft')
-          if [ "$DRAFT" = "true" ]; then
-            gh api "repos/$REPO/releases/$RELEASE_ID" \
-              --method PATCH \
-              --field draft=false \
-              --field prerelease=false \
-              > /dev/null
-            echo "create-tag-release: published release"
-          fi
-        else
-          echo "create-tag-release: staging release left as draft"
-        fi
