@@ -12,6 +12,10 @@ inputs:
     description: 'Directory to download the artifact into.'
     required: false
     default: 'artifact'
+  required:
+    description: 'If false, soft-fail instead of erroring when no CI artifact is found (allows fallback build).'
+    required: false
+    default: 'true'
 
 outputs:
   path:
@@ -20,6 +24,9 @@ outputs:
   run_id:
     description: 'GitHub Actions run ID that produced the artifact.'
     value: ${{ steps.download.outputs.run_id }}
+  found:
+    description: 'Whether an artifact was found and downloaded.'
+    value: ${{ steps.download.outputs.found }}
 
 runs:
   using: composite
@@ -33,6 +40,7 @@ runs:
         ARTIFACT_NAME: ${{ inputs.artifact_name }}
         OUTPUT_DIR: ${{ inputs.output_dir }}
         REPO: ${{ github.repository }}
+        REQUIRED: ${{ inputs.required }}
       run: |
         set -euo pipefail
 
@@ -43,9 +51,15 @@ runs:
           --jq '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | first | .id // empty')
 
         if [ -z "$RUN_ID" ]; then
-          echo "::error::download-ci-artifact: no successful CI run found for commit $SHA"
-          echo "::error::  The CI workflow must complete successfully before CD can run."
-          exit 1
+          if [ "$REQUIRED" = "true" ]; then
+            echo "::error::download-ci-artifact: no successful CI run found for commit $SHA"
+            echo "::error::  The CI workflow must complete successfully before CD can run."
+            exit 1
+          else
+            echo "::warning::download-ci-artifact: no CI artifact found for $SHA — fallback build will run"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
         fi
 
         echo "download-ci-artifact: CI run $RUN_ID — downloading '$ARTIFACT_NAME'"
@@ -58,5 +72,6 @@ runs:
         echo "download-ci-artifact: downloaded to $OUTPUT_DIR/"
         ls -lh "$OUTPUT_DIR/"
 
-        echo "path=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
-        echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+        echo "found=true"          >> "$GITHUB_OUTPUT"
+        echo "path=$OUTPUT_DIR"    >> "$GITHUB_OUTPUT"
+        echo "run_id=$RUN_ID"      >> "$GITHUB_OUTPUT"

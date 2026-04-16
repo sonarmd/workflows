@@ -21,6 +21,23 @@ name: CD
 
 on:
   workflow_call:
+    inputs:
+      pre_build:
+        description: 'Shell commands to run before the build (e.g. apt installs). Only used for fallback builds.'
+        required: false
+        default: ''
+      build:
+        description: 'Build command to run (e.g. yarn build). Required if fallback build is needed.'
+        required: false
+        default: ''
+      artifact_paths:
+        description: 'Space-separated paths to include in the release tarball (e.g. "dist/ node_modules/ package.json"). Required if fallback build is needed.'
+        required: false
+        default: ''
+      node_version:
+        description: 'Node.js version to use for fallback builds.'
+        required: false
+        default: '22'
     secrets:
       SLACK_WEBHOOK_URL:
         required: false
@@ -92,7 +109,57 @@ jobs:
           echo "cd-core: $TAG"
 
       - name: Download CI artifact
+        id: download
         uses: sonarmd/workflows/actions/download-ci-artifact@main
+        with:
+          required: 'false'
+
+      # ── Fallback build (runs only when no CI artifact exists) ────────────
+
+      - name: Fallback — full checkout
+        if: steps.download.outputs.found == 'false'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Fallback — setup Node
+        if: steps.download.outputs.found == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Fallback — install dependencies
+        if: steps.download.outputs.found == 'false'
+        shell: bash
+        run: yarn install --frozen-lockfile
+
+      - name: Fallback — pre-build
+        if: steps.download.outputs.found == 'false' && inputs.pre_build != ''
+        shell: bash
+        run: ${{ inputs.pre_build }}
+
+      - name: Fallback — build
+        if: steps.download.outputs.found == 'false'
+        shell: bash
+        run: |
+          if [ -z "${{ inputs.build }}" ]; then
+            echo "::error::cd-core: no CI artifact found and no 'build' input provided — cannot proceed"
+            exit 1
+          fi
+          ${{ inputs.build }}
+
+      - name: Fallback — package artifact
+        if: steps.download.outputs.found == 'false'
+        shell: bash
+        run: |
+          if [ -z "${{ inputs.artifact_paths }}" ]; then
+            echo "::error::cd-core: no CI artifact found and no 'artifact_paths' input provided — cannot proceed"
+            exit 1
+          fi
+          mkdir -p artifact
+          # shellcheck disable=SC2086
+          tar -czf artifact/release.tar.gz ${{ inputs.artifact_paths }}
+          echo "cd-core: fallback artifact packaged ($(du -sh artifact/release.tar.gz | cut -f1))"
+
+      # ─────────────────────────────────────────────────────────────────────
 
       - name: Create tag and release
         id: release
