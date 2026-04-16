@@ -42,17 +42,15 @@ runs:
       id: release
       uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
       env:
-        TAG:          ${{ inputs.tag }}
-        ENVIRONMENT:  ${{ inputs.environment }}
-        RELEASE_NOTES: ${{ inputs.release_notes }}
-        ARTIFACT_PATH: ${{ inputs.artifact_path }}
+        TAG:                 ${{ inputs.tag }}
+        ENVIRONMENT:         ${{ inputs.environment }}
+        RELEASE_NOTES:       ${{ inputs.release_notes }}
         PRERELEASE_OVERRIDE: ${{ inputs.prerelease }}
       with:
         script: |
-          const tag          = process.env.TAG;
-          const environment  = process.env.ENVIRONMENT;
-          const releaseNotes = process.env.RELEASE_NOTES;
-          const preOverride  = process.env.PRERELEASE_OVERRIDE;
+          const tag         = process.env.TAG;
+          const environment = process.env.ENVIRONMENT;
+          const preOverride = process.env.PRERELEASE_OVERRIDE;
           const isPrerelease = preOverride !== '' ? preOverride === 'true' : environment !== 'prd';
 
           const { owner, repo } = context.repo;
@@ -76,7 +74,7 @@ runs:
             core.info(`create-tag-release: created tag ${tag}`);
           }
 
-          // ── Create or update release ──────────────────────────────────────
+          // ── Create release ────────────────────────────────────────────────
           let release;
           try {
             const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
@@ -84,21 +82,30 @@ runs:
             core.notice(`create-tag-release: release for '${tag}' already exists — skipping creation`);
           } catch (e) {
             if (e.status !== 404) throw e;
-            const body = releaseNotes !== ''
-              ? releaseNotes
-              : undefined;  // undefined → GitHub auto-generates notes
+
+            // Pre-generate notes synchronously so the release is created fully-formed.
+            // Using generate_release_notes:true on createRelease triggers async processing
+            // which briefly locks the release and causes 422 on asset upload.
+            let body = process.env.RELEASE_NOTES || '';
+            if (!body) {
+              try {
+                const notes = await github.rest.repos.generateReleaseNotes({ owner, repo, tag_name: tag });
+                body = notes.data.body;
+              } catch (e) {
+                core.warning(`create-tag-release: could not generate release notes — ${e.message}`);
+              }
+            }
 
             const created = await github.rest.repos.createRelease({
               owner, repo,
-              tag_name:               tag,
-              name:                   tag,
+              tag_name:   tag,
+              name:       tag,
               body,
-              generate_release_notes: releaseNotes === '',
-              prerelease:             isPrerelease,
-              draft:                  true,  // draft first — publish after asset upload
+              prerelease: isPrerelease,
+              draft:      false,
             });
             release = created.data;
-            core.info(`create-tag-release: created draft release ${release.html_url}`);
+            core.info(`create-tag-release: created release ${release.html_url}`);
           }
 
           core.setOutput('tag',          tag);
@@ -122,7 +129,7 @@ runs:
         RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$TAG" --jq '.id')
         ASSET_NAME=$(basename "$ASSET")
 
-        # Check if asset already uploaded (idempotent re-runs)
+        # Idempotent — skip if already uploaded
         EXISTS=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" \
           --jq ".[] | select(.name == \"$ASSET_NAME\") | .id" 2>/dev/null || echo "")
 
@@ -131,19 +138,4 @@ runs:
         else
           gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber
           echo "create-tag-release: uploaded $ASSET_NAME"
-        fi
-
-        # Publish the release only for production — staging stays as draft
-        if [ "${{ inputs.environment }}" = "prd" ]; then
-          DRAFT=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.draft')
-          if [ "$DRAFT" = "true" ]; then
-            gh api "repos/$REPO/releases/$RELEASE_ID" \
-              --method PATCH \
-              --field draft=false \
-              --field prerelease=false \
-              > /dev/null
-            echo "create-tag-release: published release"
-          fi
-        else
-          echo "create-tag-release: staging release left as draft"
         fi

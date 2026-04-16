@@ -5,17 +5,21 @@ name: CD
 #   name: CD
 #   on:
 #     push:
-#       branches: [master, 'release/**']
+#       branches: ['release/**']
 #   concurrency:
 #     group: cd-${{ github.ref_name }}
-#     cancel-in-progress: false
+#     cancel-in-progress: true
 #   jobs:
 #     cd:
-#       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
-#       secrets: inherit
 #       permissions:
 #         contents: write   # create tags and GitHub releases
 #         actions: read     # download CI artifacts
+#       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
+#       with:
+#         pre_build: sudo apt-get install -y graphicsmagick   # optional
+#         build: yarn build                                   # required for fallback
+#         artifact_paths: dist/ node_modules/ package.json   # required for fallback
+#       secrets: inherit
 #
 # Required repo variable: DEPLOY_IDENTIFIER (e.g. "api", "fe", "mobile")
 
@@ -23,19 +27,23 @@ on:
   workflow_call:
     inputs:
       pre_build:
-        description: 'Shell commands to run before the build (e.g. apt installs). Only used for fallback builds.'
+        description: 'Shell commands to run before the build. Only used for fallback builds.'
+        type: string
         required: false
         default: ''
       build:
-        description: 'Build command to run (e.g. yarn build). Required if fallback build is needed.'
+        description: 'Build command (e.g. yarn build). Required if fallback build is needed.'
+        type: string
         required: false
         default: ''
       artifact_paths:
-        description: 'Space-separated paths to include in the release tarball (e.g. "dist/ node_modules/ package.json"). Required if fallback build is needed.'
+        description: 'Space-separated paths to tar into the release artifact. Required if fallback build is needed.'
+        type: string
         required: false
         default: ''
       node_version:
-        description: 'Node.js version to use for fallback builds.'
+        description: 'Node.js version for fallback builds.'
+        type: string
         required: false
         default: '22'
     secrets:
@@ -49,7 +57,7 @@ permissions: {}
 jobs:
   cd:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write   # create tags and GitHub releases
       actions: read     # download CI artifacts
@@ -114,7 +122,7 @@ jobs:
         with:
           required: 'false'
 
-      # ── Fallback build (runs only when no CI artifact exists) ────────────
+      # ── Fallback build (only when no CI artifact exists) ─────────────────
 
       - name: Fallback — full checkout
         if: steps.download.outputs.found == 'false'
@@ -141,7 +149,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "${{ inputs.build }}" ]; then
-            echo "::error::cd-core: no CI artifact found and no 'build' input provided — cannot proceed"
+            echo "::error::cd-core: no CI artifact found and no 'build' input provided"
             exit 1
           fi
           ${{ inputs.build }}
@@ -151,7 +159,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "${{ inputs.artifact_paths }}" ]; then
-            echo "::error::cd-core: no CI artifact found and no 'artifact_paths' input provided — cannot proceed"
+            echo "::error::cd-core: no CI artifact found and no 'artifact_paths' input provided"
             exit 1
           fi
           mkdir -p artifact
@@ -194,4 +202,4 @@ jobs:
           app_name:    ${{ steps.ctx.outputs.identifier }}
           environment: ${{ steps.ctx.outputs.env }}
           tag:         ${{ steps.ctx.outputs.tag }}
-          details:     'oh no failed on deploy: ${{ job.status }}'
+          details:     ${{ job.status }}
