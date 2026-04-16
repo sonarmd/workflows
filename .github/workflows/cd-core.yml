@@ -13,6 +13,9 @@ name: CD
 #     cd:
 #       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
 #       secrets: inherit
+#       permissions:
+#         contents: write   # create tags and GitHub releases
+#         actions: read     # download CI artifacts
 #
 # Required repo variable: DEPLOY_IDENTIFIER (e.g. "api", "fe", "mobile")
 
@@ -22,14 +25,17 @@ on:
       SLACK_WEBHOOK_URL:
         required: false
 
-permissions:
-  contents: write
-  actions: read
+# Workflow-level permissions are empty — permissions are declared at the job
+# level so calling repos must explicitly grant contents: write and actions: read.
+permissions: {}
 
 jobs:
   cd:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write   # create tags and GitHub releases
+      actions: read     # download CI artifacts
 
     steps:
 
