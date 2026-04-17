@@ -1,7 +1,7 @@
 name: Signal Deployment
 description: |
-  Thin wrapper over notify-slack for deployment success events.
-  Constructs the deploy trigger command and fires the Slack notification.
+  Fires the deploy trigger to Slack and sends a deployment notification.
+  The only place the deploy command format is constructed.
 
 inputs:
   webhook_url:
@@ -23,11 +23,28 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: sonarmd/workflows/actions/notify-slack@main
+    - name: Send deploy trigger
+      shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ inputs.webhook_url }}
+        APP:               ${{ inputs.app_name }}
+        ENV:               ${{ inputs.environment }}
+        TAG:               ${{ inputs.tag }}
+        ARTIFACT_URL:      ${{ inputs.artifact_url }}
+      run: |
+        PAYLOAD=$(jq -n \
+          --arg text "deploy $ENV $APP $TAG $ARTIFACT_URL" \
+          '{text: $text}')
+
+        curl -sf -X POST -H 'Content-type: application/json' \
+          --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" \
+          || echo "::warning::signal-deployment: trigger failed (non-fatal)"
+
+    - name: Send notification
+      uses: sonarmd/workflows/actions/notify-slack@main
       with:
         webhook_url: ${{ inputs.webhook_url }}
         status:      success
         app_name:    ${{ inputs.app_name }}
         environment: ${{ inputs.environment }}
         tag:         ${{ inputs.tag }}
-        text:        'deploy ${{ inputs.environment }} ${{ inputs.app_name }} ${{ inputs.tag }} ${{ inputs.artifact_url }}'

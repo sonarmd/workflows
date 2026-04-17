@@ -1,25 +1,13 @@
 name: Notify Slack
 description: |
-  Unified Slack notification for all CI/CD pipeline events.
-  Replaces both ping-slack (CI status) and slack-notify (deploy status)
-  with a single action supporting all lifecycle states.
+  Sends a formatted Slack notification for CI/CD pipeline events.
 
-  Usage (CI start):
-    - uses: sonarmd/workflows/actions/notify-slack@v1
+  Usage:
+    - uses: sonarmd/workflows/actions/notify-slack@main
       with:
-        webhook_url: $\{{ env.SLACK_WEBHOOK_URL }}
+        webhook_url: $\{{ secrets.SLACK_WEBHOOK_URL }}
         status: started
         app_name: my-repo
-
-  Usage (CD success with custom message text):
-    - uses: sonarmd/workflows/actions/notify-slack@v1
-      with:
-        webhook_url: $\{{ env.SLACK_WEBHOOK_URL }}
-        status: success
-        app_name: api
-        environment: prd
-        tag: prd-api-b188
-        text: '@r2-d2 deploy prd prd-api-b188 https://...'
 
 inputs:
   webhook_url:
@@ -47,10 +35,6 @@ inputs:
     description: 'Additional context — shown on failure.'
     required: false
     default: ''
-  text:
-    description: 'Override for the top-level message text. Defaults to the status title.'
-    required: false
-    default: ''
 
 runs:
   using: composite
@@ -65,7 +49,6 @@ runs:
         INPUT_TAG:         ${{ inputs.tag }}
         INPUT_CHANNEL:     ${{ inputs.channel }}
         INPUT_DETAILS:     ${{ inputs.details }}
-        INPUT_TEXT:        ${{ inputs.text }}
         RUN_URL:           ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         ACTOR:             ${{ github.actor }}
         BRANCH:            ${{ github.ref_name }}
@@ -108,41 +91,30 @@ runs:
             {title: "Actor",  value: $actor,                  short: true}
           ]')
 
-        # Add environment field if present
         if [ -n "$INPUT_ENV" ]; then
           FIELDS=$(echo "$FIELDS" | jq --arg env "$INPUT_ENV" \
             '. + [{title: "Env", value: $env, short: true}]')
         fi
 
-        # Add tag field if present
         if [ -n "$INPUT_TAG" ]; then
           FIELDS=$(echo "$FIELDS" | jq --arg tag "$INPUT_TAG" \
             '. + [{title: "Tag", value: ("`" + $tag + "`"), short: true}]')
         fi
 
-        # Add failure details if present
         if [ -n "$INPUT_DETAILS" ] && [ "$INPUT_STATUS" = "failure" ]; then
           FIELDS=$(echo "$FIELDS" | jq --arg details "$INPUT_DETAILS" \
             '. + [{title: "Details", value: $details, short: false}]')
         fi
 
-        # Add correlation ID if present
         if [ -n "$CORRELATION_ID" ]; then
           FIELDS=$(echo "$FIELDS" | jq --arg cid "$CORRELATION_ID" \
             '. + [{title: "Trace", value: ("`" + $cid + "`"), short: false}]')
         fi
 
-        # ── Message text ─────────────────────────────────────────
-        if [ -n "$INPUT_TEXT" ]; then
-          MSG_TEXT="$INPUT_TEXT"
-        else
-          MSG_TEXT="$TITLE — $INPUT_APP"
-        fi
-
         # ── Build and send payload ───────────────────────────────
         PAYLOAD=$(jq -n \
           --arg channel "$INPUT_CHANNEL" \
-          --arg text    "$MSG_TEXT" \
+          --arg text    "$TITLE — $INPUT_APP" \
           --arg title   "$TITLE — $INPUT_APP" \
           --arg color   "$COLOR" \
           --argjson fields "$FIELDS" \
