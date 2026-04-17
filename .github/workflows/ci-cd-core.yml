@@ -86,36 +86,40 @@ jobs:
     steps:
       - name: Check CI status for this commit
         id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
 
-          RESULT=$(gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=50" \
-            --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last // empty | {status: .status, conclusion: .conclusion}' \
-            2>/dev/null || echo "")
+            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo,
+              head_sha: sha,
+              per_page: 50,
+            });
 
-          if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
-            echo "check: no CI run found for $SHA — will run CI then CD"
-            echo "status=none" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            const ciRuns = data.workflow_runs
+              .filter(r => r.name === 'CI')
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-          STATUS=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['status'])")
-          CONCLUSION=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('conclusion') or '')")
+            const run = ciRuns[ciRuns.length - 1];
 
-          if [ "$STATUS" = "completed" ] && [ "$CONCLUSION" = "success" ]; then
-            echo "check: CI already passed — will run CD only"
-            echo "status=success" >> "$GITHUB_OUTPUT"
-          elif [ "$STATUS" = "completed" ] && [ "$CONCLUSION" != "success" ]; then
-            echo "check: CI concluded '$CONCLUSION' — cancelling"
-            echo "status=failure" >> "$GITHUB_OUTPUT"
-          else
-            echo "check: CI is in progress ($STATUS) — will run CI+CD from scratch"
-            echo "status=none" >> "$GITHUB_OUTPUT"
-          fi
+            if (!run) {
+              core.info('check: no CI run found — will run CI then CD');
+              core.setOutput('status', 'none');
+              return;
+            }
+
+            if (run.status === 'completed' && run.conclusion === 'success') {
+              core.info('check: CI already passed — will run CD only');
+              core.setOutput('status', 'success');
+            } else if (run.status === 'completed') {
+              core.info(`check: CI concluded '${run.conclusion}' — cancelling`);
+              core.setOutput('status', 'failure');
+            } else {
+              core.info(`check: CI is in progress (${run.status}) — will run CI+CD from scratch`);
+              core.setOutput('status', 'none');
+            }
 
   # ── CI: runs on PR/merge_group, or on push when no prior CI ──────────────
   ci:

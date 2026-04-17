@@ -3,18 +3,18 @@ description: Uploads an artifact to a draft GitHub Release and publishes it. Ide
 
 inputs:
   tag:
-    description: 'Release tag to upload the asset to.'
+    description: 'Release tag (used for the artifact URL output).'
     required: true
   artifact_path:
     description: 'Path to the file to upload.'
     required: true
   release_id:
-    description: 'Release ID from create-release. Avoids tag lookup which does not return drafts.'
+    description: 'Release ID from create-release.'
     required: true
 
 outputs:
   artifact_url:
-    description: 'Release API URL (for deploy commands).'
+    description: 'GitHub Release URL.'
     value: ${{ steps.upload.outputs.artifact_url }}
 
 runs:
@@ -22,39 +22,55 @@ runs:
   steps:
     - name: Upload and publish
       id: upload
-      shell: bash
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
       env:
-        GH_TOKEN:   ${{ github.token }}
-        REPO:       ${{ github.repository }}
-        TAG:        ${{ inputs.tag }}
-        ASSET:      ${{ inputs.artifact_path }}
         RELEASE_ID: ${{ inputs.release_id }}
-      run: |
-        set -euo pipefail
+        ASSET:      ${{ inputs.artifact_path }}
+        TAG:        ${{ inputs.tag }}
+      with:
+        script: |
+          const fs   = require('fs');
+          const path = require('path');
 
-        if [ ! -f "$ASSET" ]; then
-          echo "::error::upload-release-asset: artifact '$ASSET' not found"
-          exit 1
-        fi
-        ASSET_NAME=$(basename "$ASSET")
+          const releaseId = parseInt(process.env.RELEASE_ID);
+          const assetPath = process.env.ASSET;
+          const tag       = process.env.TAG;
+          const { owner, repo } = context.repo;
 
-        EXISTS=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" \
-          --jq ".[] | select(.name == \"$ASSET_NAME\") | .id" 2>/dev/null || echo "")
+          if (!fs.existsSync(assetPath)) {
+            core.setFailed(`upload-release-asset: artifact '${assetPath}' not found`);
+            return;
+          }
 
-        if [ -n "$EXISTS" ]; then
-          echo "::notice::upload-release-asset: '$ASSET_NAME' already uploaded"
-        else
-          gh api --method POST \
-            "repos/$REPO/releases/$RELEASE_ID/assets?name=$ASSET_NAME" \
-            -H "Content-Type: application/octet-stream" \
-            --input "$ASSET"
-          echo "upload-release-asset: uploaded $ASSET_NAME"
-        fi
+          const assetName = path.basename(assetPath);
 
-        IS_DRAFT=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.draft')
-        if [ "$IS_DRAFT" = "true" ]; then
-          gh api --method PATCH "repos/$REPO/releases/$RELEASE_ID" -f draft=false
-          echo "upload-release-asset: published release"
-        fi
+          const { data: assets } = await github.rest.repos.listReleaseAssets({
+            owner, repo, release_id: releaseId,
+          });
 
-        echo "artifact_url=https://github.com/$REPO/releases/$TAG" >> "$GITHUB_OUTPUT"
+          if (assets.find(a => a.name === assetName)) {
+            core.notice(`upload-release-asset: '${assetName}' already uploaded`);
+          } else {
+            await github.rest.repos.uploadReleaseAsset({
+              owner, repo,
+              release_id: releaseId,
+              name: assetName,
+              data: fs.readFileSync(assetPath),
+            });
+            core.info(`upload-release-asset: uploaded ${assetName}`);
+          }
+
+          const { data: release } = await github.rest.repos.getRelease({
+            owner, repo, release_id: releaseId,
+          });
+
+          if (release.draft) {
+            await github.rest.repos.updateRelease({
+              owner, repo,
+              release_id: releaseId,
+              draft: false,
+            });
+            core.info('upload-release-asset: published release');
+          }
+
+          core.setOutput('artifact_url', `https://github.com/${owner}/${repo}/releases/${tag}`);

@@ -45,8 +45,6 @@ jobs:
       - name: Resolve context
         id: ctx
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -82,21 +80,46 @@ jobs:
               ;;
           esac
 
-          # Derive build number by finding the highest existing b-number for this
-          # env+identifier prefix and incrementing — survives pipeline migrations.
-          LAST_BUILD=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq '.[].tag_name' 2>/dev/null \
-            | grep -oP "^${ENV}-${IDENTIFIER}-.*-b\K[0-9]+" \
-            | sort -n | tail -1 || true)
-          BUILD_NUMBER=$(( ${LAST_BUILD:-0} + 1 ))
-
-          TAG="${ENV}-${IDENTIFIER}-v${VERSION}-b${BUILD_NUMBER}"
-
           echo "env=$ENV"               >> "$GITHUB_OUTPUT"
           echo "identifier=$IDENTIFIER" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG"               >> "$GITHUB_OUTPUT"
-          echo "cd-core: $TAG"
+
+      - name: Derive build number
+        id: build
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          ENV:        ${{ steps.ctx.outputs.env }}
+          IDENTIFIER: ${{ steps.ctx.outputs.identifier }}
+          VERSION:    ${{ steps.ctx.outputs.version }}
+        with:
+          script: |
+            const env        = process.env.ENV;
+            const identifier = process.env.IDENTIFIER;
+            const version    = process.env.VERSION;
+            const { owner, repo } = context.repo;
+            const prefix = `${env}-${identifier}-`;
+            const bPattern = /^.+-b(\d+)$/;
+
+            let page = 1;
+            let lastBuild = 0;
+            while (true) {
+              const { data } = await github.rest.repos.listReleases({
+                owner, repo, per_page: 100, page,
+              });
+              if (data.length === 0) break;
+              for (const r of data) {
+                if (!r.tag_name.startsWith(prefix)) continue;
+                const m = r.tag_name.match(bPattern);
+                if (m) lastBuild = Math.max(lastBuild, parseInt(m[1]));
+              }
+              if (data.length < 100) break;
+              page++;
+            }
+
+            const buildNumber = lastBuild + 1;
+            const tag = `${env}-${identifier}-v${version}-b${buildNumber}`;
+            core.info(`cd-core: ${tag}`);
+            core.setOutput('tag', tag);
 
       - name: Download CI artifact
         id: download
@@ -105,20 +128,20 @@ jobs:
       - name: Create tag
         uses: sonarmd/workflows/actions/create-tag@main
         with:
-          tag: ${{ steps.ctx.outputs.tag }}
+          tag: ${{ steps.build.outputs.tag }}
 
       - name: Create release
         id: release
         uses: sonarmd/workflows/actions/create-release@main
         with:
-          tag: ${{ steps.ctx.outputs.tag }}
+          tag: ${{ steps.build.outputs.tag }}
           environment: ${{ steps.ctx.outputs.env }}
 
       - name: Upload artifact
         id: artifact
         uses: sonarmd/workflows/actions/upload-release-asset@main
         with:
-          tag:        ${{ steps.ctx.outputs.tag }}
+          tag:        ${{ steps.build.outputs.tag }}
           artifact_path: artifact/release.tar.gz
           release_id: ${{ steps.release.outputs.release_id }}
 
@@ -128,7 +151,7 @@ jobs:
           webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
           app_name: ${{ steps.ctx.outputs.identifier }}
           environment: ${{ steps.ctx.outputs.env }}
-          tag: ${{ steps.ctx.outputs.tag }}
+          tag: ${{ steps.build.outputs.tag }}
           artifact_url: ${{ steps.artifact.outputs.artifact_url }}
 
       - name: Release lifecycle
@@ -145,5 +168,5 @@ jobs:
           status: failure
           app_name: ${{ steps.ctx.outputs.identifier }}
           environment: ${{ steps.ctx.outputs.env }}
-          tag: ${{ steps.ctx.outputs.tag }}
+          tag: ${{ steps.build.outputs.tag }}
           details: ${{ job.status }}

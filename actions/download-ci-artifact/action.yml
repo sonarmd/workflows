@@ -24,44 +24,57 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Find and download CI artifact
+    - name: Find CI run for this commit
+      id: find
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+      env:
+        SHA: ${{ github.sha }}
+      with:
+        script: |
+          const sha = process.env.SHA;
+          const { owner, repo } = context.repo;
+
+          const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+            owner, repo,
+            head_sha: sha,
+            per_page: 50,
+          });
+
+          const ciRuns = data.workflow_runs
+            .filter(r => r.name === 'CI')
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+          const run = ciRuns[ciRuns.length - 1];
+
+          if (!run) {
+            core.setFailed(`download-ci-artifact: no CI run found for ${sha}`);
+            return;
+          }
+          if (run.status !== 'completed') {
+            core.setFailed(`download-ci-artifact: CI run ${run.id} is still ${run.status} — cannot proceed`);
+            return;
+          }
+          if (run.conclusion !== 'success') {
+            core.setFailed(`download-ci-artifact: CI run ${run.id} concluded '${run.conclusion}' — cannot proceed`);
+            return;
+          }
+
+          core.info(`download-ci-artifact: CI run ${run.id} passed`);
+          core.setOutput('run_id', String(run.id));
+
+    - name: Download artifact
       id: download
       shell: bash
       env:
-        GH_TOKEN: ${{ github.token }}
-        SHA: ${{ github.sha }}
+        GH_TOKEN:      ${{ github.token }}
+        RUN_ID:        ${{ steps.find.outputs.run_id }}
         ARTIFACT_NAME: ${{ inputs.artifact_name }}
-        OUTPUT_DIR: ${{ inputs.output_dir }}
-        REPO: ${{ github.repository }}
+        OUTPUT_DIR:    ${{ inputs.output_dir }}
+        REPO:          ${{ github.repository }}
       run: |
         set -euo pipefail
 
-        echo "download-ci-artifact: looking for CI on commit $SHA"
-
-        RESULT=$(gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=50" \
-          --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last // empty | {status: .status, conclusion: .conclusion, id: .id}' \
-          2>/dev/null || echo "")
-
-        if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
-          echo "::error::download-ci-artifact: no CI run found for $SHA"
-          exit 1
-        fi
-
-        STATUS=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['status'])")
-        CONCLUSION=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('conclusion') or '')")
-        RUN_ID=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['id'])")
-
-        if [ "$STATUS" != "completed" ]; then
-          echo "::error::download-ci-artifact: CI run $RUN_ID is still $STATUS — cannot proceed"
-          exit 1
-        fi
-
-        if [ "$CONCLUSION" != "success" ]; then
-          echo "::error::download-ci-artifact: CI run $RUN_ID concluded with '$CONCLUSION' — cannot proceed"
-          exit 1
-        fi
-
-        echo "download-ci-artifact: CI run $RUN_ID passed — downloading '$ARTIFACT_NAME'"
+        echo "download-ci-artifact: downloading '$ARTIFACT_NAME' from run $RUN_ID"
         gh run download "$RUN_ID" \
           --repo "$REPO" \
           --name "$ARTIFACT_NAME" \
