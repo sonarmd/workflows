@@ -8,6 +8,9 @@ inputs:
   artifact_path:
     description: 'Path to the file to upload.'
     required: true
+  release_id:
+    description: 'Release ID from create-release. Avoids tag lookup which does not return drafts.'
+    required: true
 
 outputs:
   artifact_url:
@@ -21,10 +24,11 @@ runs:
       id: upload
       shell: bash
       env:
-        GH_TOKEN: ${{ github.token }}
-        REPO:     ${{ github.repository }}
-        TAG:      ${{ inputs.tag }}
-        ASSET:    ${{ inputs.artifact_path }}
+        GH_TOKEN:   ${{ github.token }}
+        REPO:       ${{ github.repository }}
+        TAG:        ${{ inputs.tag }}
+        ASSET:      ${{ inputs.artifact_path }}
+        RELEASE_ID: ${{ inputs.release_id }}
       run: |
         set -euo pipefail
 
@@ -32,8 +36,6 @@ runs:
           echo "::error::upload-release-asset: artifact '$ASSET' not found"
           exit 1
         fi
-
-        RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$TAG" --jq '.id')
         ASSET_NAME=$(basename "$ASSET")
 
         EXISTS=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" \
@@ -42,7 +44,10 @@ runs:
         if [ -n "$EXISTS" ]; then
           echo "::notice::upload-release-asset: '$ASSET_NAME' already uploaded"
         else
-          gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber
+          gh api --method POST \
+            "repos/$REPO/releases/$RELEASE_ID/assets?name=$ASSET_NAME" \
+            -H "Content-Type: application/octet-stream" \
+            --input "$ASSET"
           echo "upload-release-asset: uploaded $ASSET_NAME"
         fi
 

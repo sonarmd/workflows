@@ -108,6 +108,7 @@ jobs:
           tag: ${{ steps.ctx.outputs.tag }}
 
       - name: Create release
+        id: release
         uses: sonarmd/workflows/actions/create-release@main
         with:
           tag: ${{ steps.ctx.outputs.tag }}
@@ -117,8 +118,9 @@ jobs:
         id: artifact
         uses: sonarmd/workflows/actions/upload-release-asset@main
         with:
-          tag: ${{ steps.ctx.outputs.tag }}
+          tag:        ${{ steps.ctx.outputs.tag }}
           artifact_path: artifact/release.tar.gz
+          release_id: ${{ steps.release.outputs.release_id }}
 
       - name: Signal deployment
         uses: sonarmd/workflows/actions/signal-deployment@main
