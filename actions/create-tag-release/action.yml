@@ -136,6 +136,18 @@ runs:
         if [ -n "$EXISTS" ]; then
           echo "::notice::create-tag-release: asset '$ASSET_NAME' already uploaded"
         else
-          gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber
-          echo "create-tag-release: uploaded $ASSET_NAME"
+          # GitHub briefly locks a newly-created release during async post-processing.
+          # Retry up to 5 times with backoff before failing.
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber; then
+              echo "create-tag-release: uploaded $ASSET_NAME"
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::create-tag-release: asset upload failed after $attempt attempts"
+              exit 1
+            fi
+            echo "::warning::create-tag-release: upload attempt $attempt failed — retrying in ${attempt}s"
+            sleep "$attempt"
+          done
         fi
