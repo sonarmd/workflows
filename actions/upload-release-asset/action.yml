@@ -52,4 +52,4 @@ runs:
           echo "upload-release-asset: published release"
         fi
 
-        echo "artifact_url=https://github.com/$REPO/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
+        echo "artifact_url=https://github.com/$REPO/releases/$TAG" >> "$GITHUB_OUTPUT"
