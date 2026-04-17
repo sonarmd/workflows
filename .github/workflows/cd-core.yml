@@ -22,7 +22,7 @@ name: CD
 on:
   workflow_call:
     secrets:
-      OP_SERVICE_ACCOUNT_TOKEN_AGORA:
+      OP_SERVICE_ACCOUNT_TOKEN:
         required: true
 
 permissions: {}
@@ -45,7 +45,7 @@ jobs:
       - name: Load secrets
         uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_AGORA }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           SLACK_WEBHOOK_URL: op://smd_agora_shared/SLACK_WEBHOOK_URL/credential
         with:
           export-env: true
