@@ -22,8 +22,8 @@ name: CD
 on:
   workflow_call:
     secrets:
-      OP_SERVICE_ACCOUNT_TOKEN:
-        required: false
+      OP_SERVICE_ACCOUNT_TOKEN_AGORA:
+        required: true
 
 permissions: {}
 
@@ -42,10 +42,10 @@ jobs:
           sparse-checkout-cone-mode: false
           fetch-depth: 2
 
-      - name: Load Slack webhook
+      - name: Load secrets
         uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_AGORA }}
           SLACK_WEBHOOK_URL: op://smd_agora_shared/SLACK_WEBHOOK_URL/credential
         with:
           export-env: true
