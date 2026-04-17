@@ -123,6 +123,11 @@ jobs:
         github.event_name != 'push' ||
         needs.check.outputs.ci_status == 'none'
       )
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      actions: read
     uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
     with:
       setup:            ${{ inputs.setup }}
@@ -141,5 +146,8 @@ jobs:
       needs.check.result == 'success' &&
       needs.check.outputs.ci_status != 'failure' &&
       (needs.ci.result == 'success' || needs.ci.result == 'skipped')
+    permissions:
+      contents: write
+      actions: read
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
