@@ -131,7 +131,7 @@ jobs:
           app_name:       ${{ steps.ctx.outputs.identifier }}
           environment:    ${{ steps.ctx.outputs.env }}
           tag:            ${{ steps.ctx.outputs.tag }}
-          deploy_command: 'deploy ${{ steps.ctx.outputs.env }} ${{ steps.ctx.outputs.identifier }} ${{ steps.ctx.outputs.tag }} ${{ steps.artifact.outputs.artifact_url }}'
+          text: 'deploy ${{ steps.ctx.outputs.env }} ${{ steps.ctx.outputs.identifier }} ${{ steps.ctx.outputs.tag }} ${{ steps.artifact.outputs.artifact_url }}'
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'
