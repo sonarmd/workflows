@@ -123,15 +123,14 @@ jobs:
           tag:           ${{ steps.ctx.outputs.tag }}
           artifact_path: artifact/release.tar.gz
 
-      - name: Notify Slack
-        uses: sonarmd/workflows/actions/notify-slack@main
+      - name: Signal deployment
+        uses: sonarmd/workflows/actions/signal-deployment@main
         with:
-          webhook_url:    ${{ secrets.SLACK_WEBHOOK_URL }}
-          status:         success
-          app_name:       ${{ steps.ctx.outputs.identifier }}
-          environment:    ${{ steps.ctx.outputs.env }}
-          tag:            ${{ steps.ctx.outputs.tag }}
-          text: 'deploy ${{ steps.ctx.outputs.env }} ${{ steps.ctx.outputs.identifier }} ${{ steps.ctx.outputs.tag }} ${{ steps.artifact.outputs.artifact_url }}'
+          webhook_url:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          app_name:     ${{ steps.ctx.outputs.identifier }}
+          environment:  ${{ steps.ctx.outputs.env }}
+          tag:          ${{ steps.ctx.outputs.tag }}
+          artifact_url: ${{ steps.artifact.outputs.artifact_url }}
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'

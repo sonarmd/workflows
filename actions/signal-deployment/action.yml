@@ -1,0 +1,33 @@
+name: Signal Deployment
+description: |
+  Thin wrapper over notify-slack for deployment success events.
+  Constructs the deploy trigger command and fires the Slack notification.
+
+inputs:
+  webhook_url:
+    description: 'Slack Incoming Webhook URL.'
+    required: true
+  app_name:
+    description: 'Application identifier (e.g. api, fe, mobile).'
+    required: true
+  environment:
+    description: 'Target environment (stg, prd).'
+    required: true
+  tag:
+    description: 'Release tag (e.g. stg-api-v1.2.3-b7).'
+    required: true
+  artifact_url:
+    description: 'Release artifact API URL.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: sonarmd/workflows/actions/notify-slack@main
+      with:
+        webhook_url: ${{ inputs.webhook_url }}
+        status:      success
+        app_name:    ${{ inputs.app_name }}
+        environment: ${{ inputs.environment }}
+        tag:         ${{ inputs.tag }}
+        text:        'deploy ${{ inputs.environment }} ${{ inputs.app_name }} ${{ inputs.tag }} ${{ inputs.artifact_url }}'
