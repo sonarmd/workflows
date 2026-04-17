@@ -48,6 +48,8 @@ jobs:
       - name: Resolve context
         id: ctx
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -83,7 +85,15 @@ jobs:
               ;;
           esac
 
-          TAG="${ENV}-${IDENTIFIER}-v${VERSION}-b${GITHUB_RUN_NUMBER}"
+          # Derive build number by finding the highest existing b-number for this
+          # env+identifier prefix and incrementing — survives pipeline migrations.
+          LAST_BUILD=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[].tag_name' 2>/dev/null \
+            | grep -oP "^${ENV}-${IDENTIFIER}-.*-b\K[0-9]+" \
+            | sort -n | tail -1 || true)
+          BUILD_NUMBER=$(( ${LAST_BUILD:-0} + 1 ))
+
+          TAG="${ENV}-${IDENTIFIER}-v${VERSION}-b${BUILD_NUMBER}"
 
           echo "env=$ENV"               >> "$GITHUB_OUTPUT"
           echo "identifier=$IDENTIFIER" >> "$GITHUB_OUTPUT"
