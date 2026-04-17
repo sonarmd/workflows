@@ -28,6 +28,7 @@ runs:
     - name: Execute bundle pipeline
       id: pipeline
       shell: bash
+      working-directory: ${{ github.workspace }}
       env:
         TEST_REPORT: ${{ inputs.test_report_path }}
         SHA: ${{ github.sha }}
