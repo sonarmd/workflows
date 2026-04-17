@@ -1,0 +1,83 @@
+name: Create Release
+description: Creates a draft GitHub Release for the given tag. Idempotent — no-ops if release already exists. Auto-generates release notes if not provided.
+
+inputs:
+  tag:
+    description: 'Tag the release targets.'
+    required: true
+  environment:
+    description: 'Target environment (stg, prd). Controls prerelease flag.'
+    required: true
+  release_notes:
+    description: 'Markdown release notes body. Auto-generated if empty.'
+    required: false
+    default: ''
+  prerelease:
+    description: 'Force prerelease flag. Auto-set for non-prd if not specified.'
+    required: false
+    default: ''
+
+outputs:
+  release_id:
+    description: 'GitHub Release ID.'
+    value: ${{ steps.release.outputs.release_id }}
+  release_url:
+    description: 'GitHub Release HTML URL.'
+    value: ${{ steps.release.outputs.release_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create release
+      id: release
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+      env:
+        TAG:                 ${{ inputs.tag }}
+        ENVIRONMENT:         ${{ inputs.environment }}
+        RELEASE_NOTES:       ${{ inputs.release_notes }}
+        PRERELEASE_OVERRIDE: ${{ inputs.prerelease }}
+      with:
+        script: |
+          const tag         = process.env.TAG;
+          const environment = process.env.ENVIRONMENT;
+          const preOverride = process.env.PRERELEASE_OVERRIDE;
+          const isPrerelease = preOverride !== '' ? preOverride === 'true' : environment !== 'prd';
+          const { owner, repo } = context.repo;
+
+          try {
+            const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            core.notice(`create-release: release for '${tag}' already exists`);
+            core.setOutput('release_id',  String(existing.data.id));
+            core.setOutput('release_url', existing.data.html_url);
+            return;
+          } catch (e) {
+            if (e.status !== 404) throw e;
+          }
+
+          // Pre-generate notes synchronously — generate_release_notes:true on
+          // createRelease triggers async processing that briefly locks the release
+          // and causes 422 on subsequent asset uploads.
+          let body = process.env.RELEASE_NOTES || '';
+          if (!body) {
+            try {
+              const notes = await github.rest.repos.generateReleaseNotes({ owner, repo, tag_name: tag });
+              body = notes.data.body;
+            } catch (e) {
+              core.warning(`create-release: could not generate release notes — ${e.message}`);
+            }
+          }
+
+          // Create as draft so assets can be attached before publishing.
+          // Immutable-release org policies block asset uploads on published releases.
+          const created = await github.rest.repos.createRelease({
+            owner, repo,
+            tag_name:   tag,
+            name:       tag,
+            body,
+            prerelease: isPrerelease,
+            draft:      true,
+          });
+
+          core.info(`create-release: created draft release ${created.data.html_url}`);
+          core.setOutput('release_id',  String(created.data.id));
+          core.setOutput('release_url', created.data.html_url);

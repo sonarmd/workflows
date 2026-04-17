@@ -1,0 +1,55 @@
+name: Upload Release Asset
+description: Uploads an artifact to a draft GitHub Release and publishes it. Idempotent — skips upload if asset already exists.
+
+inputs:
+  tag:
+    description: 'Release tag to upload the asset to.'
+    required: true
+  artifact_path:
+    description: 'Path to the file to upload.'
+    required: true
+
+outputs:
+  artifact_url:
+    description: 'Release API URL (for deploy commands).'
+    value: ${{ steps.upload.outputs.artifact_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Upload and publish
+      id: upload
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO:     ${{ github.repository }}
+        TAG:      ${{ inputs.tag }}
+        ASSET:    ${{ inputs.artifact_path }}
+      run: |
+        set -euo pipefail
+
+        if [ ! -f "$ASSET" ]; then
+          echo "::error::upload-release-asset: artifact '$ASSET' not found"
+          exit 1
+        fi
+
+        RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$TAG" --jq '.id')
+        ASSET_NAME=$(basename "$ASSET")
+
+        EXISTS=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" \
+          --jq ".[] | select(.name == \"$ASSET_NAME\") | .id" 2>/dev/null || echo "")
+
+        if [ -n "$EXISTS" ]; then
+          echo "::notice::upload-release-asset: '$ASSET_NAME' already uploaded"
+        else
+          gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber
+          echo "upload-release-asset: uploaded $ASSET_NAME"
+        fi
+
+        IS_DRAFT=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.draft')
+        if [ "$IS_DRAFT" = "true" ]; then
+          gh api --method PATCH "repos/$REPO/releases/$RELEASE_ID" -f draft=false
+          echo "upload-release-asset: published release"
+        fi
+
+        echo "artifact_url=https://api.github.com/repos/$REPO/releases/tags/$TAG" >> "$GITHUB_OUTPUT"

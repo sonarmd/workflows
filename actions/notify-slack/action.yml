@@ -11,7 +11,7 @@ description: |
         status: started
         app_name: my-repo
 
-  Usage (CD with @r2-d2 deploy trigger):
+  Usage (CD success with custom message text):
     - uses: sonarmd/workflows/actions/notify-slack@v1
       with:
         webhook_url: $\{{ env.SLACK_WEBHOOK_URL }}
@@ -19,7 +19,7 @@ description: |
         app_name: api
         environment: prd
         tag: prd-api-b188
-        deploy_command: '@r2-d2 deploy prd prd-api-b188 https://...'
+        text: '@r2-d2 deploy prd prd-api-b188 https://...'
 
 inputs:
   webhook_url:
@@ -47,8 +47,8 @@ inputs:
     description: 'Additional context — shown on failure.'
     required: false
     default: ''
-  deploy_command:
-    description: 'Deploy command for @r2-d2 (included as message text when set).'
+  text:
+    description: 'Override for the top-level message text. Defaults to the status title.'
     required: false
     default: ''
 
@@ -65,7 +65,7 @@ runs:
         INPUT_TAG:         ${{ inputs.tag }}
         INPUT_CHANNEL:     ${{ inputs.channel }}
         INPUT_DETAILS:     ${{ inputs.details }}
-        INPUT_DEPLOY_CMD:  ${{ inputs.deploy_command }}
+        INPUT_TEXT:        ${{ inputs.text }}
         RUN_URL:           ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         ACTOR:             ${{ github.actor }}
         BRANCH:            ${{ github.ref_name }}
@@ -133,8 +133,8 @@ runs:
         fi
 
         # ── Message text ─────────────────────────────────────────
-        if [ -n "$INPUT_DEPLOY_CMD" ]; then
-          MSG_TEXT="$INPUT_DEPLOY_CMD"
+        if [ -n "$INPUT_TEXT" ]; then
+          MSG_TEXT="$INPUT_TEXT"
         else
           MSG_TEXT="$TITLE — $INPUT_APP"
         fi

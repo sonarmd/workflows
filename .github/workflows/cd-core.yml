@@ -105,12 +105,22 @@ jobs:
         id: download
         uses: sonarmd/workflows/actions/download-ci-artifact@main
 
-      - name: Create tag and release
-        id: release
-        uses: sonarmd/workflows/actions/create-tag-release@main
+      - name: Create tag
+        uses: sonarmd/workflows/actions/create-tag@main
+        with:
+          tag: ${{ steps.ctx.outputs.tag }}
+
+      - name: Create release
+        uses: sonarmd/workflows/actions/create-release@main
+        with:
+          tag:         ${{ steps.ctx.outputs.tag }}
+          environment: ${{ steps.ctx.outputs.env }}
+
+      - name: Upload artifact
+        id: artifact
+        uses: sonarmd/workflows/actions/upload-release-asset@main
         with:
           tag:           ${{ steps.ctx.outputs.tag }}
-          environment:   ${{ steps.ctx.outputs.env }}
           artifact_path: artifact/release.tar.gz
 
       - name: Notify Slack
@@ -121,7 +131,7 @@ jobs:
           app_name:       ${{ steps.ctx.outputs.identifier }}
           environment:    ${{ steps.ctx.outputs.env }}
           tag:            ${{ steps.ctx.outputs.tag }}
-          deploy_command: 'deploy ${{ steps.ctx.outputs.env }} ${{ steps.ctx.outputs.identifier }} ${{ steps.ctx.outputs.tag }} ${{ steps.release.outputs.artifact_url }}'
+          deploy_command: 'deploy ${{ steps.ctx.outputs.env }} ${{ steps.ctx.outputs.identifier }} ${{ steps.ctx.outputs.tag }} ${{ steps.artifact.outputs.artifact_url }}'
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'
