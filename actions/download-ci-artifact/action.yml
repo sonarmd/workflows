@@ -1,7 +1,7 @@
 name: Download CI Artifact
 description: |
-  Locates the successful CI run for the current commit SHA and downloads
-  the named artifact. Fails loudly if no successful CI run is found.
+  Waits for the CI run on the current commit SHA to complete, then downloads
+  the release artifact. Cancels if CI fails. Polls until CI finishes or timeout.
 
 inputs:
   artifact_name:
@@ -12,10 +12,10 @@ inputs:
     description: 'Directory to download the artifact into.'
     required: false
     default: 'artifact'
-  required:
-    description: 'If false, soft-fail instead of erroring when no CI artifact is found (allows fallback build).'
+  timeout_minutes:
+    description: 'How long to wait for CI to finish before giving up.'
     required: false
-    default: 'true'
+    default: '30'
 
 outputs:
   path:
@@ -24,14 +24,11 @@ outputs:
   run_id:
     description: 'GitHub Actions run ID that produced the artifact.'
     value: ${{ steps.download.outputs.run_id }}
-  found:
-    description: 'Whether an artifact was found and downloaded.'
-    value: ${{ steps.download.outputs.found }}
 
 runs:
   using: composite
   steps:
-    - name: Download CI artifact
+    - name: Wait for CI and download artifact
       id: download
       shell: bash
       env:
@@ -40,38 +37,57 @@ runs:
         ARTIFACT_NAME: ${{ inputs.artifact_name }}
         OUTPUT_DIR: ${{ inputs.output_dir }}
         REPO: ${{ github.repository }}
-        REQUIRED: ${{ inputs.required }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
       run: |
         set -euo pipefail
 
-        echo "download-ci-artifact: looking for CI artifact on commit $SHA"
+        echo "download-ci-artifact: waiting for CI on commit $SHA"
 
-        RUN_ID=$(gh api \
-          "/repos/$REPO/actions/runs?head_sha=$SHA&status=completed&per_page=20" \
-          --jq '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | first | .id // empty')
+        DEADLINE=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+        POLL_INTERVAL=20
 
-        if [ -z "$RUN_ID" ]; then
-          if [ "$REQUIRED" = "true" ]; then
-            echo "::error::download-ci-artifact: no successful CI run found for commit $SHA"
-            echo "::error::  The CI workflow must complete successfully before CD can run."
+        while true; do
+          NOW=$(date +%s)
+          if [ "$NOW" -ge "$DEADLINE" ]; then
+            echo "::error::download-ci-artifact: timed out after ${TIMEOUT_MINUTES}m waiting for CI on $SHA"
             exit 1
-          else
-            echo "::warning::download-ci-artifact: no CI artifact found for $SHA — fallback build will run"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
-        fi
 
-        echo "download-ci-artifact: CI run $RUN_ID — downloading '$ARTIFACT_NAME'"
+          RESULT=$(gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=50" \
+            --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last // empty | {status: .status, conclusion: .conclusion, id: .id}' \
+            2>/dev/null || echo "")
 
-        gh run download "$RUN_ID" \
-          --repo "$REPO" \
-          --name "$ARTIFACT_NAME" \
-          --dir "$OUTPUT_DIR"
+          if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
+            echo "download-ci-artifact: no CI run yet — waiting ${POLL_INTERVAL}s"
+            sleep "$POLL_INTERVAL"
+            continue
+          fi
 
-        echo "download-ci-artifact: downloaded to $OUTPUT_DIR/"
-        ls -lh "$OUTPUT_DIR/"
+          STATUS=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['status'])")
+          CONCLUSION=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('conclusion') or '')")
+          RUN_ID=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['id'])")
 
-        echo "found=true"          >> "$GITHUB_OUTPUT"
-        echo "path=$OUTPUT_DIR"    >> "$GITHUB_OUTPUT"
-        echo "run_id=$RUN_ID"      >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" != "completed" ]; then
+            echo "download-ci-artifact: CI run $RUN_ID is $STATUS — waiting ${POLL_INTERVAL}s"
+            sleep "$POLL_INTERVAL"
+            continue
+          fi
+
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::download-ci-artifact: CI run $RUN_ID concluded with '$CONCLUSION' — cancelling CD"
+            exit 1
+          fi
+
+          echo "download-ci-artifact: CI run $RUN_ID passed — downloading '$ARTIFACT_NAME'"
+          gh run download "$RUN_ID" \
+            --repo "$REPO" \
+            --name "$ARTIFACT_NAME" \
+            --dir "$OUTPUT_DIR"
+
+          echo "download-ci-artifact: downloaded to $OUTPUT_DIR/"
+          ls -lh "$OUTPUT_DIR/"
+
+          echo "path=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID"   >> "$GITHUB_OUTPUT"
+          break
+        done

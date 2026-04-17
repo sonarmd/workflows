@@ -104,16 +104,6 @@ jobs:
       - name: Download CI artifact
         id: download
         uses: sonarmd/workflows/actions/download-ci-artifact@main
-        with:
-          required: 'false'
-
-      # ── Fallback build (only when no CI artifact exists) ─────────────────
-
-      - name: Fallback build
-        if: steps.download.outputs.found == 'false'
-        uses: sonarmd/workflows/actions/fallback-build@main
-
-      # ─────────────────────────────────────────────────────────────────────
 
       - name: Create tag and release
         id: release
