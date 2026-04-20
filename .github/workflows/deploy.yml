@@ -29,7 +29,9 @@ on:
 
     secrets:
       OP_SERVICE_ACCOUNT_TOKEN:
-        required: true
+        required: false
+      SLACK_WEBHOOK_URL:
+        required: false
 
 permissions: {}
 
@@ -39,14 +41,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Load Slack webhook from 1Password
-        uses: 1password/load-secrets-action@v2
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          SLACK_WEBHOOK_URL: op://smd_agora_shared/SLACK_WEBHOOK_URL/credential
-        with:
-          export-env: true
-
       - name: Notify Slack
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -89,5 +83,5 @@ jobs:
               }]
             }')
 
-          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "${{ secrets.SLACK_WEBHOOK_URL }}"
           echo "Deploy notification sent: $DEPLOY_MSG"
