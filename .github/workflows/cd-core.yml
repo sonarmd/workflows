@@ -22,7 +22,7 @@ name: CD
 on:
   workflow_call:
     secrets:
-      SLACK_WEBHOOK_URL:
+      OP_SERVICE_ACCOUNT_TOKEN:
         required: true
 
 permissions: {}
@@ -41,6 +41,14 @@ jobs:
           sparse-checkout: deploy.json
           sparse-checkout-cone-mode: false
           fetch-depth: 2
+
+      - name: Load secrets
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SLACK_WEBHOOK_URL: op://smd_agora_shared/SLACK_WEBHOOK_URL/credential
+        with:
+          export-env: true
 
       - name: Resolve context
         id: ctx
@@ -148,7 +156,7 @@ jobs:
       - name: Signal deployment
         uses: sonarmd/workflows/actions/signal-deployment@main
         with:
-          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
           app_name: ${{ steps.ctx.outputs.identifier }}
           environment: ${{ steps.ctx.outputs.env }}
           tag: ${{ steps.build.outputs.tag }}
@@ -164,7 +172,7 @@ jobs:
         if: failure()
         uses: sonarmd/workflows/actions/notify-slack@main
         with:
-          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
           status: failure
           app_name: ${{ steps.ctx.outputs.identifier }}
           environment: ${{ steps.ctx.outputs.env }}
