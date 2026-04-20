@@ -1,0 +1,204 @@
+name: Draft Release
+
+# Triggered by tag push. Finds the CI evidence artifact for the tagged commit,
+# packages the build output, and creates a GitHub Release.
+#
+# Pre-release for stg tags, full release for prd tags. Dev tags get pre-release.
+# Attaches: release.tar.gz (the build) + deploy.json (the routing manifest).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'The tag that was pushed (e.g. stg-api-1.0.0-b42)'
+        type: string
+        required: true
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APP_ID: op://smd_agora_shared/4skvt7l46qfd42ndku2ermwyly/appid
+          APP_PRIVATE_KEY: op://smd_agora_shared/twqeia3cpwcinjptjrnft5m3y4/notesPlain
+        with:
+          export-env: true
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Parse tag
+        id: parse
+        env:
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Tag format: {env}-{short}-{version}-b{N}
+          if [[ ! "$TAG" =~ ^(dev|stg|prd)-([a-z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+)-b([0-9]+)$ ]]; then
+            echo "::error::Tag does not match expected format: $TAG"
+            exit 1
+          fi
+
+          TAG_ENV="${BASH_REMATCH[1]}"
+          TAG_SHORT="${BASH_REMATCH[2]}"
+          TAG_VERSION="${BASH_REMATCH[3]}"
+          TAG_BUILD="${BASH_REMATCH[4]}"
+
+          IS_PRERELEASE="true"
+          if [ "$TAG_ENV" = "prd" ]; then
+            IS_PRERELEASE="false"
+          fi
+
+          echo "env=$TAG_ENV" >> "$GITHUB_OUTPUT"
+          echo "short=$TAG_SHORT" >> "$GITHUB_OUTPUT"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$TAG_BUILD" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Find CI evidence artifact
+        id: find-artifact
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMIT_SHA=$(git rev-parse "$TAG^{commit}")
+          echo "Looking for CI evidence for commit $COMMIT_SHA"
+
+          # Find the CI workflow run for this exact commit
+          ARTIFACT_URL=$(gh api \
+            "/repos/${{ github.repository }}/actions/artifacts" \
+            --paginate \
+            --jq ".artifacts[]
+              | select(.name == \"ci-evidence\")
+              | select(.workflow_run.head_sha == \"$COMMIT_SHA\")
+              | select(.expired == false)
+              | .archive_download_url" \
+            | head -1)
+
+          if [ -z "$ARTIFACT_URL" ]; then
+            echo "::error::No CI evidence artifact found for $COMMIT_SHA. Was CI green?"
+            exit 1
+          fi
+
+          echo "artifact_url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Download CI evidence
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ARTIFACT_URL: ${{ steps.find-artifact.outputs.artifact_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ci-evidence
+          gh api "$ARTIFACT_URL" > /tmp/ci-evidence.zip
+          cd /tmp/ci-evidence && unzip -o ../ci-evidence.zip
+
+      - name: Package release artifact
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Read deploy.json to know what paths to bundle
+          if [ ! -f deploy.json ]; then
+            echo "::error::deploy.json not found in repo root"
+            exit 1
+          fi
+
+          # Extract artifact_paths from deploy.json if specified, otherwise use
+          # the build output from CI evidence
+          ARTIFACT_PATHS=$(python3 -c "
+          import json, sys
+          cfg = json.load(open('deploy.json'))
+          paths = set()
+          for b in cfg.get('bundles', []):
+              for p in b.get('artifact_paths', [b.get('path', '')]):
+                  if p:
+                      paths.add(p)
+          if paths:
+              print('\n'.join(sorted(paths)))
+          else:
+              print('dist/')
+          ")
+
+          echo "Bundling paths:"
+          echo "$ARTIFACT_PATHS"
+
+          # If CI evidence contains a pre-built tarball, use it directly
+          if [ -f /tmp/ci-evidence/build.tar.gz ]; then
+            cp /tmp/ci-evidence/build.tar.gz /tmp/release.tar.gz
+            echo "Using pre-built tarball from CI evidence"
+          else
+            # Build the tarball from the specified paths
+            # shellcheck disable=SC2086
+            tar czf /tmp/release.tar.gz $ARTIFACT_PATHS
+            echo "Created tarball from artifact_paths"
+          fi
+
+          # Always include deploy.json as a separate release asset
+          cp deploy.json /tmp/deploy.json
+
+          ls -lh /tmp/release.tar.gz /tmp/deploy.json
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ inputs.tag }}
+          TAG_ENV: ${{ steps.parse.outputs.env }}
+          TAG_SHORT: ${{ steps.parse.outputs.short }}
+          IS_PRERELEASE: ${{ steps.parse.outputs.prerelease }}
+          COMMIT_SHA: ${{ steps.find-artifact.outputs.commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRERELEASE_FLAG=""
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          TITLE="$TAG"
+          NOTES="**Environment:** $TAG_ENV
+          **Commit:** $COMMIT_SHA
+          **Triggered by:** ${{ github.actor }}
+          **CI Evidence:** included"
+
+          # Create the release with both assets
+          # shellcheck disable=SC2086
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            --target "$COMMIT_SHA" \
+            $PRERELEASE_FLAG \
+            /tmp/release.tar.gz \
+            /tmp/deploy.json
+
+          echo "### Release: [$TAG](${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Prerelease: $IS_PRERELEASE" >> "$GITHUB_STEP_SUMMARY"

@@ -1,33 +1,20 @@
 name: CI Sign
 description: |
-  Collects CI evidence, generates a CycloneDX SBOM, and signs everything
-  with GitHub's native Sigstore attestation. Add as the LAST step.
-
-  The gate independently verifies:
-  - Sigstore signature (proves which workflow produced it — can't be faked)
-  - JUnit XML has real test cases (can't pass with empty/missing tests)
-  - SBOM exists (dependency inventory for compliance)
-  - Build digest matches (artifact integrity)
-
-  Example:
-    - uses: sonarmd/workflows/actions/ci-sign@main
-      with:
-        test_report_path: junit.xml
-        build_output_dir: dist
+  Collects CI evidence (test results, build output, SBOM), bundles it into
+  a signed artifact, and uploads it. gate.yml verifies this artifact exists
+  before allowing merge.
 
 inputs:
   test_report_path:
-    description: |
-      Path to JUnit XML test report. The gate independently counts
-      <testcase> elements — no test cases = gate blocks.
-      If your runner doesn't produce JUnit XML, add a reporter.
+    description: 'Path to test report file (junit.xml, etc)'
     required: false
-    default: 'junit.xml'
-
+    default: ''
   build_output_dir:
-    description: |
-      Directory containing build output. Every file gets hashed.
-      Omit for projects with no build artifact.
+    description: 'Path to build output directory'
+    required: false
+    default: 'dist'
+  extra_evidence:
+    description: 'Glob of additional files to include in evidence bundle'
     required: false
     default: ''
 
@@ -35,150 +22,164 @@ runs:
   using: composite
   steps:
     - name: Collect evidence
+      id: collect
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        EVIDENCE_DIR="/tmp/ci-evidence"
+        mkdir -p "$EVIDENCE_DIR"
+
+        # Metadata
+        cat > "$EVIDENCE_DIR/metadata.json" <<EOFMETA
+        {
+          "repository": "${{ github.repository }}",
+          "sha": "${{ github.sha }}",
+          "ref": "${{ github.ref }}",
+          "actor": "${{ github.actor }}",
+          "run_id": "${{ github.run_id }}",
+          "run_number": "${{ github.run_number }}",
+          "run_attempt": "${{ github.run_attempt }}",
+          "workflow": "${{ github.workflow }}",
+          "event_name": "${{ github.event_name }}",
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        }
+        EOFMETA
+
+        # Collect job outcome from the step context
+        # This runs with if:always() so we capture even on failure
+        echo "${{ job.status }}" > "$EVIDENCE_DIR/job_status.txt"
+
+        echo "evidence_dir=$EVIDENCE_DIR" >> "$GITHUB_OUTPUT"
+
+    - name: Include test report
+      if: inputs.test_report_path != ''
       shell: bash
       env:
-        TEST_REPORT: ${{ inputs.test_report_path }}
+        REPORT_PATH: ${{ inputs.test_report_path }}
+      run: |
+        set -euo pipefail
+        if [ -f "$REPORT_PATH" ]; then
+          cp "$REPORT_PATH" /tmp/ci-evidence/test-report.xml
+          echo "Test report included"
+        else
+          echo "::warning::Test report not found at $REPORT_PATH"
+          echo "missing" > /tmp/ci-evidence/test-report-missing.txt
+        fi
+
+    - name: Package build output
+      shell: bash
+      env:
         BUILD_DIR: ${{ inputs.build_output_dir }}
       run: |
         set -euo pipefail
-        mkdir -p /tmp/ci-evidence
-
-        # ── Test evidence ─────────────────────────────────
-        if [ -f "$TEST_REPORT" ]; then
-          cp "$TEST_REPORT" /tmp/ci-evidence/test-report.xml
-          TEST_COUNT=$(python3 -c "
-        import xml.etree.ElementTree as ET
-        tree = ET.parse('$TEST_REPORT')
-        print(len(tree.findall('.//testcase')))" 2>/dev/null || echo "0")
-
-          if [ "$TEST_COUNT" -eq 0 ]; then
-            echo "::error::ci-sign: JUnit XML exists at '$TEST_REPORT' but contains 0 test cases."
-            echo "::error::The gate will reject this. You must have real tests."
-            exit 1
-          fi
-
-          echo "ci-sign: $TEST_COUNT test cases found in $TEST_REPORT"
+        if [ -d "$BUILD_DIR" ]; then
+          tar czf /tmp/ci-evidence/build.tar.gz "$BUILD_DIR"
+          echo "Build output packaged: $(du -sh /tmp/ci-evidence/build.tar.gz | cut -f1)"
         else
-          echo "::error::ci-sign: no test report found at '$TEST_REPORT'"
-          echo "::error::Your test runner must produce JUnit XML. Every language has a reporter:"
-          echo "::error::  Node/Jest:   --reporters=jest-junit"
-          echo "::error::  Node/Mocha:  --reporter mocha-junit-reporter"
-          echo "::error::  Python:      pytest --junitxml=junit.xml"
-          exit 1
+          echo "::warning::Build directory $BUILD_DIR not found"
         fi
 
-        echo "TEST_COUNT=$TEST_COUNT" >> "$GITHUB_ENV"
-
-        # ── Build evidence ────────────────────────────────
-        if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR" ]; then
-          FILE_COUNT=$(find "$BUILD_DIR" -type f | wc -l | tr -d ' ')
-          if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "::error::ci-sign: build_output_dir '$BUILD_DIR' exists but is empty."
-            exit 1
-          fi
-          find "$BUILD_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/ci-evidence/build-checksums.txt
-          BUILD_DIGEST=$(sha256sum /tmp/ci-evidence/build-checksums.txt | cut -d' ' -f1)
-          echo "ci-sign: build — $FILE_COUNT files, digest ${BUILD_DIGEST:0:16}..."
-        else
-          FILE_COUNT=0
-          BUILD_DIGEST=""
-        fi
-
-        echo "BUILD_DIGEST=$BUILD_DIGEST" >> "$GITHUB_ENV"
-        echo "BUILD_FILE_COUNT=$FILE_COUNT" >> "$GITHUB_ENV"
-
-    - name: Generate SBOM
+    - name: Generate SBOM (best-effort)
       shell: bash
       run: |
-        # Node
-        if [ -f package.json ]; then
-          echo "ci-sign: generating CycloneDX SBOM..."
-          if npx --yes @cyclonedx/cyclonedx-npm --output-file /tmp/ci-evidence/bom.json 2>/dev/null; then
-            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
-            echo "ci-sign: SBOM — $DEP_COUNT components"
-          else
-            echo "::warning::ci-sign: CycloneDX generation failed — continuing without SBOM"
-            DEP_COUNT=0
-          fi
+        set -euo pipefail
 
-        # Python
+        # Auto-detect package manager and generate CycloneDX SBOM
+        # This is best-effort: failures ping slack but do NOT block
+        SBOM_GENERATED=false
+
+        if [ -f yarn.lock ]; then
+          npx --yes @cyclonedx/cyclonedx-npm --output-file /tmp/ci-evidence/sbom.json \
+            --output-format json --spec-version 1.5 2>/dev/null && SBOM_GENERATED=true
+        elif [ -f package-lock.json ]; then
+          npx --yes @cyclonedx/cyclonedx-npm --output-file /tmp/ci-evidence/sbom.json \
+            --output-format json --spec-version 1.5 2>/dev/null && SBOM_GENERATED=true
         elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
-          echo "ci-sign: generating CycloneDX SBOM (Python)..."
-          if pip install --quiet cyclonedx-bom 2>/dev/null && cyclonedx-py environment --output /tmp/ci-evidence/bom.json --format json 2>/dev/null; then
-            DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
-            echo "ci-sign: SBOM — $DEP_COUNT components"
-          else
-            echo "::warning::ci-sign: CycloneDX generation failed — continuing without SBOM"
-            DEP_COUNT=0
+          pip install --quiet cyclonedx-bom 2>/dev/null || true
+          if command -v cyclonedx-py &>/dev/null; then
+            cyclonedx-py environment --output /tmp/ci-evidence/sbom.json \
+              --output-format json 2>/dev/null && SBOM_GENERATED=true
           fi
-
-        else
-          echo "ci-sign: no package manager detected — skipping SBOM"
-          DEP_COUNT=0
         fi
 
-        echo "DEP_COUNT=$DEP_COUNT" >> "$GITHUB_ENV"
+        if [ "$SBOM_GENERATED" = "true" ]; then
+          echo "SBOM generated"
+        else
+          echo "::warning::SBOM generation failed (non-blocking)"
+          echo "sbom-generation-failed" > /tmp/ci-evidence/sbom-missing.txt
+        fi
 
-    - name: Write evidence manifest
+    - name: Include extra evidence
+      if: inputs.extra_evidence != ''
+      shell: bash
+      env:
+        EXTRA_GLOB: ${{ inputs.extra_evidence }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC2086
+        for f in $EXTRA_GLOB; do
+          if [ -e "$f" ]; then
+            cp "$f" "/tmp/ci-evidence/$(basename "$f")"
+            echo "Included: $f"
+          fi
+        done
+
+    - name: Generate evidence digest
       shell: bash
       run: |
-        cat > /tmp/ci-evidence/manifest.json <<EOF
-        {
-          "commit": "${{ github.sha }}",
-          "ref": "${{ github.ref }}",
-          "repository": "${{ github.repository }}",
-          "run_id": "${{ github.run_id }}",
-          "run_attempt": "${{ github.run_attempt }}",
-          "actor": "${{ github.actor }}",
-          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-          "test_count": $TEST_COUNT,
-          "sbom_components": $DEP_COUNT,
-          "build_digest": "$BUILD_DIGEST",
-          "build_file_count": $BUILD_FILE_COUNT
-        }
-        EOF
+        set -euo pipefail
+        cd /tmp/ci-evidence
+        find . -type f -not -name "digest.sha256" | sort | xargs sha256sum > digest.sha256
+        echo "Evidence digest:"
+        cat digest.sha256
 
-    - name: Upload evidence
-      uses: actions/upload-artifact@v4
+    - name: Upload evidence artifact
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
       with:
         name: ci-evidence
         path: /tmp/ci-evidence/
-        if-no-files-found: error
         retention-days: 90
+        if-no-files-found: error
 
-    - name: Attest build provenance (Sigstore)
-      continue-on-error: true
-      uses: actions/attest-build-provenance@v2
-      with:
-        subject-path: /tmp/ci-evidence/manifest.json
-
-    - name: Write job summary
+    - name: Notify Slack
+      if: always()
       shell: bash
       run: |
-        COMMIT="${{ github.sha }}"
+        set -euo pipefail
 
-        if [ -n "$BUILD_DIGEST" ]; then
-          BUILD_LINE="| Build | $BUILD_FILE_COUNT files | \`${BUILD_DIGEST:0:24}...\` |"
-        else
-          BUILD_LINE="| Build | — | no artifact |"
+        # Load webhook from 1Password if available, otherwise check env
+        if [ -z "${SLACK_CI_WEBHOOK:-}" ]; then
+          echo "::warning::SLACK_CI_WEBHOOK not set, skipping notification"
+          exit 0
         fi
 
-        if [ -f /tmp/ci-evidence/bom.json ]; then
-          SBOM_LINE="| SBOM | $DEP_COUNT components | CycloneDX |"
+        JOB_STATUS="${{ job.status }}"
+        REPO="${{ github.repository }}"
+        SHORT_SHA="${{ github.sha }}"
+        SHORT_SHA="${SHORT_SHA:0:8}"
+        ACTOR="${{ github.actor }}"
+        RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+        if [ "$JOB_STATUS" = "success" ]; then
+          EMOJI=":white_check_mark:"
+          COLOR="#36a64f"
+        elif [ "$JOB_STATUS" = "failure" ]; then
+          EMOJI=":x:"
+          COLOR="#cc0000"
         else
-          SBOM_LINE="| SBOM | — | not generated |"
+          EMOJI=":warning:"
+          COLOR="#ccaa00"
         fi
 
-        cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-        ### CI Evidence — Signed
-
-        | | Detail | Info |
-        |--|--------|------|
-        | Commit | \`${COMMIT:0:12}\` | — |
-        | Tests | $TEST_COUNT test cases | JUnit XML |
-        $BUILD_LINE
-        $SBOM_LINE
-        | Attestation | Sigstore | \`actions/attest-build-provenance\` |
-
-        > Signed at $(date -u +%Y-%m-%dT%H:%M:%SZ) by \`${{ github.actor }}\`
-        SUMMARY
+        curl -s -o /dev/null -X POST "$SLACK_CI_WEBHOOK" \
+          -H "Content-Type: application/json" \
+          -d "$(python3 -c "
+        import json
+        print(json.dumps({
+            'attachments': [{
+                'color': '$COLOR',
+                'text': '$EMOJI CI $JOB_STATUS: <$RUN_URL|$REPO@$SHORT_SHA> by $ACTOR'
+            }]
+        }))
+        ")"

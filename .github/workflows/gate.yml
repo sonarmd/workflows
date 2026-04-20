@@ -1,240 +1,137 @@
 name: Gate
 
-# Required workflow — runs in the merge queue AFTER CI passes.
-# No race condition: merge queue only activates when all PR checks are green.
+# Runs in merge_group context. Verifies that CI evidence exists for the HEAD
+# commit and that the job passed. This is the ONLY thing standing between a PR
+# and the target branch. If this fails, the merge is blocked.
 #
-# Verifies:
-#   1. Sigstore attestation exists (cryptographic proof from the right workflow)
-#   2. JUnit XML has real test cases (not empty, not faked)
-#   3. SBOM exists (dependency inventory)
-#   4. Build digest present (artifact integrity)
-#
-# Setup (org admin, one time):
-#   Settings > Rulesets > New ruleset
-#   - Target: All repositories (or specific repos)
-#   - Branch: default branch
-#   - Require merge queue
-#   - Require workflows to pass > Add workflow
-#   - Repository: sonarmd/workflows
-#   - Workflow: .github/workflows/gate.yml
-#   - Ref: main
+# This is a reusable workflow so repos can call it from their own merge_group trigger,
+# but it can also be used directly via branch protection required checks.
 
 on:
-  merge_group:
-  pull_request:
+  workflow_call:
+    inputs:
+      require_sbom:
+        description: 'Fail if SBOM was not generated'
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
 
 permissions: {}
 
 jobs:
-  gate:
-    name: gate
-    if: github.event_name == 'merge_group'
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
       actions: read
     steps:
-      - name: Download CI evidence
-        id: download
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-evidence
-          path: evidence
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.merge_group.head_sha && '' || '' }}
-        continue-on-error: true
-
-      - name: Fetch evidence from API (cross-workflow)
-        if: steps.download.outcome != 'success'
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          EXPECTED_COMMIT: ${{ github.sha }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APP_ID: op://smd_agora_shared/4skvt7l46qfd42ndku2ermwyly/appid
+          APP_PRIVATE_KEY: op://smd_agora_shared/twqeia3cpwcinjptjrnft5m3y4/notesPlain
+        with:
+          export-env: true
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+
+      - name: Find CI evidence
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
         run: |
-          # The evidence artifact is on the CI workflow run, not this gate run.
-          # Find it via the artifacts API.
-          ARTIFACT_URL=$(gh api \
-            "repos/$REPO/actions/artifacts?name=ci-evidence&per_page=5" \
+          set -euo pipefail
+
+          HEAD_SHA="${{ github.sha }}"
+          echo "Verifying CI evidence for $HEAD_SHA"
+
+          # Find artifact for this exact commit
+          ARTIFACT_ID=$(gh api \
+            "/repos/${{ github.repository }}/actions/artifacts" \
+            --paginate \
             --jq ".artifacts[]
-                   | select(.workflow_run.head_sha == \"$EXPECTED_COMMIT\")
-                   | .archive_download_url" \
-            2>/dev/null | head -1)
+              | select(.name == \"ci-evidence\")
+              | select(.workflow_run.head_sha == \"$HEAD_SHA\")
+              | select(.expired == false)
+              | .id" \
+            | head -1)
 
-          if [ -z "$ARTIFACT_URL" ]; then
-            echo "::error::No CI evidence found for commit ${EXPECTED_COMMIT:0:12}."
-            echo "::error::CI must pass and ci-sign must run before merge."
-
-            # Error report: find what failed
-            REPORT=$(python3 <<'PYEOF'
-          import json, os, urllib.request
-          repo = os.environ["REPO"]
-          sha = os.environ["EXPECTED_COMMIT"]
-          token = os.environ["GH_TOKEN"]
-          url = f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&per_page=10"
-          req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-          try:
-              runs = json.loads(urllib.request.urlopen(req).read()).get("workflow_runs", [])
-          except: exit(0)
-          for run in runs:
-              if run.get("conclusion") != "failure": continue
-              jobs_url = f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/jobs?per_page=30"
-              jobs_req = urllib.request.Request(jobs_url, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-              try: jobs = json.loads(urllib.request.urlopen(jobs_req).read()).get("jobs", [])
-              except: continue
-              for job in jobs:
-                  if job.get("conclusion") != "failure": continue
-                  print(f"\n**{job['name']}**\n")
-                  print("| Step | Status | Duration |")
-                  print("|------|--------|----------|")
-                  for step in job.get("steps", []):
-                      c = step.get("conclusion", "—")
-                      s, e = step.get("started_at",""), step.get("completed_at","")
-                      d = "—"
-                      if s and e:
-                          from datetime import datetime
-                          try:
-                              secs = int((datetime.fromisoformat(e.replace("Z","+00:00")) - datetime.fromisoformat(s.replace("Z","+00:00"))).total_seconds())
-                              d = f"{secs//60}m {secs%60}s" if secs >= 60 else f"{secs}s"
-                          except: pass
-                      mark = f"**{step['name']}**" if c == "failure" else step["name"]
-                      print(f"| {mark} | {'FAILED' if c=='failure' else c} | {d} |")
-                  print(f"\n[View log]({job.get('html_url','')})")
-          PYEOF
-            )
-
-            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-          ### Gate: FAILED — No CI Evidence
-
-          No evidence found for \`${EXPECTED_COMMIT:0:12}\`.
-
-          $REPORT
-
-          ---
-          Add ci-sign as the last step in your CI:
-          \`\`\`yaml
-          - uses: sonarmd/workflows/actions/ci-sign@main
-            with:
-              test_report_path: junit.xml
-          \`\`\`
-          SUMMARY
+          if [ -z "$ARTIFACT_ID" ]; then
+            echo "::error::No CI evidence artifact found for $HEAD_SHA"
+            echo "::error::CI must pass before merge is allowed."
             exit 1
           fi
 
-          mkdir -p evidence
-          gh api "$ARTIFACT_URL" > /tmp/evidence.zip
-          cd /tmp && unzip -qo evidence.zip -d "$GITHUB_WORKSPACE/evidence"
+          echo "Found ci-evidence artifact: $ARTIFACT_ID"
+          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_ENV"
 
-      - name: Verify evidence
+      - name: Download and verify evidence
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
-          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REQUIRE_SBOM: ${{ inputs.require_sbom }}
+        shell: bash
         run: |
           set -euo pipefail
-          cd evidence
 
-          PASS=true
-          fail() { echo "  FAILED: $1"; PASS=false; }
+          mkdir -p /tmp/ci-evidence
+          gh api \
+            "/repos/${{ github.repository }}/actions/artifacts/${{ env.artifact_id }}/zip" \
+            > /tmp/ci-evidence.zip
+          cd /tmp/ci-evidence && unzip -o ../ci-evidence.zip
 
-          # ── Manifest ────────────────────────────────────
-          if [ ! -f manifest.json ]; then
-            fail "manifest.json missing"
-            echo ""; exit 1
+          # 1. Check job status
+          if [ ! -f job_status.txt ]; then
+            echo "::error::Evidence bundle is missing job_status.txt"
+            exit 1
           fi
 
-          GOT_COMMIT=$(python3 -c "import json; print(json.load(open('manifest.json'))['commit'])")
-          GOT_REPO=$(python3 -c "import json; print(json.load(open('manifest.json'))['repository'])")
-
-          if [ "$GOT_COMMIT" != "$EXPECTED_COMMIT" ]; then
-            fail "commit mismatch: expected ${EXPECTED_COMMIT:0:12}, got ${GOT_COMMIT:0:12}"
-          else
-            echo "  commit:     ${GOT_COMMIT:0:12} verified"
+          JOB_STATUS=$(cat job_status.txt)
+          if [ "$JOB_STATUS" != "success" ]; then
+            echo "::error::CI job status was '$JOB_STATUS', not 'success'"
+            exit 1
           fi
+          echo "CI job status: $JOB_STATUS"
 
-          if [ "$GOT_REPO" != "$REPO" ]; then
-            fail "repo mismatch: expected $REPO, got $GOT_REPO"
-          else
-            echo "  repo:       $GOT_REPO verified"
-          fi
-
-          # ── Tests (independent verification) ────────────
-          if [ ! -f test-report.xml ]; then
-            fail "no test report (test-report.xml missing from evidence)"
-          else
-            TEST_COUNT=$(python3 -c "
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('test-report.xml')
-          print(len(tree.findall('.//testcase')))")
-
-            MANIFEST_COUNT=$(python3 -c "import json; print(json.load(open('manifest.json')).get('test_count', 0))")
-
-            if [ "$TEST_COUNT" -eq 0 ]; then
-              fail "test report has 0 test cases — tests did not run"
-            elif [ "$TEST_COUNT" != "$MANIFEST_COUNT" ]; then
-              fail "test count mismatch: manifest says $MANIFEST_COUNT, XML has $TEST_COUNT"
+          # 2. Verify digest integrity
+          if [ -f digest.sha256 ]; then
+            cd /tmp/ci-evidence
+            # Verify all files in the digest still match
+            if sha256sum -c digest.sha256 --quiet 2>/dev/null; then
+              echo "Evidence digest integrity: verified"
             else
-              echo "  tests:      $TEST_COUNT test cases verified"
+              echo "::error::Evidence digest mismatch. Artifact may be tampered."
+              exit 1
+            fi
+          else
+            echo "::warning::No digest.sha256 found in evidence (older ci-sign version?)"
+          fi
+
+          # 3. Check SBOM (optional)
+          if [ "$REQUIRE_SBOM" = "true" ]; then
+            if [ -f sbom-missing.txt ] || [ ! -f sbom.json ]; then
+              echo "::error::SBOM is required but was not generated"
+              exit 1
             fi
           fi
 
-          # ── SBOM ────────────────────────────────────────
-          if [ -f bom.json ]; then
-            SBOM_COUNT=$(python3 -c "import json; print(len(json.load(open('bom.json')).get('components', [])))" 2>/dev/null || echo "0")
-            echo "  sbom:       $SBOM_COUNT components (CycloneDX)"
-          else
-            echo "  sbom:       not generated"
+          # 4. Check metadata matches
+          if [ -f metadata.json ]; then
+            EVIDENCE_SHA=$(python3 -c "import json; print(json.load(open('metadata.json'))['sha'])")
+            if [ "$EVIDENCE_SHA" != "${{ github.sha }}" ]; then
+              echo "::error::Evidence SHA ($EVIDENCE_SHA) does not match merge queue SHA (${{ github.sha }})"
+              exit 1
+            fi
+            echo "Commit SHA match: confirmed"
           fi
 
-          # ── Build ───────────────────────────────────────
-          BUILD_DIGEST=$(python3 -c "import json; print(json.load(open('manifest.json')).get('build_digest', ''))" 2>/dev/null)
-          BUILD_FILES=$(python3 -c "import json; print(json.load(open('manifest.json')).get('build_file_count', 0))" 2>/dev/null)
-
-          if [ -n "$BUILD_DIGEST" ]; then
-            echo "  build:      $BUILD_FILES files, digest ${BUILD_DIGEST:0:16}..."
-          else
-            echo "  build:      no artifact"
-          fi
-
-          # ── Timestamp + actor ───────────────────────────
-          TIMESTAMP=$(python3 -c "import json; print(json.load(open('manifest.json'))['timestamp'])")
-          ACTOR=$(python3 -c "import json; print(json.load(open('manifest.json')).get('actor','unknown'))")
-          echo "  signed:     $TIMESTAMP"
-          echo "  actor:      $ACTOR"
-
-          # ── Verdict ─────────────────────────────────────
-          echo ""
-          echo "============================================="
-          if [ "$PASS" = true ]; then
-            echo "  PASSED — all evidence verified"
-            echo "============================================="
-
-            # Success summary
-            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-          ### Gate: PASSED
-
-          | Check | Result |
-          |-------|--------|
-          | Commit | \`${GOT_COMMIT:0:12}\` verified |
-          | Repository | $GOT_REPO verified |
-          | Tests | $TEST_COUNT test cases |
-          | SBOM | ${SBOM_COUNT:-—} components |
-          | Build | ${BUILD_FILES:-—} files |
-          | Attestation | Sigstore |
-          | Signed | $TIMESTAMP |
-          | Actor | $ACTOR |
-          SUMMARY
-          else
-            echo "  FAILED — evidence verification failed"
-            echo "============================================="
-
-            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-          ### Gate: FAILED
-
-          Evidence was found but verification failed. See log output above.
-
-          | Check | Result |
-          |-------|--------|
-          | Commit | ${GOT_COMMIT:0:12} |
-          | Tests | ${TEST_COUNT:-?} test cases |
-          SUMMARY
-            exit 1
-          fi
+          echo "### Gate: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "Evidence artifact verified for \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,178 @@
+name: Ping Slack
+
+# Triggered by release:published in calling repo. Downloads deploy.json from the
+# release assets, interpolates ${env}/${env_domain}, and posts one @r2-d2 deploy
+# command per bundle to #deployments.
+#
+# The deploy server (Hubot -> Ansible) parses the structured JSON in the Slack
+# message and routes each bundle to the correct target (ec2/s3/lambda/eas).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. stg-api-1.0.0-b42)'
+        type: string
+        required: true
+      release_url:
+        description: 'URL to the GitHub Release'
+        type: string
+        required: true
+      prerelease:
+        description: "'true' for staging/dev, 'false' for production"
+        type: string
+        required: true
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SLACK_DEPLOY_WEBHOOK: op://smd_agora_shared/slack-deploy-webhook/url
+        with:
+          export-env: true
+
+      - name: Download deploy.json from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "deploy.json" \
+            --dir /tmp
+
+      - name: Parse and notify
+        env:
+          TAG: ${{ inputs.tag }}
+          RELEASE_URL: ${{ inputs.release_url }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+          WEBHOOK_URL: ${{ env.SLACK_DEPLOY_WEBHOOK }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Parse env from tag prefix
+          TAG_ENV="${TAG%%-*}"
+
+          # Map env to domain suffix for S3/CloudFront targets
+          case "$TAG_ENV" in
+            dev) ENV_DOMAIN="dev.sonarmd.com" ;;
+            stg) ENV_DOMAIN="stg.sonarmd.com" ;;
+            prd) ENV_DOMAIN="sonarmd.com" ;;
+            *)
+              echo "::error::Unknown environment in tag: $TAG_ENV"
+              exit 1
+              ;;
+          esac
+
+          # Read deploy.json and expand per-bundle
+          DEPLOY_CONFIG=$(cat /tmp/deploy.json)
+          APP_NAME=$(echo "$DEPLOY_CONFIG" | python3 -c "import json,sys; print(json.load(sys.stdin)['app'])")
+          BUNDLES=$(echo "$DEPLOY_CONFIG" | python3 -c "
+          import json, sys
+          cfg = json.load(sys.stdin)
+          for b in cfg.get('bundles', []):
+              print(json.dumps(b))
+          ")
+
+          BUNDLE_COUNT=0
+          FAILURES=0
+
+          while IFS= read -r BUNDLE_JSON; do
+            [ -z "$BUNDLE_JSON" ] && continue
+            BUNDLE_COUNT=$((BUNDLE_COUNT + 1))
+
+            # Extract fields
+            B_NAME=$(echo "$BUNDLE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('name','default'))")
+            B_TARGET=$(echo "$BUNDLE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('target','ec2'))")
+            B_PATH=$(echo "$BUNDLE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path','dist'))")
+
+            # Interpolate hosts: support both 'hosts' (array) and 'host' (string)
+            B_HOSTS=$(echo "$BUNDLE_JSON" | python3 -c "
+          import json, sys
+          b = json.load(sys.stdin)
+          hosts = b.get('hosts', [])
+          if not hosts and 'host' in b:
+              hosts = [b['host']]
+          print(','.join(hosts))
+          ")
+
+            # Expand ${env} and ${env_domain} in host strings
+            B_HOSTS="${B_HOSTS//\$\{env\}/$TAG_ENV}"
+            B_HOSTS="${B_HOSTS//\$\{env_domain\}/$ENV_DOMAIN}"
+
+            echo "Bundle: $B_NAME | target=$B_TARGET | path=$B_PATH | hosts=$B_HOSTS"
+
+            # Build the Slack message payload.
+            # The @r2-d2 deploy command includes structured data that Hubot parses.
+            # Format: @r2-d2 deploy <app> <bundle> <tag> <target> <hosts> <release_url>
+            SLACK_TEXT="@r2-d2 deploy $APP_NAME $B_NAME $TAG $B_TARGET $B_HOSTS $RELEASE_URL"
+
+            # Post to Slack
+            HTTP_CODE=$(curl -s -o /tmp/slack_response.txt -w "%{http_code}" \
+              -X POST "$WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "$(python3 -c "
+          import json
+          payload = {
+              'text': $(python3 -c "import json; print(json.dumps('$SLACK_TEXT'))"),
+              'unfurl_links': False,
+              'unfurl_media': False,
+              'blocks': [
+                  {
+                      'type': 'section',
+                      'text': {
+                          'type': 'mrkdwn',
+                          'text': '\n'.join([
+                              ':rocket: *Deploy: $APP_NAME / $B_NAME*',
+                              '',
+                              '> *Tag:* \`$TAG\`',
+                              '> *Target:* \`$B_TARGET\`',
+                              '> *Hosts:* \`$B_HOSTS\`',
+                              '> *Path:* \`$B_PATH\`',
+                              '> *Release:* <$RELEASE_URL|View>',
+                              '> *Actor:* $ACTOR',
+                              '',
+                              '\`@r2-d2 deploy $APP_NAME $B_NAME $TAG $B_TARGET $B_HOSTS $RELEASE_URL\`'
+                          ])
+                      }
+                  }
+              ]
+          }
+          print(json.dumps(payload))
+          ")")
+
+            if [ "$HTTP_CODE" -ne 200 ]; then
+              echo "::warning::Slack post failed for bundle $B_NAME (HTTP $HTTP_CODE)"
+              FAILURES=$((FAILURES + 1))
+            fi
+          done <<< "$BUNDLES"
+
+          if [ "$BUNDLE_COUNT" -eq 0 ]; then
+            echo "::error::No bundles found in deploy.json"
+            exit 1
+          fi
+
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "::warning::$FAILURES/$BUNDLE_COUNT Slack notifications failed"
+          fi
+
+          echo "### Deploy Notifications" >> "$GITHUB_STEP_SUMMARY"
+          echo "Sent $((BUNDLE_COUNT - FAILURES))/$BUNDLE_COUNT deploy commands to Slack" >> "$GITHUB_STEP_SUMMARY"
+          echo "Environment: $TAG_ENV" >> "$GITHUB_STEP_SUMMARY"

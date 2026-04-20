@@ -61,7 +61,7 @@ jobs:
           ARTIFACT_URL="${{ inputs.artifact_url }}"
           [ -z "$ARTIFACT_URL" ] && ARTIFACT_URL="$RUN_URL"
 
-          DEPLOY_MSG="@r2-d2 deploy $ENVIRONMENT $VERSION $ARTIFACT_URL"
+          DEPLOY_MSG="@r2-d2 deploy $APP_NAME $ENVIRONMENT $VERSION $ARTIFACT_URL"
 
           PAYLOAD=$(jq -n \
             --arg channel "${{ inputs.slack_channel }}" \
