@@ -83,6 +83,7 @@ jobs:
       actions: read
     outputs:
       ci_status: ${{ steps.check.outputs.status }}
+      ci_run_id: ${{ steps.check.outputs.run_id }}
     steps:
       - name: Check CI status for this commit
         id: check
@@ -99,7 +100,7 @@ jobs:
             });
 
             const ciRuns = data.workflow_runs
-              .filter(r => r.name === 'CI')
+              .filter(r => r.name === 'CI' && r.id !== context.runId)
               .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
             const run = ciRuns[ciRuns.length - 1];
@@ -111,8 +112,9 @@ jobs:
             }
 
             if (run.status === 'completed' && run.conclusion === 'success') {
-              core.info('check: CI already passed — will run CD only');
+              core.info(`check: CI already passed (run ${run.id}) — will run CD only`);
               core.setOutput('status', 'success');
+              core.setOutput('run_id', String(run.id));
             } else if (run.status === 'completed') {
               core.info(`check: CI concluded '${run.conclusion}' — cancelling`);
               core.setOutput('status', 'failure');
@@ -158,4 +160,8 @@ jobs:
       contents: write
       actions: read
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
+    with:
+      # External CI (pre-passed) → its run id.  Internal CI (just ran) → current run id.
+      # Either way, cd-core downloads directly from the producer — no SHA lookup, no race.
+      ci_run_id: ${{ needs.check.outputs.ci_run_id || github.run_id }}
     secrets: inherit
