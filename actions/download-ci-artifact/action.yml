@@ -2,13 +2,10 @@ name: Download CI Artifact
 description: |
   Downloads the release artifact produced by CI.
 
-  If `run_id` is provided, downloads directly from that run — no lookup, no race.
-  This is the orchestrated path: ci-cd-core passes the id of the run that uploaded
-  the artifact (current run for internal CI, external run for pre-passed CI).
-
-  If `run_id` is empty, falls back to legacy discovery: find the latest completed
-  successful workflow named "CI" on this commit SHA. Fails if that run isn't
-  completed yet.
+  Discovery: finds the latest completed successful workflow named "CI" on this
+  commit SHA and downloads its `release` artifact. The orchestrator gates CD on
+  CI completion, so the run is guaranteed to exist and be completed by the time
+  this action runs.
 
 inputs:
   artifact_name:
@@ -19,10 +16,6 @@ inputs:
     description: 'Directory to download the artifact into.'
     required: false
     default: 'artifact'
-  run_id:
-    description: 'Explicit run ID that produced the artifact. If empty, discover via SHA + CI workflow name.'
-    required: false
-    default: ''
 
 outputs:
   path:
@@ -35,9 +28,8 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Discover CI run (legacy path)
+    - name: Discover CI run
       id: find
-      if: inputs.run_id == ''
       uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
       env:
         SHA: ${{ github.sha }}
@@ -74,27 +66,12 @@ runs:
           core.info(`download-ci-artifact: CI run ${run.id} passed`);
           core.setOutput('run_id', String(run.id));
 
-    - name: Resolve run_id
-      id: resolve
-      shell: bash
-      env:
-        EXPLICIT: ${{ inputs.run_id }}
-        DISCOVERED: ${{ steps.find.outputs.run_id }}
-      run: |
-        set -euo pipefail
-        RID="${EXPLICIT:-$DISCOVERED}"
-        if [ -z "$RID" ]; then
-          echo "::error::download-ci-artifact: unable to resolve run_id"
-          exit 1
-        fi
-        echo "run_id=$RID" >> "$GITHUB_OUTPUT"
-
     - name: Download artifact
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         name: ${{ inputs.artifact_name }}
         path: ${{ inputs.output_dir }}
-        run-id: ${{ steps.resolve.outputs.run_id }}
+        run-id: ${{ steps.find.outputs.run_id }}
         repository: ${{ github.repository }}
         github-token: ${{ github.token }}
 
@@ -103,7 +80,7 @@ runs:
       shell: bash
       env:
         OUTPUT_DIR: ${{ inputs.output_dir }}
-        RUN_ID: ${{ steps.resolve.outputs.run_id }}
+        RUN_ID: ${{ steps.find.outputs.run_id }}
       run: |
         set -euo pipefail
         echo "download-ci-artifact: downloaded to $OUTPUT_DIR/ (from run $RUN_ID)"
