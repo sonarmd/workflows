@@ -145,15 +145,66 @@ jobs:
       working_directory: ${{ inputs.working_directory }}
     secrets: inherit
 
-  # ── CD: runs on push only, after CI passes (or was already done) ──────────
+  # ── Gate: decides whether this push is release-worthy ────────────────────
+  # release/** → always deploy (stg).
+  # master/main → deploy only if the commit is a merge from release/vX.Y.Z
+  #               (detected via PR head ref or commit message). Routine
+  #               chore/fix merges to master are no-op here.
+  gate:
+    needs: check
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      needs.check.result == 'success' &&
+      needs.check.outputs.ci_status != 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions:
+      contents: read
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 2
+      - name: Is this commit release-worthy?
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ github.ref_name }}" in
+            release/v*)
+              echo "::notice::gate: release/** branch — CD will run"
+              echo "deploy=true" >> "$GITHUB_OUTPUT"
+              ;;
+            main|master)
+              HEAD_REF="${{ github.event.pull_request.head.ref }}"
+              MSG=$(git log -1 --pretty=%B)
+              if echo "$HEAD_REF" | grep -qP '^release/v[0-9]+\.[0-9]+\.[0-9]+$' \
+                 || echo "$MSG"   | grep -qP 'release/v[0-9]+\.[0-9]+\.[0-9]+'; then
+                echo "::notice::gate: master/main commit is a release merge — CD will run"
+                echo "deploy=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "::notice::gate: master/main commit is not a release merge — CD skipped"
+                echo "deploy=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "::notice::gate: branch '${{ github.ref_name }}' is not a deploy target — CD skipped"
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  # ── CD: runs on push only, after CI passes AND gate says deploy ──────────
   cd:
-    needs: [check, ci]
+    needs: [check, ci, gate]
     if: |
       always() &&
       github.event_name == 'push' &&
       needs.check.result == 'success' &&
       needs.check.outputs.ci_status != 'failure' &&
-      (needs.ci.result == 'success' || needs.ci.result == 'skipped')
+      (needs.ci.result == 'success' || needs.ci.result == 'skipped') &&
+      needs.gate.outputs.deploy == 'true'
     permissions:
       contents: write
       actions: read
