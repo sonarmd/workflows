@@ -55,45 +55,111 @@ jobs:
 
       - name: Resolve context
         id: ctx
-        shell: bash
-        run: |
-          set -euo pipefail
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          IDENTIFIER_VAR: ${{ vars.DEPLOY_IDENTIFIER }}
+        with:
+          script: |
+            const identifier = process.env.IDENTIFIER_VAR;
+            if (!identifier) {
+              core.setFailed('cd-core: repo variable DEPLOY_IDENTIFIER is not set (repo Settings → Variables → Actions)');
+              return;
+            }
+            const { owner, repo } = context.repo;
+            const ref = context.ref.replace('refs/heads/', '');
 
-          IDENTIFIER="${{ vars.DEPLOY_IDENTIFIER }}"
-          if [ -z "$IDENTIFIER" ]; then
-            echo "::error::cd-core: repo variable DEPLOY_IDENTIFIER is not set"
-            echo "::error::  Set it in repo Settings → Variables → Actions"
-            exit 1
-          fi
+            // ── release/vX.Y.Z → new prerelease on stg ──────────────────
+            const releaseMatch = ref.match(/^release\/v(\d+\.\d+\.\d+)$/);
+            if (releaseMatch) {
+              const version = releaseMatch[1];
+              core.notice(`cd-core: release/** → creating prerelease stg ${identifier} v${version}`);
+              core.setOutput('env',        'stg');
+              core.setOutput('identifier', identifier);
+              core.setOutput('version',    version);
+              return;
+            }
 
-          case "${{ github.ref_name }}" in
-            main|master)
-              ENV=prd
-              VERSION="${{ github.event.pull_request.head.ref }}"
-              if echo "$VERSION" | grep -qP '^release/v[0-9]+\.[0-9]+\.[0-9]+$'; then
-                VERSION="${VERSION#release/v}"
-              else
-                VERSION=$(git log -1 --pretty=%B | grep -oP 'release/v\K[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
-              fi
-              if [ -z "$VERSION" ]; then
-                echo "::error::cd-core: cannot determine version for prd — merge must be from release/vX.Y.Z"
-                exit 1
-              fi
-              ;;
-            release/v*)
-              ENV=stg
-              VERSION="${{ github.ref_name }}"
-              VERSION="${VERSION#release/v}"
-              ;;
-            *)
-              echo "::error::cd-core: unexpected branch '${{ github.ref_name }}' — must be main, master, or release/vX.Y.Z"
-              exit 1
-              ;;
-          esac
+            // ── master / main → promote existing prerelease to prd ──────
+            if (ref === 'master' || ref === 'main') {
+              // Look at HEAD and HEAD's parents (merge-commit's second parent
+              // is the release-branch tip when master gets a release merge).
+              const { data: commit } = await github.rest.git.getCommit({
+                owner, repo, commit_sha: context.sha,
+              });
+              const candidateShas = new Set([context.sha, ...commit.parents.map(p => p.sha)]);
+              core.info(`cd-core: searching for prerelease on any of: ${[...candidateShas].join(', ')}`);
 
-          echo "env=$ENV"               >> "$GITHUB_OUTPUT"
-          echo "identifier=$IDENTIFIER" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+              const prereleases = [];
+              const prereleasePrefix = `stg-${identifier}-v`;
+              let page = 1;
+              while (true) {
+                const { data } = await github.rest.repos.listReleases({
+                  owner, repo, per_page: 100, page,
+                });
+                if (!Array.isArray(data) || data.length === 0) break;
+                for (const r of data) {
+                  if (r.prerelease && r.tag_name.startsWith(prereleasePrefix)) {
+                    prereleases.push(r);
+                  }
+                }
+                if (data.length < 100) break;
+                page += 1;
+              }
+              core.info(`cd-core: scanning ${prereleases.length} stg-${identifier}-v* prereleases for an ancestor-SHA match`);
+
+              let matched;
+              for (const pre of prereleases) {
+                try {
+                  const { data: tagRef } = await github.rest.git.getRef({
+                    owner, repo, ref: `tags/${pre.tag_name}`,
+                  });
+                  let tagSha = tagRef.object.sha;
+                  if (tagRef.object.type === 'tag') {
+                    const { data: tagObj } = await github.rest.git.getTag({
+                      owner, repo, tag_sha: tagSha,
+                    });
+                    tagSha = tagObj.object.sha;
+                  }
+                  if (candidateShas.has(tagSha)) {
+                    matched = pre;
+                    break;
+                  }
+                } catch (e) {
+                  if (e.status !== 404) throw e;
+                }
+              }
+
+              if (matched) {
+                // Strip the exact `stg-${identifier}-v` prefix rather than a regex,
+                // so identifiers containing hyphens (e.g. `core-api`) parse correctly.
+                if (!matched.tag_name.startsWith(prereleasePrefix)) {
+                  core.setFailed(`cd-core: matched prerelease '${matched.tag_name}' does not start with expected prefix '${prereleasePrefix}'`);
+                  return;
+                }
+                const versionTail = matched.tag_name.slice(prereleasePrefix.length);
+                const m = versionTail.match(/^(\d+\.\d+\.\d+)/);
+                if (!m) {
+                  core.setFailed(`cd-core: matched prerelease '${matched.tag_name}' has no parseable version`);
+                  return;
+                }
+                const version = m[1];
+                core.notice(`cd-core: master/main → promoting ${matched.tag_name} → prd ${identifier} v${version}`);
+                core.setOutput('env',            'prd');
+                core.setOutput('identifier',     identifier);
+                core.setOutput('version',        version);
+                core.setOutput('promoted_from',  matched.tag_name);
+                return;
+              }
+
+              core.setFailed([
+                'cd-core: no stg prerelease found on HEAD or its parents.',
+                '         The release flow is: push to release/vX.Y.Z (prerelease) → merge release/vX.Y.Z to master (promote).',
+                `         Looked for 'stg-${identifier}-v*' tags targeting SHAs: ${[...candidateShas].join(', ')}`,
+              ].join('\n'));
+              return;
+            }
+
+            core.setFailed(`cd-core: unexpected ref '${ref}' — cd should only run on release/v*, master, or main`);
 
       - name: Derive build number
         id: build
@@ -108,8 +174,14 @@ jobs:
             const identifier = process.env.IDENTIFIER;
             const version    = process.env.VERSION;
             const { owner, repo } = context.repo;
-            const prefix = `${env}-${identifier}-`;
-            const bPattern = /^.+-b(\d+)$/;
+
+            // Per-version scope: `prd-api-v1.8.0-b*` builds are numbered
+            // independently from `prd-api-v1.7.0-b*`. Every new version
+            // resets to b1. Cleaner semantics than a monotonic counter
+            // across the whole env+identifier.
+            const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const prefix = `${env}-${identifier}-v${version}-b`;
+            const bPattern = new RegExp(`^${escapeRegExp(prefix)}(\\d+)$`);
 
             let page = 1;
             let lastBuild = 0;
@@ -119,7 +191,6 @@ jobs:
               });
               if (data.length === 0) break;
               for (const r of data) {
-                if (!r.tag_name.startsWith(prefix)) continue;
                 const m = r.tag_name.match(bPattern);
                 if (m) lastBuild = Math.max(lastBuild, parseInt(m[1]));
               }

@@ -147,6 +147,13 @@ jobs:
     secrets: inherit
 
   # ── CD: runs on branch push only, after CI passes ────────────────────────
+  # cd-core handles the promote-or-generate logic internally:
+  #   release/** → always cuts a new prerelease (stg).
+  #   master/main → finds the prerelease on HEAD's ancestry and promotes it
+  #                 to a prd release. If none found, fails loudly — the
+  #                 release/vX.Y.Z → master flow must precede master deploys.
+  # Tag pushes are excluded here so the prd tag created by cd-core fires only
+  # `cut_release` (below) and never re-enters CD in a loop.
   cd:
     needs: [check, ci]
     if: |
