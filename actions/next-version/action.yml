@@ -1,0 +1,150 @@
+name: Next Version
+description: |
+  Computes the next semver version by applying a bump.
+
+  Version source (priority order):
+    1. `previous_version` input — if set, skip the tag scan and bump from there.
+    2. Tag scan — list all tags and find the highest semver matching the scope.
+
+  Bump inference:
+    hotfix/**  → patch   (X.Y.Z → X.Y.Z+1)
+    anything   → minor   (X.Y.Z → X.Y+1.0)
+
+  Major bumps are EXPLICIT ONLY. Pass `bump: major`. There is no branch-name or
+  commit-message heuristic — major is too consequential for inference.
+
+  Tag scan scope:
+    - With `identifier`:  scans `^(?:stg|prd)-<identifier>-v(X)\.(Y)\.(Z)`
+    - Without:            scans any tag containing `v(X)\.(Y)\.(Z)`
+
+  Comparison is numeric-semver (not lexical). `1.10.0` > `1.9.0`.
+
+inputs:
+  bump:
+    description: "Explicit bump type (major | minor | patch). If empty, inferred from branch name."
+    required: false
+    default: ''
+  identifier:
+    description: "Scope tag scan to 'stg-<identifier>-v*' and 'prd-<identifier>-v*' tags (e.g. 'api', 'fe'). Regex-escaped internally."
+    required: false
+    default: ''
+  base_branch:
+    description: |
+      Branch name to use for bump inference. Pass explicitly when the event
+      context isn't a branch push (e.g. pull_request, tag push, workflow_dispatch).
+      When empty, falls back to github.ref_name (caller-owned default) — only
+      reliable on `push` events to a branch.
+    required: false
+    default: ''
+  previous_version:
+    description: |
+      Override the version source. If set (e.g. "1.8.0"), skips the tag scan and
+      bumps from this value directly. Use when the caller already knows the
+      latest shipped version (e.g. parsed from a tag).
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: "The computed next version (e.g. '1.8.0', no 'v' prefix)."
+    value: ${{ steps.compute.outputs.version }}
+  previous_version:
+    description: "The version used as the bump source — the input override if provided, otherwise the highest tag found, otherwise '0.0.0'."
+    value: ${{ steps.compute.outputs.previous_version }}
+  bump:
+    description: "The bump type actually applied (after inference)."
+    value: ${{ steps.compute.outputs.bump }}
+  release_branch:
+    description: "Conventional release branch name: 'release/v<version>'."
+    value: ${{ steps.compute.outputs.release_branch }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute next version
+      id: compute
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+      env:
+        BUMP_INPUT:        ${{ inputs.bump }}
+        IDENTIFIER:        ${{ inputs.identifier }}
+        BASE_BRANCH_INPUT: ${{ inputs.base_branch }}
+        PREV_INPUT:        ${{ inputs.previous_version }}
+      with:
+        script: |
+          const { owner, repo } = context.repo;
+
+          // ── Escape regex metacharacters in user input ───────────────
+          const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+          // ── Resolve branch for inference ────────────────────────────
+          const branch = process.env.BASE_BRANCH_INPUT
+            || (context.ref || '').replace(/^refs\/heads\//, '');
+
+          // ── Resolve bump ────────────────────────────────────────────
+          let bump = (process.env.BUMP_INPUT || '').trim().toLowerCase();
+          if (!bump) {
+            bump = branch.startsWith('hotfix/') ? 'patch' : 'minor';
+          }
+          if (!['major', 'minor', 'patch'].includes(bump)) {
+            core.setFailed(`next-version: invalid bump '${bump}' — must be major, minor, or patch`);
+            return;
+          }
+
+          // ── Resolve previous version ────────────────────────────────
+          let highest = [0, 0, 0];
+          const prevInput = (process.env.PREV_INPUT || '').trim();
+
+          if (prevInput) {
+            const pm = prevInput.match(/^(\d+)\.(\d+)\.(\d+)$/);
+            if (!pm) {
+              core.setFailed(`next-version: previous_version '${prevInput}' is not X.Y.Z`);
+              return;
+            }
+            highest = [parseInt(pm[1]), parseInt(pm[2]), parseInt(pm[3])];
+          } else {
+            const identifier = process.env.IDENTIFIER;
+            const tagRe = identifier
+              ? new RegExp(`^(?:stg|prd)-${reEscape(identifier)}-v(\\d+)\\.(\\d+)\\.(\\d+)`)
+              : /v(\d+)\.(\d+)\.(\d+)/;
+
+            // Unlimited pagination — repos with >1000 tags should still find
+            // the highest semver.
+            let page = 1;
+            while (true) {
+              const { data } = await github.rest.repos.listTags({
+                owner, repo, per_page: 100, page,
+              });
+              if (data.length === 0) break;
+              for (const t of data) {
+                const m = t.name.match(tagRe);
+                if (!m) continue;
+                const v = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+                if (
+                  v[0] > highest[0] ||
+                  (v[0] === highest[0] && v[1] > highest[1]) ||
+                  (v[0] === highest[0] && v[1] === highest[1] && v[2] > highest[2])
+                ) {
+                  highest = v;
+                }
+              }
+              if (data.length < 100) break;
+              page++;
+            }
+          }
+
+          const previous = `${highest[0]}.${highest[1]}.${highest[2]}`;
+
+          // ── Apply bump ──────────────────────────────────────────────
+          let [maj, min, pat] = highest;
+          if (bump === 'major')       { maj += 1; min = 0; pat = 0; }
+          else if (bump === 'minor')  { min += 1; pat = 0; }
+          else if (bump === 'patch')  { pat += 1; }
+
+          const next = `${maj}.${min}.${pat}`;
+          const releaseBranch = `release/v${next}`;
+
+          core.notice(`next-version: ${previous} → ${next} (bump=${bump}, branch='${branch}')`);
+          core.setOutput('version',           next);
+          core.setOutput('previous_version',  previous);
+          core.setOutput('bump',              bump);
+          core.setOutput('release_branch',    releaseBranch);

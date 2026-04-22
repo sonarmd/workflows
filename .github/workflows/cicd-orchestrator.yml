@@ -10,6 +10,7 @@ name: CI/CD
 #       branches: [master, 'release/**']
 #     push:
 #       branches: ['release/**', master]
+#       tags: ['prd-*-v*-b*']      # required — fires cut_release after a prd deploy
 #   concurrency:
 #     group: cicd-${{ github.event.pull_request.number || github.ref_name }}
 #     cancel-in-progress: true
@@ -76,7 +77,7 @@ jobs:
   #           success  → CI already passed, run CD only
   #           failure  → CI failed/cancelled, cancel this run
   check:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -145,17 +146,20 @@ jobs:
       working_directory: ${{ inputs.working_directory }}
     secrets: inherit
 
-  # ── CD: runs on push only, after CI passes ───────────────────────────────
+  # ── CD: runs on branch push only, after CI passes ────────────────────────
   # cd-core handles the promote-or-generate logic internally:
   #   release/** → always cuts a new prerelease (stg).
   #   master/main → finds the prerelease on HEAD's ancestry and promotes it
   #                 to a prd release. If none found, fails loudly — the
   #                 release/vX.Y.Z → master flow must precede master deploys.
+  # Tag pushes are excluded here so the prd tag created by cd-core fires only
+  # `cut_release` (below) and never re-enters CD in a loop.
   cd:
     needs: [check, ci]
     if: |
       always() &&
       github.event_name == 'push' &&
+      github.ref_type == 'branch' &&
       needs.check.result == 'success' &&
       needs.check.outputs.ci_status != 'failure' &&
       (needs.ci.result == 'success' || needs.ci.result == 'skipped')
@@ -165,3 +169,120 @@ jobs:
     # cd-core takes no inputs — discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
+
+  # ── Cut next release branch (triggered by prd tag push) ──────────────────
+  # CD creates the tag `prd-<identifier>-vX.Y.Z-bN`. That tag push fires this
+  # job, which parses the version out of the tag, bumps it, and cuts
+  # `release/v<next>` from the default branch. The tag IS how we know the
+  # version that just shipped — and therefore what to cut next.
+  cut_release:
+    if: |
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'prd-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Parse tag and resolve commit SHA
+        id: parse
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          IDENTIFIER_VAR: ${{ vars.DEPLOY_IDENTIFIER }}
+        with:
+          script: |
+            const identifier = process.env.IDENTIFIER_VAR;
+            if (!identifier) {
+              core.setFailed('cut_release: repo variable DEPLOY_IDENTIFIER is not set (repo Settings → Variables → Actions)');
+              return;
+            }
+
+            // Parse the tag itself — this IS the source of truth for what
+            // version just shipped. `context.ref` is `refs/tags/<name>`.
+            const tagName = context.ref.replace(/^refs\/tags\//, '');
+            const m = tagName.match(/^prd-([^-]+)-v(\d+\.\d+\.\d+)-b\d+$/);
+            if (!m) {
+              core.setFailed(`cut_release: tag '${tagName}' does not match 'prd-<id>-vX.Y.Z-bN'`);
+              return;
+            }
+            if (m[1] !== identifier) {
+              core.setFailed(`cut_release: tag identifier '${m[1]}' != repo DEPLOY_IDENTIFIER '${identifier}' — refusing to act on a non-matching tag`);
+              return;
+            }
+            const shippedVersion = m[2];
+
+            // Annotated tags: `context.sha` is the tag object, not the commit.
+            // Follow the tag object to the underlying commit.
+            const { owner, repo } = context.repo;
+            const { data: tagRef } = await github.rest.git.getRef({
+              owner, repo, ref: `tags/${tagName}`,
+            });
+            let commitSha = tagRef.object.sha;
+            if (tagRef.object.type === 'tag') {
+              const { data: tagObj } = await github.rest.git.getTag({
+                owner, repo, tag_sha: commitSha,
+              });
+              commitSha = tagObj.object.sha;
+            }
+
+            core.notice(`cut_release: tag=${tagName} shippedVersion=${shippedVersion} commit=${commitSha}`);
+            core.setOutput('tag_name',         tagName);
+            core.setOutput('shipped_version',  shippedVersion);
+            core.setOutput('commit_sha',       commitSha);
+            core.setOutput('identifier',       identifier);
+
+      - name: Resolve default branch
+        id: defbr
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.get({
+              owner: context.repo.owner, repo: context.repo.repo,
+            });
+            core.setOutput('name', data.default_branch);
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ steps.defbr.outputs.name }}
+          fetch-depth: 0
+
+      - name: Infer bump from the PR that shipped this tag
+        id: bump
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          COMMIT_SHA: ${{ steps.parse.outputs.commit_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner, repo, commit_sha: process.env.COMMIT_SHA,
+            });
+            const merged = prs.find(p => p.merged_at);
+            const sourceBranch = merged ? merged.head.ref : '';
+            const bump = sourceBranch.startsWith('hotfix/') ? 'patch' : 'minor';
+            core.notice(`cut_release: source_branch='${sourceBranch}' bump=${bump}`);
+            core.setOutput('bump', bump);
+
+      - name: Compute next version from shipped version
+        id: nextver
+        uses: sonarmd/workflows/actions/next-version@main
+        with:
+          identifier:        ${{ steps.parse.outputs.identifier }}
+          bump:              ${{ steps.bump.outputs.bump }}
+          previous_version:  ${{ steps.parse.outputs.shipped_version }}
+
+      - name: Cut release/v<next> from default and push
+        env:
+          NEXT_VERSION: ${{ steps.nextver.outputs.version }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/v${NEXT_VERSION}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::notice::cut_release: $BRANCH already exists — no-op"
+            exit 0
+          fi
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          echo "::notice::cut_release: created $BRANCH"
