@@ -1,0 +1,127 @@
+name: Security Scan
+description: |
+  Runs Semgrep + Gitleaks + Trivy against the current checkout.
+
+  Configs come from @sonarmd/star-config (installed in node_modules via
+  yarn/npm install) when available; sensible defaults apply otherwise.
+
+  Findings are emitted as PR annotations / workflow-run logs. No GHAS
+  (no per-committer billing, no Security tab). Fails the step on
+  HIGH/CRITICAL by default — configurable via `fail_on_findings`.
+
+inputs:
+  scanners:
+    description: "Space-separated list of scanners to run (semgrep, gitleaks, trivy). Empty = run all three."
+    required: false
+    default: "semgrep gitleaks trivy"
+  fail_on_findings:
+    description: "Fail the step when a scanner reports HIGH/CRITICAL. Set 'false' for report-only runs."
+    required: false
+    default: "true"
+  semgrep_configs:
+    description: "Space-separated list of Semgrep --config args stacked before the star-config baseline. Registry rulesets allowed."
+    required: false
+    default: "p/default p/typescript p/react p/nodejs p/owasp-top-ten"
+  star_config_root:
+    description: "Path to the @sonarmd/star-config package. Defaults to node_modules lookup."
+    required: false
+    default: "node_modules/@sonarmd/star-config"
+
+runs:
+  using: composite
+  steps:
+    - name: Detect star-config
+      id: detect
+      shell: bash
+      env:
+        ROOT: ${{ inputs.star_config_root }}
+      run: |
+        set -euo pipefail
+        if [ -f "${ROOT}/package.json" ]; then
+          echo "::notice::security-scan: using configs from ${ROOT}"
+          echo "installed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::security-scan: @sonarmd/star-config not found at ${ROOT} — using defaults"
+          echo "installed=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ────────────────────────────── Semgrep ──────────────────────────────
+    - name: Install Semgrep
+      if: contains(inputs.scanners, 'semgrep')
+      shell: bash
+      run: python3 -m pip install --quiet semgrep
+
+    - name: Run Semgrep
+      if: contains(inputs.scanners, 'semgrep')
+      shell: bash
+      env:
+        STAR_INSTALLED:  ${{ steps.detect.outputs.installed }}
+        STAR_ROOT:       ${{ inputs.star_config_root }}
+        CONFIGS:         ${{ inputs.semgrep_configs }}
+        FAIL_ON:         ${{ inputs.fail_on_findings }}
+      run: |
+        set -euo pipefail
+        ARGS=()
+        for cfg in $CONFIGS; do
+          ARGS+=("--config=$cfg")
+        done
+        if [ "$STAR_INSTALLED" = "true" ] && [ -f "${STAR_ROOT}/semgrep/baseline.yml" ]; then
+          ARGS+=("--config=${STAR_ROOT}/semgrep/baseline.yml")
+        fi
+        if [ "$FAIL_ON" = "true" ]; then
+          ARGS+=("--error")
+        fi
+        echo "security-scan/semgrep: semgrep scan ${ARGS[*]} --severity=ERROR --severity=WARNING ."
+        semgrep scan "${ARGS[@]}" --severity=ERROR --severity=WARNING .
+
+    # ────────────────────────────── Gitleaks ─────────────────────────────
+    - name: Run Gitleaks
+      if: contains(inputs.scanners, 'gitleaks')
+      shell: bash
+      env:
+        STAR_INSTALLED: ${{ steps.detect.outputs.installed }}
+        STAR_ROOT:      ${{ inputs.star_config_root }}
+        FAIL_ON:        ${{ inputs.fail_on_findings }}
+      run: |
+        set -euo pipefail
+        # Download the gitleaks binary — avoids depending on an upstream
+        # third-party action's SHA, keeps the action self-contained.
+        GL_VERSION="${GITLEAKS_VERSION:-8.21.2}"
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64|amd64) ARCH=x64 ;;
+          aarch64|arm64) ARCH=arm64 ;;
+        esac
+        URL="https://github.com/gitleaks/gitleaks/releases/download/v${GL_VERSION}/gitleaks_${GL_VERSION}_${OS}_${ARCH}.tar.gz"
+        mkdir -p "$RUNNER_TEMP/gitleaks"
+        curl -fsSL "$URL" | tar -xz -C "$RUNNER_TEMP/gitleaks" gitleaks
+        chmod +x "$RUNNER_TEMP/gitleaks/gitleaks"
+
+        ARGS=(detect --source . --no-git --redact -v)
+        if [ "$STAR_INSTALLED" = "true" ] && [ -f "${STAR_ROOT}/gitleaks/default.toml" ]; then
+          ARGS+=(--config "${STAR_ROOT}/gitleaks/default.toml")
+        fi
+        if [ "$FAIL_ON" = "true" ]; then
+          ARGS+=(--exit-code 1)
+        else
+          ARGS+=(--exit-code 0)
+        fi
+        echo "security-scan/gitleaks: gitleaks ${ARGS[*]}"
+        "$RUNNER_TEMP/gitleaks/gitleaks" "${ARGS[@]}"
+
+    # ─────────────────────────────── Trivy ───────────────────────────────
+    - name: Run Trivy
+      if: contains(inputs.scanners, 'trivy')
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type: fs
+        scan-ref: .
+        # star-config ships the opinionated severity + scanner list.
+        # If missing, fall back to inline defaults that match what's
+        # shipped, so behavior is consistent either way.
+        trivy-config: ${{ steps.detect.outputs.installed == 'true' && format('{0}/trivy/config.yaml', inputs.star_config_root) || '' }}
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        exit-code: ${{ inputs.fail_on_findings == 'true' && '1' || '0' }}
+        scanners: vuln,secret,misconfig
