@@ -145,7 +145,12 @@ jobs:
       working_directory: ${{ inputs.working_directory }}
     secrets: inherit
 
-  # ── CD: runs on push only, after CI passes (or was already done) ──────────
+  # ── CD: runs on push only, after CI passes ───────────────────────────────
+  # cd-core handles the promote-or-generate logic internally:
+  #   release/** → always cuts a new prerelease (stg).
+  #   master/main → finds the prerelease on HEAD's ancestry and promotes it
+  #                 to a prd release. If none found, fails loudly — the
+  #                 release/vX.Y.Z → master flow must precede master deploys.
   cd:
     needs: [check, ci]
     if: |
