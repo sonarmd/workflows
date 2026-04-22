@@ -161,39 +161,49 @@ jobs:
     timeout-minutes: 1
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       deploy: ${{ steps.check.outputs.deploy }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 2
       - name: Is this commit release-worthy?
         id: check
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${{ github.ref_name }}" in
-            release/v*)
-              echo "::notice::gate: release/** branch — CD will run"
-              echo "deploy=true" >> "$GITHUB_OUTPUT"
-              ;;
-            main|master)
-              HEAD_REF="${{ github.event.pull_request.head.ref }}"
-              MSG=$(git log -1 --pretty=%B)
-              if echo "$HEAD_REF" | grep -qP '^release/v[0-9]+\.[0-9]+\.[0-9]+$' \
-                 || echo "$MSG"   | grep -qP 'release/v[0-9]+\.[0-9]+\.[0-9]+'; then
-                echo "::notice::gate: master/main commit is a release merge — CD will run"
-                echo "deploy=true" >> "$GITHUB_OUTPUT"
-              else
-                echo "::notice::gate: master/main commit is not a release merge — CD skipped"
-                echo "deploy=false" >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            *)
-              echo "::notice::gate: branch '${{ github.ref_name }}' is not a deploy target — CD skipped"
-              echo "deploy=false" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const ref = context.ref.replace('refs/heads/', '');
+            core.info(`gate: ref=${ref} sha=${context.sha}`);
+
+            const releasePattern = /^release\/v\d+\.\d+\.\d+$/;
+
+            // release/** → always deploy
+            if (releasePattern.test(ref)) {
+              core.notice('gate: release/** branch — CD will run');
+              core.setOutput('deploy', 'true');
+              return;
+            }
+
+            // master | main → deploy only if this commit is the merge of a
+            // PR whose head ref was release/vX.Y.Z. Source of truth is the
+            // GitHub API (not commit-message regex — too fragile).
+            if (ref === 'master' || ref === 'main') {
+              const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+              });
+              const releasePR = prs.find(pr => releasePattern.test(pr.head.ref));
+              if (releasePR) {
+                core.notice(`gate: master/main merge of ${releasePR.head.ref} (#${releasePR.number}) — CD will run`);
+                core.setOutput('deploy', 'true');
+                return;
+              }
+              core.notice('gate: master/main commit is not a release merge — CD skipped');
+              core.setOutput('deploy', 'false');
+              return;
+            }
+
+            core.notice(`gate: branch '${ref}' is not a deploy target — CD skipped`);
+            core.setOutput('deploy', 'false');
 
   # ── CD: runs on push only, after CI passes AND gate says deploy ──────────
   cd:
