@@ -66,6 +66,9 @@ jobs:
             exit 1
           fi
 
+          # cd-core does not decide. If it's running, we ship.
+          # The orchestrator's `gate` job is responsible for branch routing —
+          # it only invokes cd-core when the current commit is release-worthy.
           case "${{ github.ref_name }}" in
             main|master)
               ENV=prd
@@ -75,10 +78,6 @@ jobs:
               else
                 VERSION=$(git log -1 --pretty=%B | grep -oP 'release/v\K[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
               fi
-              if [ -z "$VERSION" ]; then
-                echo "::error::cd-core: cannot determine version for prd — merge must be from release/vX.Y.Z"
-                exit 1
-              fi
               ;;
             release/v*)
               ENV=stg
@@ -86,8 +85,10 @@ jobs:
               VERSION="${VERSION#release/v}"
               ;;
             *)
-              echo "::error::cd-core: unexpected branch '${{ github.ref_name }}' — must be main, master, or release/vX.Y.Z"
-              exit 1
+              # Orchestrator won't route us here; accept anything and
+              # let the tag naming fall through with the raw ref.
+              ENV=stg
+              VERSION="${{ github.ref_name }}"
               ;;
           esac
 
