@@ -53,6 +53,7 @@ jobs:
       id-token: write
       attestations: write
       actions: read
+      packages: read
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
