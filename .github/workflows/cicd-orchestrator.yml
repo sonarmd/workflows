@@ -137,7 +137,7 @@ jobs:
       id-token: write
       attestations: write
       actions: read
-    uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
+    uses: sonarmd/workflows/.github/workflows/ci-core.yml@test/cicd-fix-chain
     with:
       setup:            ${{ inputs.setup }}
       steps:            ${{ inputs.steps }}

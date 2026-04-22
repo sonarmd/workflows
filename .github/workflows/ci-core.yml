@@ -64,7 +64,7 @@ jobs:
 
       - name: Setup Node.js
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
-        uses: sonarmd/workflows/actions/setup-node@main
+        uses: sonarmd/workflows/actions/setup-node@test/cicd-fix-chain
 
       - name: Setup
         if: inputs.setup != ''
