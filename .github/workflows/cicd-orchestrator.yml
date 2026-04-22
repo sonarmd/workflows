@@ -179,6 +179,53 @@ jobs:
       contents: write
       pull-requests: read
     steps:
+      - name: Parse tag and resolve commit SHA
+        id: parse
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          IDENTIFIER_VAR: ${{ vars.DEPLOY_IDENTIFIER }}
+        with:
+          script: |
+            const identifier = process.env.IDENTIFIER_VAR;
+            if (!identifier) {
+              core.setFailed('cut_release: repo variable DEPLOY_IDENTIFIER is not set (repo Settings → Variables → Actions)');
+              return;
+            }
+
+            // Parse the tag itself — this IS the source of truth for what
+            // version just shipped. `context.ref` is `refs/tags/<name>`.
+            const tagName = context.ref.replace(/^refs\/tags\//, '');
+            const m = tagName.match(/^prd-([^-]+)-v(\d+\.\d+\.\d+)-b\d+$/);
+            if (!m) {
+              core.setFailed(`cut_release: tag '${tagName}' does not match 'prd-<id>-vX.Y.Z-bN'`);
+              return;
+            }
+            if (m[1] !== identifier) {
+              core.setFailed(`cut_release: tag identifier '${m[1]}' != repo DEPLOY_IDENTIFIER '${identifier}' — refusing to act on a non-matching tag`);
+              return;
+            }
+            const shippedVersion = m[2];
+
+            // Annotated tags: `context.sha` is the tag object, not the commit.
+            // Follow the tag object to the underlying commit.
+            const { owner, repo } = context.repo;
+            const { data: tagRef } = await github.rest.git.getRef({
+              owner, repo, ref: `tags/${tagName}`,
+            });
+            let commitSha = tagRef.object.sha;
+            if (tagRef.object.type === 'tag') {
+              const { data: tagObj } = await github.rest.git.getTag({
+                owner, repo, tag_sha: commitSha,
+              });
+              commitSha = tagObj.object.sha;
+            }
+
+            core.notice(`cut_release: tag=${tagName} shippedVersion=${shippedVersion} commit=${commitSha}`);
+            core.setOutput('tag_name',         tagName);
+            core.setOutput('shipped_version',  shippedVersion);
+            core.setOutput('commit_sha',       commitSha);
+            core.setOutput('identifier',       identifier);
+
       - name: Resolve default branch
         id: defbr
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
@@ -194,29 +241,30 @@ jobs:
           ref: ${{ steps.defbr.outputs.name }}
           fetch-depth: 0
 
-      - name: Infer bump from tag's merge PR
+      - name: Infer bump from the PR that shipped this tag
         id: bump
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          COMMIT_SHA: ${{ steps.parse.outputs.commit_sha }}
         with:
           script: |
-            // Tag was created at the master commit that triggered CD.
-            // context.sha here is the tag's commit — find the PR that merged it.
             const { owner, repo } = context.repo;
             const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner, repo, commit_sha: context.sha,
+              owner, repo, commit_sha: process.env.COMMIT_SHA,
             });
             const merged = prs.find(p => p.merged_at);
             const sourceBranch = merged ? merged.head.ref : '';
             const bump = sourceBranch.startsWith('hotfix/') ? 'patch' : 'minor';
-            core.notice(`cut_release: tag=${context.ref.replace('refs/tags/','')} source='${sourceBranch}' bump=${bump}`);
+            core.notice(`cut_release: source_branch='${sourceBranch}' bump=${bump}`);
             core.setOutput('bump', bump);
 
-      - name: Compute next version
+      - name: Compute next version from shipped version
         id: nextver
         uses: sonarmd/workflows/actions/next-version@main
         with:
-          identifier: ${{ vars.DEPLOY_IDENTIFIER }}
-          bump:       ${{ steps.bump.outputs.bump }}
+          identifier:        ${{ steps.parse.outputs.identifier }}
+          bump:              ${{ steps.bump.outputs.bump }}
+          previous_version:  ${{ steps.parse.outputs.shipped_version }}
 
       - name: Cut release/v<next> from default and push
         env:
