@@ -145,76 +145,20 @@ jobs:
       working_directory: ${{ inputs.working_directory }}
     secrets: inherit
 
-  # ── Gate: decides whether this push is release-worthy ────────────────────
-  # release/** → always deploy (stg).
-  # master/main → deploy only if the commit is a merge from release/vX.Y.Z
-  #               (detected via PR head ref or commit message). Routine
-  #               chore/fix merges to master are no-op here.
-  gate:
-    needs: check
-    if: |
-      always() &&
-      github.event_name == 'push' &&
-      needs.check.result == 'success' &&
-      needs.check.outputs.ci_status != 'failure'
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      deploy: ${{ steps.check.outputs.deploy }}
-    steps:
-      - name: Is this commit release-worthy?
-        id: check
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
-        with:
-          script: |
-            const ref = context.ref.replace('refs/heads/', '');
-            core.info(`gate: ref=${ref} sha=${context.sha}`);
-
-            const releasePattern = /^release\/v\d+\.\d+\.\d+$/;
-
-            // release/** → always deploy
-            if (releasePattern.test(ref)) {
-              core.notice('gate: release/** branch — CD will run');
-              core.setOutput('deploy', 'true');
-              return;
-            }
-
-            // master | main → deploy only if this commit is the merge of a
-            // PR whose head ref was release/vX.Y.Z. Source of truth is the
-            // GitHub API (not commit-message regex — too fragile).
-            if (ref === 'master' || ref === 'main') {
-              const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: context.sha,
-              });
-              const releasePR = prs.find(pr => releasePattern.test(pr.head.ref));
-              if (releasePR) {
-                core.notice(`gate: master/main merge of ${releasePR.head.ref} (#${releasePR.number}) — CD will run`);
-                core.setOutput('deploy', 'true');
-                return;
-              }
-              core.notice('gate: master/main commit is not a release merge — CD skipped');
-              core.setOutput('deploy', 'false');
-              return;
-            }
-
-            core.notice(`gate: branch '${ref}' is not a deploy target — CD skipped`);
-            core.setOutput('deploy', 'false');
-
-  # ── CD: runs on push only, after CI passes AND gate says deploy ──────────
+  # ── CD: runs on push only, after CI passes ───────────────────────────────
+  # cd-core handles the promote-or-generate logic internally:
+  #   release/** → always cuts a new prerelease (stg).
+  #   master/main → finds the prerelease on HEAD's ancestry and promotes it
+  #                 to a prd release. If none found, fails loudly — the
+  #                 release/vX.Y.Z → master flow must precede master deploys.
   cd:
-    needs: [check, ci, gate]
+    needs: [check, ci]
     if: |
       always() &&
       github.event_name == 'push' &&
       needs.check.result == 'success' &&
       needs.check.outputs.ci_status != 'failure' &&
-      (needs.ci.result == 'success' || needs.ci.result == 'skipped') &&
-      needs.gate.outputs.deploy == 'true'
+      (needs.ci.result == 'success' || needs.ci.result == 'skipped')
     permissions:
       contents: write
       actions: read
