@@ -1,0 +1,162 @@
+name: CI/CD
+
+# ── Caller example ────────────────────────────────────────────────────────
+#
+#   name: CI/CD
+#   on:
+#     pull_request:
+#       branches: [master, 'release/**']
+#     merge_group:
+#       branches: [master, 'release/**']
+#     push:
+#       branches: ['release/**', master]
+#   concurrency:
+#     group: cicd-${{ github.event.pull_request.number || github.ref_name }}
+#     cancel-in-progress: true
+#   permissions:
+#     contents: write
+#     id-token: write
+#     attestations: write
+#     actions: read
+#   jobs:
+#     cicd:
+#       uses: sonarmd/workflows/.github/workflows/cicd-orchestrator.yml@main
+#       with:
+#         setup: |
+#           sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
+#         steps: |
+#           yarn lint
+#           yarn test:ci
+#           yarn build
+#       secrets: inherit
+#
+# Event routing (automatic — no config needed):
+#   pull_request / merge_group  → CI only
+#   push to release/**          → check CI status → CI (if needed) → CD (stg)
+#   push to master              → check CI status → CI (if needed) → CD (prd)
+
+on:
+  workflow_call:
+    inputs:
+      setup:
+        description: 'Repo-specific setup shell (system deps, etc.)'
+        required: false
+        type: string
+        default: ''
+      steps:
+        description: 'Repo-specific lint/test/build shell.'
+        required: true
+        type: string
+      test_report_path:
+        description: 'JUnit XML path.'
+        required: false
+        type: string
+        default: 'junit.xml'
+      timeout:
+        description: 'CI job timeout in minutes.'
+        required: false
+        type: number
+        default: 15
+      working_directory:
+        required: false
+        type: string
+        default: '.'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  actions: read
+
+jobs:
+
+  # ── Check: only runs on push events ──────────────────────────────────────
+  # Looks for a prior passing CI run on this commit SHA.
+  # Outputs:  none     → no CI found, run CI then CD
+  #           success  → CI already passed, run CD only
+  #           failure  → CI failed/cancelled, cancel this run
+  check:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      ci_status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: Check CI status for this commit
+        id: check
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+
+            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo,
+              head_sha: sha,
+              per_page: 50,
+            });
+
+            const ciRuns = data.workflow_runs
+              .filter(r => r.name === 'CI' && r.id !== context.runId)
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+            const run = ciRuns[ciRuns.length - 1];
+
+            if (!run) {
+              core.info('check: no CI run found — will run CI then CD');
+              core.setOutput('status', 'none');
+              return;
+            }
+
+            if (run.status === 'completed' && run.conclusion === 'success') {
+              core.info(`check: CI already passed (run ${run.id}) — will run CD only`);
+              core.setOutput('status', 'success');
+            } else if (run.status === 'completed') {
+              core.info(`check: CI concluded '${run.conclusion}' — cancelling`);
+              core.setOutput('status', 'failure');
+            } else {
+              core.info(`check: CI is in progress (${run.status}) — will run CI+CD from scratch`);
+              core.setOutput('status', 'none');
+            }
+
+  # ── CI: runs on PR/merge_group, or on push when no prior CI ──────────────
+  ci:
+    needs: check
+    if: |
+      always() &&
+      needs.check.result != 'failure' &&
+      (
+        github.event_name != 'push' ||
+        needs.check.outputs.ci_status == 'none'
+      )
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      actions: read
+    uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
+    with:
+      setup:            ${{ inputs.setup }}
+      steps:            ${{ inputs.steps }}
+      test_report_path: ${{ inputs.test_report_path }}
+      timeout:          ${{ inputs.timeout }}
+      working_directory: ${{ inputs.working_directory }}
+    secrets: inherit
+
+  # ── CD: runs on push only, after CI passes (or was already done) ──────────
+  cd:
+    needs: [check, ci]
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      needs.check.result == 'success' &&
+      needs.check.outputs.ci_status != 'failure' &&
+      (needs.ci.result == 'success' || needs.ci.result == 'skipped')
+    permissions:
+      contents: write
+      actions: read
+    # cd-core takes no inputs — discovers the CI artifact by SHA.
+    uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
+    secrets: inherit

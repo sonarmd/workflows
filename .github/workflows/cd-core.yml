@@ -21,16 +21,9 @@ name: CD
 
 on:
   workflow_call:
-    inputs:
-      ci_run_id:
-        description: |
-          Run ID that produced the `release` artifact. When called from
-          ci-cd-core, pass the current run id (internal CI path) or the
-          external run id (external CI path). If empty, cd-core falls back
-          to legacy discovery by SHA.
-        required: false
-        type: string
-        default: ''
+    # No inputs. cd-core discovers the CI artifact by commit SHA.
+    # The orchestrator gates CD on CI success, so the run is guaranteed
+    # to be completed by the time we get here.
     secrets:
       OP_SERVICE_ACCOUNT_TOKEN:
         required: true
@@ -142,8 +135,6 @@ jobs:
       - name: Download CI artifact
         id: download
         uses: sonarmd/workflows/actions/download-ci-artifact@main
-        with:
-          run_id: ${{ inputs.ci_run_id }}
 
       - name: Create tag
         uses: sonarmd/workflows/actions/create-tag@main
