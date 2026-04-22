@@ -164,8 +164,13 @@ jobs:
             const identifier = process.env.IDENTIFIER;
             const version    = process.env.VERSION;
             const { owner, repo } = context.repo;
-            const prefix = `${env}-${identifier}-`;
-            const bPattern = /^.+-b(\d+)$/;
+
+            // Per-version scope: `prd-api-v1.8.0-b*` builds are numbered
+            // independently from `prd-api-v1.7.0-b*`. Every new version
+            // resets to b1. Cleaner semantics than a monotonic counter
+            // across the whole env+identifier.
+            const prefix = `${env}-${identifier}-v${version}-b`;
+            const bPattern = new RegExp(`^${prefix.replace(/\./g, '\\.')}(\\d+)$`);
 
             let page = 1;
             let lastBuild = 0;
@@ -175,7 +180,6 @@ jobs:
               });
               if (data.length === 0) break;
               for (const r of data) {
-                if (!r.tag_name.startsWith(prefix)) continue;
                 const m = r.tag_name.match(bPattern);
                 if (m) lastBuild = Math.max(lastBuild, parseInt(m[1]));
               }
