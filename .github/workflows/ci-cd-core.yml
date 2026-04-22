@@ -1,0 +1,51 @@
+name: CI/CD
+
+# ── 1-WEEK COMPATIBILITY STUB — DELETE 2026-04-28 ─────────────────────────
+#
+# The canonical orchestrator is `cicd-orchestrator.yml`. This file exists
+# ONLY to keep legacy callers (`uses: ...ci-cd-core.yml@main`) working for
+# a short grace period while Phase 2 caller migrations land.
+#
+# Do NOT add logic here. Do NOT fork the interface. Forward verbatim.
+# When every caller has been repointed at `cicd-orchestrator.yml`, delete
+# this file — no further action required.
+
+on:
+  workflow_call:
+    inputs:
+      setup:
+        required: false
+        type: string
+        default: ''
+      steps:
+        required: true
+        type: string
+      test_report_path:
+        required: false
+        type: string
+        default: 'junit.xml'
+      timeout:
+        required: false
+        type: number
+        default: 15
+      working_directory:
+        required: false
+        type: string
+        default: '.'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  actions: read
+
+jobs:
+  forward:
+    uses: sonarmd/workflows/.github/workflows/cicd-orchestrator.yml@main
+    with:
+      setup:             ${{ inputs.setup }}
+      steps:             ${{ inputs.steps }}
+      test_report_path:  ${{ inputs.test_report_path }}
+      timeout:           ${{ inputs.timeout }}
+      working_directory: ${{ inputs.working_directory }}
+    secrets: inherit
