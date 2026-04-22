@@ -10,6 +10,7 @@ name: CI/CD
 #       branches: [master, 'release/**']
 #     push:
 #       branches: ['release/**', master]
+#       tags: ['prd-*-v*-b*']      # required — fires cut_release after a prd deploy
 #   concurrency:
 #     group: cicd-${{ github.event.pull_request.number || github.ref_name }}
 #     cancel-in-progress: true
@@ -76,7 +77,7 @@ jobs:
   #           success  → CI already passed, run CD only
   #           failure  → CI failed/cancelled, cancel this run
   check:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -145,12 +146,13 @@ jobs:
       working_directory: ${{ inputs.working_directory }}
     secrets: inherit
 
-  # ── CD: runs on push only, after CI passes (or was already done) ──────────
+  # ── CD: runs on branch push only, after CI passes ────────────────────────
   cd:
     needs: [check, ci]
     if: |
       always() &&
       github.event_name == 'push' &&
+      github.ref_type == 'branch' &&
       needs.check.result == 'success' &&
       needs.check.outputs.ci_status != 'failure' &&
       (needs.ci.result == 'success' || needs.ci.result == 'skipped')
@@ -160,3 +162,72 @@ jobs:
     # cd-core takes no inputs — discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
+
+  # ── Cut next release branch (triggered by prd tag push) ──────────────────
+  # CD creates the tag `prd-<identifier>-vX.Y.Z-bN`. That tag push fires this
+  # job, which parses the version out of the tag, bumps it, and cuts
+  # `release/v<next>` from the default branch. The tag IS how we know the
+  # version that just shipped — and therefore what to cut next.
+  cut_release:
+    if: |
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'prd-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Resolve default branch
+        id: defbr
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.get({
+              owner: context.repo.owner, repo: context.repo.repo,
+            });
+            core.setOutput('name', data.default_branch);
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ steps.defbr.outputs.name }}
+          fetch-depth: 0
+
+      - name: Infer bump from tag's merge PR
+        id: bump
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            // Tag was created at the master commit that triggered CD.
+            // context.sha here is the tag's commit — find the PR that merged it.
+            const { owner, repo } = context.repo;
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner, repo, commit_sha: context.sha,
+            });
+            const merged = prs.find(p => p.merged_at);
+            const sourceBranch = merged ? merged.head.ref : '';
+            const bump = sourceBranch.startsWith('hotfix/') ? 'patch' : 'minor';
+            core.notice(`cut_release: tag=${context.ref.replace('refs/tags/','')} source='${sourceBranch}' bump=${bump}`);
+            core.setOutput('bump', bump);
+
+      - name: Compute next version
+        id: nextver
+        uses: sonarmd/workflows/actions/next-version@main
+        with:
+          identifier: ${{ vars.DEPLOY_IDENTIFIER }}
+          bump:       ${{ steps.bump.outputs.bump }}
+
+      - name: Cut release/v<next> from default and push
+        env:
+          NEXT_VERSION: ${{ steps.nextver.outputs.version }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/v${NEXT_VERSION}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::notice::cut_release: $BRANCH already exists — no-op"
+            exit 0
+          fi
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          echo "::notice::cut_release: created $BRANCH"
