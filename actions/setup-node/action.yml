@@ -54,4 +54,5 @@ runs:
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       env:
         NODE_AUTH_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: yarn install --frozen-lockfile
