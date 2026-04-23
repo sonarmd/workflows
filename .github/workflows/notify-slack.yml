@@ -1,0 +1,75 @@
+name: Notify Slack (Reusable)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Reusable workflow that wraps the notify-slack composite action.
+# Called from deploy workflows across all repositories.
+#
+# Usage:
+#   uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
+#   with:
+#     status: ${{ needs.deploy.result }}
+#     environment: dev
+#     app-name: my-app
+#     tag: v1.2.3
+#   secrets:
+#     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: 'Pipeline status: started | success | failure | cancelled | rollback'
+        required: true
+        type: string
+      app-name:
+        description: 'Application or repository name'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment (dev, stg, prd)'
+        required: false
+        type: string
+        default: ''
+      tag:
+        description: 'Version tag or ref'
+        required: false
+        type: string
+        default: ''
+      channel:
+        description: 'Slack channel override'
+        required: false
+        type: string
+        default: '#ops'
+      details:
+        description: 'Additional context — shown on failure'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      SLACK_WEBHOOK_URL:
+        description: 'Slack Incoming Webhook URL'
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflows repo
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: main
+
+      - name: Send Slack notification
+        uses: ./actions/notify-slack
+        with:
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          status: ${{ inputs.status }}
+          app_name: ${{ inputs.app-name }}
+          environment: ${{ inputs.environment }}
+          tag: ${{ inputs.tag }}
+          channel: ${{ inputs.channel }}
+          details: ${{ inputs.details }}
