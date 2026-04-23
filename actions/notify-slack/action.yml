@@ -39,10 +39,10 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Send notification
+    - name: Build payload
+      id: build
       shell: bash
       env:
-        SLACK_WEBHOOK_URL: ${{ inputs.webhook_url }}
         INPUT_STATUS:      ${{ inputs.status }}
         INPUT_APP:         ${{ inputs.app_name }}
         INPUT_ENV:         ${{ inputs.environment }}
@@ -131,6 +131,18 @@ runs:
             }]
           }')
 
-        curl -sf -X POST -H 'Content-type: application/json' \
-          --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" \
-          || echo "::warning::notify-slack: notification failed (non-fatal)"
+        # Emit payload as step output for slack-post to consume.
+        # Use a unique EOF marker to survive any content with newlines.
+        delim="EOF_$(openssl rand -hex 8)"
+        {
+          echo "payload<<${delim}"
+          echo "$PAYLOAD"
+          echo "${delim}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: POST to Slack
+      uses: sonarmd/workflows/actions/slack-post@test/cicd-fix-chain
+      with:
+        webhook_url: ${{ inputs.webhook_url }}
+        payload:     ${{ steps.build.outputs.payload }}
+        caller:      notify-slack

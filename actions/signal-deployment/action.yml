@@ -23,22 +23,32 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Send deploy trigger
+    - name: Build deploy trigger payload
+      id: build
       shell: bash
       env:
-        SLACK_WEBHOOK_URL: ${{ inputs.webhook_url }}
-        APP:               ${{ inputs.app_name }}
-        ENV:               ${{ inputs.environment }}
-        TAG:               ${{ inputs.tag }}
-        ARTIFACT_URL:      ${{ inputs.artifact_url }}
+        APP:          ${{ inputs.app_name }}
+        ENV:          ${{ inputs.environment }}
+        TAG:          ${{ inputs.tag }}
+        ARTIFACT_URL: ${{ inputs.artifact_url }}
       run: |
         PAYLOAD=$(jq -n \
           --arg text "deploy $ENV $APP $TAG $ARTIFACT_URL" \
           '{text: $text}')
 
-        curl -sf -X POST -H 'Content-type: application/json' \
-          --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" \
-          || echo "::warning::signal-deployment: trigger failed (non-fatal)"
+        delim="EOF_$(openssl rand -hex 8)"
+        {
+          echo "payload<<${delim}"
+          echo "$PAYLOAD"
+          echo "${delim}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Send deploy trigger
+      uses: sonarmd/workflows/actions/slack-post@test/cicd-fix-chain
+      with:
+        webhook_url: ${{ inputs.webhook_url }}
+        payload:     ${{ steps.build.outputs.payload }}
+        caller:      signal-deployment
 
     - name: Send notification
       uses: sonarmd/workflows/actions/notify-slack@main

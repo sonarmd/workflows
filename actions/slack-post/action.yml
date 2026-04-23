@@ -1,0 +1,50 @@
+name: Slack POST
+description: |
+  Low-level Slack webhook POST with loud, explicit failure reporting.
+
+  Intended as the transport for higher-level actions (notify-slack,
+  ping-slack, slack-notify, signal-deployment). Callers build the JSON
+  payload and pass it in; this action does the curl and fails the step
+  with a detailed ::error:: annotation if the webhook URL is empty or
+  Slack rejects the request. No silent degradation.
+
+inputs:
+  webhook_url:
+    description: 'Slack Incoming Webhook URL.'
+    required: true
+  payload:
+    description: 'JSON payload to POST (build via jq in the caller).'
+    required: true
+  caller:
+    description: 'Name of the calling action — used in ::error title=...:: annotations.'
+    required: false
+    default: 'slack-post'
+
+runs:
+  using: composite
+  steps:
+    - name: POST to Slack
+      shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ inputs.webhook_url }}
+        PAYLOAD:           ${{ inputs.payload }}
+        CALLER:            ${{ inputs.caller }}
+      run: |
+        if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+          echo "::error title=${CALLER}::SLACK_WEBHOOK_URL is empty. Set it at the caller's job-level env (env: SLACK_WEBHOOK_URL: \${{ secrets.SLACK_WEBHOOK_URL }}) or pass explicitly via the webhook_url input. Not a transient failure — fix the wiring."
+          exit 1
+        fi
+
+        resp_body=$(mktemp)
+        trap 'rm -f "$resp_body"' EXIT
+
+        http_code=$(curl -sS -o "$resp_body" -w '%{http_code}' -X POST \
+          -H 'Content-type: application/json' \
+          --data "$PAYLOAD" "$SLACK_WEBHOOK_URL") || curl_exit=$?
+
+        if [ "${curl_exit:-0}" -ne 0 ] || [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+          echo "::error title=${CALLER}::Slack delivery failed. HTTP=$http_code curl_exit=${curl_exit:-0}"
+          echo "::error::Response body (first 500 bytes): $(head -c 500 "$resp_body")"
+          echo "::error::Webhook URL length: ${#SLACK_WEBHOOK_URL} (non-zero means set, but could be malformed)"
+          exit 1
+        fi
