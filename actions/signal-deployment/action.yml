@@ -51,7 +51,7 @@ runs:
         caller:      signal-deployment
 
     - name: Send notification
-      uses: sonarmd/workflows/actions/notify-slack@main
+      uses: sonarmd/workflows/actions/notify-slack@test/cicd-fix-chain
       with:
         webhook_url: ${{ inputs.webhook_url }}
         # 'triggered', not 'success' — this action only fires the deploy

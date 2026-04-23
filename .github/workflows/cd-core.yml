@@ -251,7 +251,7 @@ jobs:
           release_id: ${{ steps.release.outputs.release_id }}
 
       - name: Signal deployment
-        uses: sonarmd/workflows/actions/signal-deployment@main
+        uses: sonarmd/workflows/actions/signal-deployment@test/cicd-fix-chain
         with:
           webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
           app_name: ${{ steps.ctx.outputs.identifier }}
@@ -267,7 +267,7 @@ jobs:
 
       - name: Notify Slack on failure
         if: failure()
-        uses: sonarmd/workflows/actions/notify-slack@main
+        uses: sonarmd/workflows/actions/notify-slack@test/cicd-fix-chain
         with:
           webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
           status: failure
