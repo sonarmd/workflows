@@ -1,11 +1,14 @@
 name: Download CI Artifact
 description: |
-  Downloads the release artifact produced by CI.
+  Downloads the release artifact produced by ci-core's bundle-release step.
 
-  Discovery: finds the latest completed successful workflow named "CI" on this
-  commit SHA and downloads its `release` artifact. The orchestrator gates CD on
-  CI completion, so the run is guaranteed to exist and be completed by the time
-  this action runs.
+  Two modes:
+    1. In-run: ci-core ran in the current workflow run (release/* push) —
+       artifact is uploaded in this run. Default download-artifact@v4 picks
+       it up with no run-id.
+    2. Cross-run: ci-core was skipped in the current run (master/main
+       promote, because CI already passed on the release branch) — find
+       the prior successful run for this SHA and download from it.
 
 inputs:
   artifact_name:
@@ -28,8 +31,19 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Discover CI run
+    # ── Mode 1: try in-run download (no run-id = current run) ─────────────
+    - name: Download artifact (in-run)
+      id: in_run
+      continue-on-error: true
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: ${{ inputs.output_dir }}
+
+    # ── Mode 2: fall back to cross-run lookup by SHA ──────────────────────
+    - name: Discover prior CI run for SHA
       id: find
+      if: steps.in_run.outcome == 'failure'
       uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
       env:
         SHA: ${{ github.sha }}
@@ -44,29 +58,28 @@ runs:
             per_page: 50,
           });
 
-          const ciRuns = data.workflow_runs
-            .filter(r => r.name === 'CI' && r.id !== context.runId)
+          // Any completed+successful run that isn't the current run and
+          // produced artifacts is a candidate. We don't filter by workflow
+          // name — caller repos name their workflow whatever they want
+          // (CI, CI/CD, ci.yml, etc.).
+          const candidates = data.workflow_runs
+            .filter(r => r.id !== context.runId
+                      && r.status === 'completed'
+                      && r.conclusion === 'success')
             .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-          const run = ciRuns[ciRuns.length - 1];
+          const run = candidates[candidates.length - 1];
 
           if (!run) {
-            core.setFailed(`download-ci-artifact: no CI run found for ${sha}`);
-            return;
-          }
-          if (run.status !== 'completed') {
-            core.setFailed(`download-ci-artifact: CI run ${run.id} is still ${run.status} — cannot proceed`);
-            return;
-          }
-          if (run.conclusion !== 'success') {
-            core.setFailed(`download-ci-artifact: CI run ${run.id} concluded '${run.conclusion}' — cannot proceed`);
+            core.setFailed(`download-ci-artifact: no prior successful run found for ${sha}`);
             return;
           }
 
-          core.info(`download-ci-artifact: CI run ${run.id} passed`);
+          core.info(`download-ci-artifact: using prior run ${run.id} (${run.name})`);
           core.setOutput('run_id', String(run.id));
 
-    - name: Download artifact
+    - name: Download artifact (cross-run)
+      if: steps.in_run.outcome == 'failure'
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         name: ${{ inputs.artifact_name }}
@@ -80,7 +93,7 @@ runs:
       shell: bash
       env:
         OUTPUT_DIR: ${{ inputs.output_dir }}
-        RUN_ID: ${{ steps.find.outputs.run_id }}
+        RUN_ID: ${{ steps.find.outputs.run_id || github.run_id }}
       run: |
         set -euo pipefail
         echo "download-ci-artifact: downloaded to $OUTPUT_DIR/ (from run $RUN_ID)"
