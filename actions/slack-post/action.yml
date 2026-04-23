@@ -31,7 +31,7 @@ runs:
         CALLER:            ${{ inputs.caller }}
       run: |
         if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-          echo "::error title=${CALLER}::SLACK_WEBHOOK_URL is empty. Set it at the caller's job-level env (env: SLACK_WEBHOOK_URL: \${{ secrets.SLACK_WEBHOOK_URL }}) or pass explicitly via the webhook_url input. Not a transient failure — fix the wiring."
+          echo "::error title=${CALLER}::SLACK_WEBHOOK_URL is empty. Set it at the caller job env (SLACK_WEBHOOK_URL: secrets.SLACK_WEBHOOK_URL) or pass explicitly via the webhook_url input. Not a transient failure — fix the wiring."
           exit 1
         fi
 
