@@ -168,7 +168,7 @@ jobs:
       contents: write
       actions: read
     # cd-core takes no inputs — discovers the CI artifact by SHA.
-    uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
+    uses: sonarmd/workflows/.github/workflows/cd-core.yml@test/cicd-fix-chain
     secrets: inherit
 
   # ── Cut next release branch (triggered by prd tag push) ──────────────────
