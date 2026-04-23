@@ -159,7 +159,22 @@ jobs:
               return;
             }
 
-            core.setFailed(`cd-core: unexpected ref '${ref}' — cd should only run on release/v*, master, or main`);
+            // ── release/* without parseable semver → YOLO stg prerelease ──
+            // CD does not gatekeep on branch naming. If the ref is under
+            // release/ but does not match release/vX.Y.Z, emit a v404 stg
+            // prerelease ("unknown version"). The v404 marker is deliberately
+            // not parseable as semver, so a downstream master/main promote
+            // lookup cannot lift it into prd. YOLO stays on stg.
+            if (ref.startsWith('release/')) {
+              const version = '404';
+              core.notice(`cd-core: release/** no version — YOLO prerelease stg ${identifier} v${version}`);
+              core.setOutput('env',        'stg');
+              core.setOutput('identifier', identifier);
+              core.setOutput('version',    version);
+              return;
+            }
+
+            core.setFailed(`cd-core: unexpected ref '${ref}' — cd should only run on release/*, master, or main`);
 
       - name: Derive build number
         id: build
