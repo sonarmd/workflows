@@ -54,7 +54,10 @@ runs:
       uses: sonarmd/workflows/actions/notify-slack@main
       with:
         webhook_url: ${{ inputs.webhook_url }}
-        status:      success
+        # 'triggered', not 'success' — this action only fires the deploy
+        # trigger. Whether the deploy actually completes is the runner's
+        # call, and the runner must emit its own success/failure later.
+        status:      triggered
         app_name:    ${{ inputs.app_name }}
         environment: ${{ inputs.environment }}
         tag:         ${{ inputs.tag }}
