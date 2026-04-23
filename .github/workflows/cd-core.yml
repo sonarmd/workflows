@@ -220,7 +220,7 @@ jobs:
 
       - name: Download CI artifact
         id: download
-        uses: sonarmd/workflows/actions/download-ci-artifact@main
+        uses: sonarmd/workflows/actions/download-ci-artifact@test/cicd-fix-chain
 
       - name: Create tag
         uses: sonarmd/workflows/actions/create-tag@main
