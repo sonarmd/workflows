@@ -54,6 +54,11 @@ jobs:
       attestations: write
       actions: read
       packages: read
+    env:
+      # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
+      # to node24 now so actions that haven't republished (setup-node@v4,
+      # cache@v4, upload-artifact@v4) run on node24 without breakage.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
