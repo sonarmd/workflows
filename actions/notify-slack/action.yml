@@ -147,7 +147,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: POST to Slack
-      uses: sonarmd/workflows/actions/slack-post@test/cicd-fix-chain
+      uses: sonarmd/workflows/actions/slack-post@main
       with:
         webhook_url: ${{ inputs.webhook_url }}
         payload:     ${{ steps.build.outputs.payload }}

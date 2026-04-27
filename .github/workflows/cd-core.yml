@@ -228,7 +228,7 @@ jobs:
 
       - name: Download CI artifact
         id: download
-        uses: sonarmd/workflows/actions/download-ci-artifact@test/cicd-fix-chain
+        uses: sonarmd/workflows/actions/download-ci-artifact@main
 
       - name: Create tag
         uses: sonarmd/workflows/actions/create-tag@main
@@ -251,7 +251,7 @@ jobs:
           release_id: ${{ steps.release.outputs.release_id }}
 
       - name: Signal deployment
-        uses: sonarmd/workflows/actions/signal-deployment@test/cicd-fix-chain
+        uses: sonarmd/workflows/actions/signal-deployment@main
         with:
           webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
           app_name: ${{ steps.ctx.outputs.identifier }}
@@ -267,7 +267,7 @@ jobs:
 
       - name: Notify Slack on failure
         if: failure()
-        uses: sonarmd/workflows/actions/notify-slack@test/cicd-fix-chain
+        uses: sonarmd/workflows/actions/notify-slack@main
         with:
           webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
           status: failure

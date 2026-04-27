@@ -44,14 +44,14 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Send deploy trigger
-      uses: sonarmd/workflows/actions/slack-post@test/cicd-fix-chain
+      uses: sonarmd/workflows/actions/slack-post@main
       with:
         webhook_url: ${{ inputs.webhook_url }}
         payload:     ${{ steps.build.outputs.payload }}
         caller:      signal-deployment
 
     - name: Send notification
-      uses: sonarmd/workflows/actions/notify-slack@test/cicd-fix-chain
+      uses: sonarmd/workflows/actions/notify-slack@main
       with:
         webhook_url: ${{ inputs.webhook_url }}
         # 'triggered', not 'success' — this action only fires the deploy
