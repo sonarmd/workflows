@@ -73,4 +73,4 @@ runs:
             core.info('upload-release-asset: published release');
           }
 
-          core.setOutput('artifact_url', `https://github.com/${owner}/${repo}/releases/${tag}`);
+          core.setOutput('artifact_url', `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`);
