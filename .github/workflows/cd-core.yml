@@ -37,6 +37,15 @@ jobs:
     permissions:
       contents: write   # create tags and GitHub releases
       actions: read     # download CI artifacts
+    env:
+      # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
+      # to node24 now so actions that haven't republished (download-artifact,
+      # github-script, 1password/load-secrets) run on node24.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      # Slack webhook URL is a direct value, not an op:// reference, so it
+      # must be set at job scope rather than routed through Load secrets —
+      # 1password/load-secrets-action only exports op:// refs to $GITHUB_ENV.
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -49,7 +58,6 @@ jobs:
         uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         with:
           export-env: true
 
@@ -159,7 +167,22 @@ jobs:
               return;
             }
 
-            core.setFailed(`cd-core: unexpected ref '${ref}' — cd should only run on release/v*, master, or main`);
+            // ── release/* without parseable semver → YOLO stg prerelease ──
+            // CD does not gatekeep on branch naming. If the ref is under
+            // release/ but does not match release/vX.Y.Z, emit a v404 stg
+            // prerelease ("unknown version"). The v404 marker is deliberately
+            // not parseable as semver, so a downstream master/main promote
+            // lookup cannot lift it into prd. YOLO stays on stg.
+            if (ref.startsWith('release/')) {
+              const version = '404';
+              core.notice(`cd-core: release/** no version — YOLO prerelease stg ${identifier} v${version}`);
+              core.setOutput('env',        'stg');
+              core.setOutput('identifier', identifier);
+              core.setOutput('version',    version);
+              return;
+            }
+
+            core.setFailed(`cd-core: unexpected ref '${ref}' — cd should only run on release/*, master, or main`);
 
       - name: Derive build number
         id: build

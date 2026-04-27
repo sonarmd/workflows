@@ -137,6 +137,7 @@ jobs:
       id-token: write
       attestations: write
       actions: read
+      packages: read
     uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
     with:
       setup:            ${{ inputs.setup }}

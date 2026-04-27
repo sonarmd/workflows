@@ -14,7 +14,7 @@ inputs:
     description: 'Slack Incoming Webhook URL.'
     required: true
   status:
-    description: 'Pipeline status: started | success | failure | cancelled | rollback'
+    description: 'Pipeline status: started | triggered | success | failure | cancelled | rollback. Use "triggered" for actions that hand off to an external runner (e.g. signal-deployment) — "success" means the work actually finished, not that a trigger fired.'
     required: true
   app_name:
     description: 'Application or repository name.'
@@ -39,10 +39,10 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Send notification
+    - name: Build payload
+      id: build
       shell: bash
       env:
-        SLACK_WEBHOOK_URL: ${{ inputs.webhook_url }}
         INPUT_STATUS:      ${{ inputs.status }}
         INPUT_APP:         ${{ inputs.app_name }}
         INPUT_ENV:         ${{ inputs.environment }}
@@ -58,6 +58,7 @@ runs:
         # ── Status → visual mapping ─────────────────────────────
         case "$INPUT_STATUS" in
           started)   COLOR="#439fe0"; TITLE="CI started"     ;;
+          triggered) COLOR="#439fe0"; TITLE="CI triggered"   ;;
           success)   COLOR="#36a64f"; TITLE="CI passed"      ;;
           failure)   COLOR="#dc3545"; TITLE="CI failed"      ;;
           cancelled) COLOR="#ffc107"; TITLE="CI cancelled"   ;;
@@ -65,10 +66,15 @@ runs:
           *)         COLOR="#6c757d"; TITLE="CI $INPUT_STATUS" ;;
         esac
 
-        # If environment is set, use deploy-style titles
+        # If environment is set, use deploy-style titles. Note the
+        # distinction between "triggered" (the deploy was handed off to
+        # an external runner — outcome unknown) and "success" (the work
+        # actually finished). Callers that only fire a trigger must use
+        # "triggered" to avoid misrepresenting state.
         if [ -n "$INPUT_ENV" ]; then
           case "$INPUT_STATUS" in
             started)   TITLE="Deploy started"   ;;
+            triggered) TITLE="Deploy triggered — awaiting runner" ;;
             success)   TITLE="Deploy complete"  ;;
             failure)   TITLE="Deploy failed"    ;;
             cancelled) TITLE="Deploy cancelled" ;;
@@ -131,6 +137,18 @@ runs:
             }]
           }')
 
-        curl -sf -X POST -H 'Content-type: application/json' \
-          --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" \
-          || echo "::warning::notify-slack: notification failed (non-fatal)"
+        # Emit payload as step output for slack-post to consume.
+        # Use a unique EOF marker to survive any content with newlines.
+        delim="EOF_$(openssl rand -hex 8)"
+        {
+          echo "payload<<${delim}"
+          echo "$PAYLOAD"
+          echo "${delim}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: POST to Slack
+      uses: sonarmd/workflows/actions/slack-post@main
+      with:
+        webhook_url: ${{ inputs.webhook_url }}
+        payload:     ${{ steps.build.outputs.payload }}
+        caller:      notify-slack

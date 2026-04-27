@@ -1,5 +1,5 @@
 name: Setup Node.js
-description: Install Node.js via Volta-aware version detection with yarn dependency caching
+description: Install Node.js from package.json engines.node with yarn dependency caching
 
 inputs:
   node-version:
@@ -23,7 +23,7 @@ runs:
         if [ -n "$INPUT_NODE_VERSION" ]; then
           echo "version=$INPUT_NODE_VERSION" >> "$GITHUB_OUTPUT"
         else
-          VERSION=$(jq -r '.volta.node // .engines.node // "22"' "$GITHUB_WORKSPACE/package.json" | tr -d '^~>=x ')
+          VERSION=$(jq -r '.engines.node // "22"' "$GITHUB_WORKSPACE/package.json" | tr -d '^~>=x ')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
         fi
 
@@ -54,4 +54,5 @@ runs:
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       env:
         NODE_AUTH_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: yarn install --frozen-lockfile

@@ -30,16 +30,16 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Send Slack notification
+    - name: Build payload
+      id: build
       shell: bash
       env:
-        SLACK_WEBHOOK_URL: ${{ inputs.webhook-url }}
-        INPUT_STATUS: ${{ inputs.status }}
-        INPUT_ENV: ${{ inputs.environment }}
-        INPUT_APP: ${{ inputs.app-name }}
-        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_STATUS:  ${{ inputs.status }}
+        INPUT_ENV:     ${{ inputs.environment }}
+        INPUT_APP:     ${{ inputs.app-name }}
+        INPUT_TAG:     ${{ inputs.tag }}
         INPUT_RUN_URL: ${{ inputs.run-url }}
-        INPUT_ACTOR: ${{ inputs.actor }}
+        INPUT_ACTOR:   ${{ inputs.actor }}
       run: |
         # Color coding
         case "$INPUT_STATUS" in
@@ -95,6 +95,16 @@ runs:
             } + (if $actions != null then {actions: $actions} else {} end)]
           }')
 
-        curl -sf -X POST -H 'Content-type: application/json' \
-          --data "$PAYLOAD" \
-          "$SLACK_WEBHOOK_URL" || echo "::warning::Slack notification failed"
+        delim="EOF_$(openssl rand -hex 8)"
+        {
+          echo "payload<<${delim}"
+          echo "$PAYLOAD"
+          echo "${delim}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: POST to Slack
+      uses: sonarmd/workflows/actions/slack-post@main
+      with:
+        webhook_url: ${{ inputs.webhook-url }}
+        payload:     ${{ steps.build.outputs.payload }}
+        caller:      slack-notify
