@@ -159,11 +159,14 @@ jobs:
                 return;
               }
 
-              core.setFailed([
-                'cd-core: no stg prerelease found on HEAD or its parents.',
-                '         The release flow is: push to release/vX.Y.Z (prerelease) → merge release/vX.Y.Z to master (promote).',
-                `         Looked for 'stg-${identifier}-v*' tags targeting SHAs: ${[...candidateShas].join(', ')}`,
-              ].join('\n'));
+              // No stg prerelease on HEAD's ancestry. The workflow does NOT
+              // enforce the release/vX.Y.Z → master flow — direct pushes to
+              // master deploy. Fall through to YOLO prd: emit a v404 prd
+              // release ("unknown version"). No setFailed, no guard.
+              core.notice(`cd-core: master/main, no prerelease in ancestry → YOLO prd ${identifier} v404`);
+              core.setOutput('env',        'prd');
+              core.setOutput('identifier', identifier);
+              core.setOutput('version',    '404');
               return;
             }
 
