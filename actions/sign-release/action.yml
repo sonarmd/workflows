@@ -1,0 +1,183 @@
+name: Sign Release
+description: |
+  Injects artifact integrity into a release.tar.gz produced by bundle-release.
+
+  What it does:
+    1. Extracts release.tar.gz into a staging directory.
+    2. Computes SHA-256 for every file in the archive.
+    3. Writes submodule-checksums.txt (format: "sha256  relative/path").
+    4. Imports the CI signing key, signs submodule-checksums.txt with a
+       GPG detached ASCII-armor signature → submodule-checksums.txt.sig.
+    5. Repacks release.tar.gz with both files included.
+    6. Cleans up the key and the temp GPG homedir.
+
+  The signing_key input must be a base64-encoded armored GPG private key.
+  Store it in a repository/org secret (e.g. CI_SIGNING_KEY).
+
+  The corresponding public key (ci-signing.pub) must be provisioned onto
+  deploy hosts at /etc/sonarmd/ansible/known_keys/ci-signing.pub so the
+  artifact-verify Ansible role can verify the signature.
+
+inputs:
+  artifact_path:
+    description: 'Path to release.tar.gz to sign.'
+    required: false
+    default: 'release.tar.gz'
+
+  signing_key:
+    description: |
+      Base64-encoded armored GPG private key used to sign
+      submodule-checksums.txt. Store as a secret.
+    required: true
+
+outputs:
+  fingerprint:
+    description: 'GPG fingerprint of the signing key used.'
+    value: ${{ steps.sign.outputs.fingerprint }}
+
+  checksum_count:
+    description: 'Number of files listed in submodule-checksums.txt.'
+    value: ${{ steps.sign.outputs.checksum_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate checksums, sign, repack
+      id: sign
+      shell: bash
+      env:
+        ARTIFACT_PATH: ${{ inputs.artifact_path }}
+        SIGNING_KEY_B64: ${{ inputs.signing_key }}
+      run: |
+        set -euo pipefail
+
+        # ── Validate artifact ────────────────────────────────────────────────
+        if [ ! -f "$ARTIFACT_PATH" ]; then
+          echo "::error::sign-release: artifact not found at '$ARTIFACT_PATH'"
+          exit 1
+        fi
+
+        STAGING="$(mktemp -d /tmp/sign-release.XXXXXX)"
+        GNUPGHOME="$(mktemp -d /tmp/sign-gpg.XXXXXX)"
+        chmod 0700 "$GNUPGHOME"
+
+        cleanup() {
+          gpg --batch --homedir "$GNUPGHOME" --delete-secret-and-public-keys \
+            "$(gpg --batch --homedir "$GNUPGHOME" --with-colons \
+               --list-secret-keys 2>/dev/null \
+               | awk -F: '/^fpr:/{print $10; exit}')" 2>/dev/null || true
+          rm -rf "$GNUPGHOME" "$STAGING"
+        }
+        trap cleanup EXIT
+
+        # ── Extract artifact ─────────────────────────────────────────────────
+        echo "sign-release: extracting $ARTIFACT_PATH"
+        tar xzf "$ARTIFACT_PATH" -C "$STAGING"
+
+        # ── Generate submodule-checksums.txt ─────────────────────────────────
+        # SHA-256 of every file, paths relative to STAGING root.
+        # Sorted for determinism. Blank lines and # comments are tolerated
+        # by artifact-verify; we emit a clean file.
+        echo "sign-release: computing SHA-256 checksums"
+        (cd "$STAGING" && find . -type f | sort | sed 's|^\./||' | while read -r f; do
+          sha256sum "$f"
+        done) > "$STAGING/submodule-checksums.txt"
+
+        CHECKSUM_COUNT=$(wc -l < "$STAGING/submodule-checksums.txt" | tr -d ' ')
+        echo "sign-release: $CHECKSUM_COUNT files checksummed"
+
+        # ── Import signing key ───────────────────────────────────────────────
+        echo "$SIGNING_KEY_B64" | base64 -d | \
+          gpg --batch --homedir "$GNUPGHOME" --import
+
+        FINGERPRINT=$(gpg --batch --homedir "$GNUPGHOME" \
+          --with-colons --list-secret-keys \
+          | awk -F: '/^fpr:/{print $10; exit}')
+
+        if [ -z "$FINGERPRINT" ]; then
+          echo "::error::sign-release: could not derive fingerprint from signing key"
+          exit 1
+        fi
+
+        echo "sign-release: signing with key $FINGERPRINT"
+
+        # Trust the key fully so gpg doesn't prompt or warn
+        echo "${FINGERPRINT}:6:" | \
+          gpg --batch --homedir "$GNUPGHOME" --import-ownertrust
+
+        # ── Sign submodule-checksums.txt ─────────────────────────────────────
+        gpg --batch --yes \
+          --homedir "$GNUPGHOME" \
+          --pinentry-mode loopback \
+          --local-user "$FINGERPRINT" \
+          --detach-sign --armor \
+          --output "$STAGING/submodule-checksums.txt.sig" \
+          "$STAGING/submodule-checksums.txt"
+
+        echo "sign-release: signature written"
+
+        # ── Verify our own signature before repacking ────────────────────────
+        gpg --batch \
+          --homedir "$GNUPGHOME" \
+          --verify \
+          "$STAGING/submodule-checksums.txt.sig" \
+          "$STAGING/submodule-checksums.txt"
+        echo "sign-release: self-verify passed"
+
+        # ── Repack release.tar.gz ────────────────────────────────────────────
+        ORIG_ABS="$(realpath "$ARTIFACT_PATH")"
+        tar czf "$ORIG_ABS" -C "$STAGING" .
+        RELEASE_SIZE=$(ls -lh "$ORIG_ABS" | awk '{print $5}')
+        echo "sign-release: repacked $ARTIFACT_PATH ($RELEASE_SIZE)"
+
+        # ── Outputs ──────────────────────────────────────────────────────────
+        echo "fingerprint=$FINGERPRINT"   >> "$GITHUB_OUTPUT"
+        echo "checksum_count=$CHECKSUM_COUNT" >> "$GITHUB_OUTPUT"
+
+    - name: Export signing pubkey as artifact
+      shell: bash
+      env:
+        SIGNING_KEY_B64: ${{ inputs.signing_key }}
+      run: |
+        set -euo pipefail
+        GNUPGHOME="$(mktemp -d /tmp/sign-pub.XXXXXX)"
+        chmod 0700 "$GNUPGHOME"
+        trap 'rm -rf "$GNUPGHOME"' EXIT
+
+        echo "$SIGNING_KEY_B64" | base64 -d | \
+          gpg --batch --homedir "$GNUPGHOME" --import 2>/dev/null
+
+        mkdir -p /tmp/signing-pubkey
+        gpg --batch --homedir "$GNUPGHOME" \
+          --armor --export \
+          > /tmp/signing-pubkey/ci-signing.pub
+
+        echo "sign-release: pubkey exported ($(wc -c < /tmp/signing-pubkey/ci-signing.pub) bytes)"
+
+    - name: Upload signing pubkey artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-signing-pubkey
+        path: /tmp/signing-pubkey/ci-signing.pub
+        if-no-files-found: error
+        retention-days: 90
+
+    - name: Summary
+      shell: bash
+      env:
+        FINGERPRINT: ${{ steps.sign.outputs.fingerprint }}
+        CHECKSUM_COUNT: ${{ steps.sign.outputs.checksum_count }}
+        ARTIFACT_PATH: ${{ inputs.artifact_path }}
+      run: |
+        cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+        ### Artifact Signed
+
+        | | |
+        |--|--|
+        | File | \`$ARTIFACT_PATH\` |
+        | Files checksummed | $CHECKSUM_COUNT |
+        | Signing key | \`$FINGERPRINT\` |
+        | Signature | \`submodule-checksums.txt.sig\` (GPG detached, armor) |
+
+        > Ansible's \`artifact-verify\` role will verify this signature on every deploy.
+        SUMMARY

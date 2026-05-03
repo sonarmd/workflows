@@ -40,6 +40,13 @@ on:
         required: false
         type: string
         default: '.'
+    secrets:
+      CI_SIGNING_KEY:
+        description: |
+          Base64-encoded armored GPG private key used to sign
+          submodule-checksums.txt inside the release artifact.
+          Required when deploy.json is present (i.e. bundle-release runs).
+        required: false
 
 permissions: {}
 
@@ -86,3 +93,10 @@ jobs:
         uses: sonarmd/workflows/actions/bundle-release@main
         with:
           test_report_path: ${{ inputs.test_report_path }}
+
+      - name: Sign release
+        if: hashFiles('deploy.json') != '' && secrets.CI_SIGNING_KEY != ''
+        uses: sonarmd/workflows/actions/sign-release@main
+        with:
+          artifact_path: release.tar.gz
+          signing_key: ${{ secrets.CI_SIGNING_KEY }}
