@@ -177,7 +177,34 @@ jobs:
 
           echo "kv: key:${FINGERPRINT} written, chain:head updated"
 
-      # ── 4. Update GitHub secrets ───────────────────────────────────────────
+      # ── 4. Publish public key to OpenPGP keyserver ────────────────────────
+      # Publishing to keys.openpgp.org under ci+signing@sonarmd.com adds a
+      # second independent trust anchor — separate from both GitHub (where
+      # artifacts live) and Cloudflare (primary trust store). Anyone can
+      # confirm the key was intentionally published by verifying via the
+      # keyserver. keys.openpgp.org requires email verification before the
+      # UID is searchable, but the key is queryable by fingerprint immediately.
+      - name: Publish public key to keys.openpgp.org
+        shell: bash
+        env:
+          FINGERPRINT: ${{ steps.keygen.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME=$(mktemp -d /tmp/kspub.XXXXXX)
+          chmod 0700 "$GNUPGHOME"
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+
+          gpg --batch --homedir "$GNUPGHOME" --import /tmp/new-signing.pub
+
+          gpg --batch --homedir "$GNUPGHOME" \
+            --keyserver hkps://keys.openpgp.org \
+            --send-keys "$FINGERPRINT"
+
+          echo "keyserver: $FINGERPRINT submitted to keys.openpgp.org"
+          echo "Note: UID becomes searchable after email verification at"
+          echo "      https://keys.openpgp.org/upload"
+
+      # ── 5. Update GitHub secrets ───────────────────────────────────────────
       # Writes CI_SIGNING_KEY (latest, what sign-release reads) and an
       # archived CI_SIGNING_KEY_{TIMESTAMP} for forensics.
       # Uses GH_ADMIN_PAT for org-level secrets if available; falls back to
