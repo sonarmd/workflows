@@ -1,0 +1,68 @@
+name: Deploy Signing Keys Worker
+
+# Deploys the smd-signing-keys Cloudflare Worker.
+# Run once after initial setup, and again whenever workers/signing-keys/ changes.
+#
+# Prerequisites:
+#   CF_API_TOKEN    — CF API token with Workers Scripts Edit + Workers KV Edit
+#   KV_NAMESPACE_ID — repo variable (set after creating the KV namespace)
+#
+# One-time KV setup (run locally with wrangler):
+#   cd workers/signing-keys
+#   npx wrangler kv namespace create SIGNING_KEYS
+#   # → paste the id into repo variable KV_NAMESPACE_ID
+#   # → paste the id into workers/signing-keys/wrangler.toml
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'workers/signing-keys/**'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy CF Worker
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Patch wrangler.toml with KV namespace ID
+        working-directory: workers/signing-keys
+        env:
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+        run: |
+          if [ -z "$KV_NAMESPACE_ID" ]; then
+            echo "::error::KV_NAMESPACE_ID repo variable is not set."
+            echo "::error::Create the KV namespace first:"
+            echo "::error::  cd workers/signing-keys && npx wrangler kv namespace create SIGNING_KEYS"
+            echo "::error::Then set KV_NAMESPACE_ID in repo Settings → Variables → Actions."
+            exit 1
+          fi
+          sed -i "s/REPLACE_WITH_KV_NAMESPACE_ID/$KV_NAMESPACE_ID/" wrangler.toml
+          echo "deploy-worker: KV namespace ID patched"
+
+      # CF GitHub App integration handles auth automatically.
+      # If wrangler doesn't pick it up, set CLOUDFLARE_API_TOKEN as a fallback.
+      - name: Deploy Worker
+        working-directory: workers/signing-keys
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN || '' }}
+        run: npx wrangler@latest deploy
+
+      - name: Smoke test
+        run: |
+          sleep 3
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            https://smd-signing-keys.sonarmd.workers.dev/healthz || echo "000")
+          if [ "$STATUS" = "200" ]; then
+            echo "deploy-worker: healthz OK"
+          else
+            echo "::warning::deploy-worker: healthz returned $STATUS — worker may still be propagating"
+          fi

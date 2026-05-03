@@ -134,34 +134,6 @@ runs:
         echo "fingerprint=$FINGERPRINT"   >> "$GITHUB_OUTPUT"
         echo "checksum_count=$CHECKSUM_COUNT" >> "$GITHUB_OUTPUT"
 
-    - name: Export signing pubkey as artifact
-      shell: bash
-      env:
-        SIGNING_KEY_B64: ${{ inputs.signing_key }}
-      run: |
-        set -euo pipefail
-        GNUPGHOME="$(mktemp -d /tmp/sign-pub.XXXXXX)"
-        chmod 0700 "$GNUPGHOME"
-        trap 'rm -rf "$GNUPGHOME"' EXIT
-
-        echo "$SIGNING_KEY_B64" | base64 -d | \
-          gpg --batch --homedir "$GNUPGHOME" --import 2>/dev/null
-
-        mkdir -p /tmp/signing-pubkey
-        gpg --batch --homedir "$GNUPGHOME" \
-          --armor --export \
-          > /tmp/signing-pubkey/ci-signing.pub
-
-        echo "sign-release: pubkey exported ($(wc -c < /tmp/signing-pubkey/ci-signing.pub) bytes)"
-
-    - name: Upload signing pubkey artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ci-signing-pubkey
-        path: /tmp/signing-pubkey/ci-signing.pub
-        if-no-files-found: error
-        retention-days: 90
-
     - name: Summary
       shell: bash
       env:
