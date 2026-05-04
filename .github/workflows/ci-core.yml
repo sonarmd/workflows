@@ -66,6 +66,9 @@ jobs:
       # to node24 now so actions that haven't republished (setup-node@v4,
       # cache@v4, upload-artifact@v4) run on node24 without breakage.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      # secrets context is unavailable in step `if` expressions; capture
+      # presence as a plain env bool so the Sign release step can gate on it.
+      HAS_SIGNING_KEY: ${{ secrets.CI_SIGNING_KEY != '' }}
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
@@ -95,7 +98,7 @@ jobs:
           test_report_path: ${{ inputs.test_report_path }}
 
       - name: Sign release
-        if: hashFiles('deploy.json') != '' && secrets.CI_SIGNING_KEY != ''
+        if: hashFiles('deploy.json') != '' && env.HAS_SIGNING_KEY == 'true'
         uses: sonarmd/workflows/actions/sign-release@main
         with:
           artifact_path: release.tar.gz
