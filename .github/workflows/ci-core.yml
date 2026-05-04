@@ -40,6 +40,13 @@ on:
         required: false
         type: string
         default: '.'
+    secrets:
+      CI_SIGNING_KEY:
+        description: |
+          Base64-encoded armored GPG private key used to sign
+          submodule-checksums.txt inside the release artifact.
+          Required when deploy.json is present (i.e. bundle-release runs).
+        required: false
 
 permissions: {}
 
@@ -59,6 +66,9 @@ jobs:
       # to node24 now so actions that haven't republished (setup-node@v4,
       # cache@v4, upload-artifact@v4) run on node24 without breakage.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      # secrets context is unavailable in step `if` expressions; capture
+      # presence as a plain env bool so the Sign release step can gate on it.
+      HAS_SIGNING_KEY: ${{ secrets.CI_SIGNING_KEY != '' }}
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
@@ -86,3 +96,10 @@ jobs:
         uses: sonarmd/workflows/actions/bundle-release@main
         with:
           test_report_path: ${{ inputs.test_report_path }}
+
+      - name: Sign release
+        if: hashFiles('deploy.json') != '' && env.HAS_SIGNING_KEY == 'true'
+        uses: sonarmd/workflows/actions/sign-release@main
+        with:
+          artifact_path: release.tar.gz
+          signing_key: ${{ secrets.CI_SIGNING_KEY }}

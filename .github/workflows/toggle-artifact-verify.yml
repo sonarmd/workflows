@@ -1,0 +1,142 @@
+name: Toggle Artifact Verification
+
+# Kill switch for the artifact-verify Ansible role.
+# Flips config:verify_enabled in the CF KV store.
+# Takes effect on the NEXT deploy — no restart, no SSH, no code change.
+#
+# Use this when:
+#   - Signing key infrastructure is broken and deploys are blocked
+#   - CF Worker is down and you need to ship NOW
+#   - You're debugging and want to isolate whether verify is the problem
+#
+# Re-enable immediately when the situation is resolved.
+# Every toggle is logged in the job summary with actor + timestamp.
+#
+# Prerequisites:
+#   CF_API_TOKEN   — CF API token with Workers KV Storage Edit permission
+#   KV_NAMESPACE_ID — repo variable
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: 'Set artifact verification to...'
+        required: true
+        type: choice
+        options:
+          - enabled
+          - disabled
+      reason:
+        description: 'Why are you changing this? (logged)'
+        required: true
+
+permissions: {}
+
+jobs:
+  toggle:
+    name: ${{ inputs.state == 'enabled' && 'Enable' || 'DISABLE' }} artifact verification
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Flip config:verify_enabled in CF KV
+        id: flip
+        shell: bash
+        env:
+          CF_API_TOKEN:    ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID:   0c4f6179a73079dd4847a690bffed296
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+          STATE:           ${{ inputs.state }}
+          REASON:          ${{ inputs.reason }}
+          ACTOR:           ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          VALUE=$([[ "$STATE" == "enabled" ]] && echo "true" || echo "false")
+
+          HTTP=$(curl -sf -o /dev/null -w "%{http_code}" -X PUT \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: text/plain" \
+            --data "$VALUE" \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/config%3Averify_enabled")
+
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::KV write failed — HTTP $HTTP"
+            exit 1
+          fi
+
+          # Verify the write took
+          ACTUAL=$(curl -sf \
+            "https://smd-signing-keys.sonarmd.workers.dev/verify-enabled" || echo "unknown")
+
+          echo "toggled: config:verify_enabled = $VALUE (worker reports: $ACTUAL)"
+          echo "value=$VALUE"    >> "$GITHUB_OUTPUT"
+          echo "actual=$ACTUAL"  >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        shell: bash
+        env:
+          STATE:  ${{ inputs.state }}
+          REASON: ${{ inputs.reason }}
+          ACTOR:  ${{ github.actor }}
+          ACTUAL: ${{ steps.flip.outputs.actual }}
+        run: |
+          if [ "$STATE" = "disabled" ]; then
+            ICON=":warning:"
+            MSG="*Artifact verification DISABLED*"
+          else
+            ICON=":white_check_mark:"
+            MSG="*Artifact verification re-enabled*"
+          fi
+
+          PAYLOAD=$(python3 -c "
+          import json, os
+          print(json.dumps({
+            'text': (
+              f'{os.environ[\"ICON\"]} {os.environ[\"MSG\"]}\n'
+              f'>Reason: {os.environ[\"REASON\"]}\n'
+              f'>Actor: {os.environ[\"ACTOR\"]}\n'
+              f'>Worker confirms: verify_enabled={os.environ[\"ACTUAL\"]}\n'
+              f'>Effective immediately on next deploy.'
+            )
+          }))
+          ")
+
+          curl -sf -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL"
+
+      - name: Job summary
+        shell: bash
+        env:
+          STATE:     ${{ inputs.state }}
+          REASON:    ${{ inputs.reason }}
+          ACTOR:     ${{ github.actor }}
+          ACTUAL:    ${{ steps.flip.outputs.actual }}
+          TIMESTAMP: ${{ github.event.head_commit.timestamp }}
+        run: |
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          if [ "$STATE" = "disabled" ]; then
+            BANNER="## ⚠️ Artifact Verification DISABLED"
+          else
+            BANNER="## ✅ Artifact Verification Enabled"
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          $BANNER
+
+          | | |
+          |--|--|
+          | State | \`$STATE\` |
+          | Worker confirms | \`verify_enabled=$ACTUAL\` |
+          | Reason | $REASON |
+          | Actor | $ACTOR |
+          | Time | $TIMESTAMP |
+          | Kill switch | https://smd-signing-keys.sonarmd.workers.dev/verify-enabled |
+
+          Effective on the next deploy. No restart required.
+          SUMMARY

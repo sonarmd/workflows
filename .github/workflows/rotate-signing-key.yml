@@ -1,0 +1,337 @@
+name: Rotate CI Signing Key
+
+# Generates a new ED25519 GPG signing key, links it into the chain stored
+# in Cloudflare KV, and updates the GitHub secret used by CI to sign
+# release artifacts.
+#
+# Each rotation:
+#   - Creates a new key record in CF KV with a `prev` pointer to the
+#     previous head (linked list, accumulates forever, nothing deleted).
+#   - Updates chain:head in KV to the new fingerprint.
+#   - Updates CI_SIGNING_KEY + CI_SIGNING_KEY_{TIMESTAMP} GitHub org secrets.
+#   - Posts a Slack notification with the fingerprint.
+#
+# Prerequisites (one-time):
+#   CF_API_TOKEN   — CF API token with Workers KV Storage Edit permission
+#                    Scope: Account → Workers KV Storage → Edit
+#   KV_NAMESPACE_ID — paste from wrangler or CF dashboard after creating
+#                    the smd-signing-keys namespace (stored as a repo var)
+#   GH_ADMIN_PAT   — GitHub PAT with admin:org scope (for org secrets)
+#                    Falls back to repo-level secrets if not set.
+#   SLACK_WEBHOOK_URL — existing secret
+#
+# To run: Actions → Rotate CI Signing Key → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why are you rotating this key?'
+        required: false
+        default: 'scheduled rotation'
+
+permissions:
+  contents: write   # kept for future pubkey archive if needed
+
+jobs:
+  rotate:
+    name: Generate and chain new signing key
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      # ── 1. Generate ED25519 GPG key in memory ─────────────────────────────
+      - name: Generate signing key
+        id: keygen
+        shell: bash
+        env:
+          REASON: ${{ inputs.reason || 'scheduled rotation' }}
+        run: |
+          set -euo pipefail
+
+          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          GNUPGHOME=$(mktemp -d /tmp/keygen.XXXXXX)
+          chmod 0700 "$GNUPGHOME"
+
+          # Generate — no passphrase, 2-year expiry, CI identity
+          gpg --batch --homedir "$GNUPGHOME" --gen-key <<EOF
+          %no-protection
+          Key-Type: EDDSA
+          Key-Curve: Ed25519
+          Name-Real: SonarMD CI Signing
+          Name-Email: ci+signing@sonarmd.com
+          Name-Comment: ${TIMESTAMP}
+          Expire-Date: 2y
+          %commit
+          EOF
+
+          FP=$(gpg --batch --homedir "$GNUPGHOME" \
+            --with-colons --list-secret-keys \
+            | awk -F: '/^fpr:/{print $10; exit}')
+
+          # Export private key (base64, single line)
+          PRIV_B64=$(gpg --batch --homedir "$GNUPGHOME" \
+            --armor --export-secret-keys "$FP" \
+            | base64 -w0)
+
+          # Export public key (armored, preserve newlines)
+          PUB_KEY=$(gpg --batch --homedir "$GNUPGHOME" \
+            --armor --export "$FP")
+
+          # Mask private key in all logs immediately
+          echo "::add-mask::$PRIV_B64"
+
+          # Clean up GPG homedir — key is in memory/outputs only
+          gpgconf --homedir "$GNUPGHOME" --kill gpg-agent 2>/dev/null || true
+          rm -rf "$GNUPGHOME"
+
+          echo "fingerprint=$FP"         >> "$GITHUB_OUTPUT"
+          echo "timestamp=$TIMESTAMP"    >> "$GITHUB_OUTPUT"
+          echo "created_at=$CREATED_AT"  >> "$GITHUB_OUTPUT"
+          echo "priv_b64=$PRIV_B64"      >> "$GITHUB_OUTPUT"
+
+          # Public key: write to file to avoid env var newline mangling
+          echo "$PUB_KEY" > /tmp/new-signing.pub
+
+          echo "keygen: ED25519 key $FP generated at $TIMESTAMP"
+
+      # ── 2. Read current chain head from CF KV ─────────────────────────────
+      - name: Read chain head from CF KV
+        id: chain
+        shell: bash
+        env:
+          CF_API_TOKEN:    ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID:   0c4f6179a73079dd4847a690bffed296
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+        run: |
+          set -euo pipefail
+
+          PREV=$(curl -sf \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/chain%3Ahead" \
+            2>/dev/null || echo "")
+
+          # 404 = genesis (no previous key)
+          if echo "$PREV" | grep -q '"code":10009\|key not found'; then
+            PREV=""
+          fi
+
+          echo "prev=${PREV}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$PREV" ]; then
+            echo "chain: genesis — this is the first key in the chain"
+          else
+            echo "chain: previous head = $PREV"
+          fi
+
+      # ── 3. Write new key record to CF KV ──────────────────────────────────
+      - name: Write key record to CF KV
+        shell: bash
+        env:
+          CF_API_TOKEN:    ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID:   0c4f6179a73079dd4847a690bffed296
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+          FINGERPRINT:     ${{ steps.keygen.outputs.fingerprint }}
+          TIMESTAMP:       ${{ steps.keygen.outputs.timestamp }}
+          CREATED_AT:      ${{ steps.keygen.outputs.created_at }}
+          PREV:            ${{ steps.chain.outputs.prev }}
+          REASON:          ${{ inputs.reason || 'scheduled rotation' }}
+        run: |
+          set -euo pipefail
+
+          PUB_KEY=$(cat /tmp/new-signing.pub)
+
+          # Build JSON record
+          RECORD=$(python3 -c "
+          import json, os
+          print(json.dumps({
+            'fingerprint': os.environ['FINGERPRINT'],
+            'timestamp':   os.environ['TIMESTAMP'],
+            'created_at':  os.environ['CREATED_AT'],
+            'prev':        os.environ['PREV'] or None,
+            'public_key':  os.environ['PUB_KEY'],
+            'reason':      os.environ['REASON'],
+          }))
+          " PUB_KEY="$PUB_KEY")
+
+          BASE="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values"
+
+          # Write key:{fingerprint}
+          curl -sf -X PUT \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$RECORD" \
+            "${BASE}/key%3A${FINGERPRINT}"
+
+          # Update chain:head
+          curl -sf -X PUT \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: text/plain" \
+            --data "$FINGERPRINT" \
+            "${BASE}/chain%3Ahead"
+
+          echo "kv: key:${FINGERPRINT} written, chain:head updated"
+
+      # ── 4. Publish public key to OpenPGP keyserver ────────────────────────
+      # Publishing to keys.openpgp.org under ci+signing@sonarmd.com adds a
+      # second independent trust anchor — separate from both GitHub (where
+      # artifacts live) and Cloudflare (primary trust store). Anyone can
+      # confirm the key was intentionally published by verifying via the
+      # keyserver. keys.openpgp.org requires email verification before the
+      # UID is searchable, but the key is queryable by fingerprint immediately.
+      - name: Publish public key to keys.openpgp.org
+        shell: bash
+        env:
+          FINGERPRINT: ${{ steps.keygen.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME=$(mktemp -d /tmp/kspub.XXXXXX)
+          chmod 0700 "$GNUPGHOME"
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+
+          gpg --batch --homedir "$GNUPGHOME" --import /tmp/new-signing.pub
+
+          gpg --batch --homedir "$GNUPGHOME" \
+            --keyserver hkps://keys.openpgp.org \
+            --send-keys "$FINGERPRINT"
+
+          echo "keyserver: $FINGERPRINT submitted to keys.openpgp.org"
+          echo "Note: UID becomes searchable after email verification at"
+          echo "      https://keys.openpgp.org/upload"
+
+      # ── 5. Update GitHub secrets ───────────────────────────────────────────
+      # Writes CI_SIGNING_KEY (latest, what sign-release reads) and an
+      # archived CI_SIGNING_KEY_{TIMESTAMP} for forensics.
+      # Uses GH_ADMIN_PAT for org-level secrets if available; falls back to
+      # repo-level secrets via GITHUB_TOKEN.
+      - name: Update GitHub secrets
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          PRIV_B64:    ${{ steps.keygen.outputs.priv_b64 }}
+          TIMESTAMP:   ${{ steps.keygen.outputs.timestamp }}
+          FINGERPRINT: ${{ steps.keygen.outputs.fingerprint }}
+          GH_ADMIN_PAT: ${{ secrets.GH_ADMIN_PAT }}
+        with:
+          github-token: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          script: |
+            const { Octokit } = require('@octokit/rest');
+            const sodium = require('tweetsodium');
+
+            const privB64    = process.env.PRIV_B64;
+            const timestamp  = process.env.TIMESTAMP;
+            const fp         = process.env.FINGERPRINT;
+            const useOrg     = !!process.env.GH_ADMIN_PAT;
+            const org        = context.repo.owner;
+            const repo       = context.repo.repo;
+
+            async function encryptSecret(publicKeyB64, secretValue) {
+              const key = Buffer.from(publicKeyB64, 'base64');
+              const val = Buffer.from(secretValue);
+              const encrypted = sodium.seal(val, key);
+              return Buffer.from(encrypted).toString('base64');
+            }
+
+            async function upsertSecret(octokit, secretName, secretValue) {
+              if (useOrg) {
+                const { data: orgKey } = await octokit.rest.actions.getOrgPublicKey({ org });
+                const encVal = await encryptSecret(orgKey.key, secretValue);
+                await octokit.rest.actions.createOrUpdateOrgSecret({
+                  org,
+                  secret_name: secretName,
+                  encrypted_value: encVal,
+                  key_id: orgKey.key_id,
+                  visibility: 'all',
+                });
+                core.info(`org secret ${secretName} updated`);
+              } else {
+                const { data: repoKey } = await octokit.rest.actions.getRepoPublicKey({ owner: org, repo });
+                const encVal = await encryptSecret(repoKey.key, secretValue);
+                await octokit.rest.actions.createOrUpdateRepoSecret({
+                  owner: org, repo,
+                  secret_name: secretName,
+                  encrypted_value: encVal,
+                  key_id: repoKey.key_id,
+                });
+                core.info(`repo secret ${secretName} updated (no GH_ADMIN_PAT — org secrets unavailable)`);
+              }
+            }
+
+            const octokit = new Octokit({ auth: process.env.GH_ADMIN_PAT || github.token });
+
+            // Always-latest pointer — what sign-release reads
+            await upsertSecret(octokit, 'CI_SIGNING_KEY', privB64);
+
+            // Archived copy keyed by timestamp — forensics / rollback
+            await upsertSecret(octokit, `CI_SIGNING_KEY_${timestamp}`, privB64);
+
+            core.info(`secrets written: CI_SIGNING_KEY + CI_SIGNING_KEY_${timestamp}`);
+
+      # ── 5. Slack notification ──────────────────────────────────────────────
+      - name: Notify Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        shell: bash
+        env:
+          FINGERPRINT: ${{ steps.keygen.outputs.fingerprint }}
+          TIMESTAMP:   ${{ steps.keygen.outputs.timestamp }}
+          PREV:        ${{ steps.chain.outputs.prev }}
+          REASON:      ${{ inputs.reason || 'scheduled rotation' }}
+          ACTOR:       ${{ github.actor }}
+        run: |
+          PREV_MSG="${PREV:-none (genesis)}"
+          CHAIN_URL="https://signing-keys.sonarmd.workers.dev/chain"
+
+          PAYLOAD=$(python3 -c "
+          import json, os
+          print(json.dumps({
+            'text': (
+              ':key: *CI Signing Key Rotated*\n'
+              f'>Fingerprint: \`{os.environ[\"FINGERPRINT\"]}\`\n'
+              f'>Timestamp: {os.environ[\"TIMESTAMP\"]}\n'
+              f'>Previous: \`{os.environ[\"PREV_MSG\"]}\`\n'
+              f'>Reason: {os.environ[\"REASON\"]}\n'
+              f'>Actor: {os.environ[\"ACTOR\"]}\n'
+              f'>Chain: {os.environ[\"CHAIN_URL\"]}\n\n'
+              'CI will sign new builds with this key immediately. '
+              'No action needed — existing deploys still verify against older keys in the chain.'
+            )
+          }))
+          " PREV_MSG="$PREV_MSG" CHAIN_URL="$CHAIN_URL")
+
+          curl -sf -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL"
+
+      # ── 6. Summary ────────────────────────────────────────────────────────
+      - name: Job summary
+        shell: bash
+        env:
+          FINGERPRINT: ${{ steps.keygen.outputs.fingerprint }}
+          TIMESTAMP:   ${{ steps.keygen.outputs.timestamp }}
+          PREV:        ${{ steps.chain.outputs.prev }}
+          REASON:      ${{ inputs.reason || 'scheduled rotation' }}
+        run: |
+          PREV_DISPLAY="${PREV:-none (genesis)}"
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ### CI Signing Key Rotated
+
+          | | |
+          |--|--|
+          | Fingerprint | \`$FINGERPRINT\` |
+          | Timestamp | \`$TIMESTAMP\` |
+          | Previous | \`$PREV_DISPLAY\` |
+          | Reason | $REASON |
+          | Chain | https://signing-keys.sonarmd.workers.dev/chain |
+          | Latest key | https://signing-keys.sonarmd.workers.dev/keys |
+
+          **GitHub secrets updated:**
+          - \`CI_SIGNING_KEY\` — always points to this key
+          - \`CI_SIGNING_KEY_${TIMESTAMP}\` — archived copy
+
+          New builds sign with this key immediately.
+          Existing artifacts remain verifiable — all keys stay in the chain.
+          SUMMARY
