@@ -31,8 +31,7 @@ on:
         default: 'scheduled rotation'
 
 permissions:
-  contents: write   # commit nothing — kept for future pubkey archive if needed
-  secrets: write    # write CI_SIGNING_KEY to this repo (fallback if no admin PAT)
+  contents: write   # kept for future pubkey archive if needed
 
 jobs:
   rotate:
