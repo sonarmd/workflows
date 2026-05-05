@@ -19,6 +19,7 @@ name: CI/CD
 #     id-token: write
 #     attestations: write
 #     actions: read
+#     packages: write   # publish/pull release artifact via GHCR-backed store
 #   jobs:
 #     cicd:
 #       uses: sonarmd/workflows/.github/workflows/cicd-orchestrator.yml@main
