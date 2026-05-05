@@ -47,6 +47,13 @@ on:
           submodule-checksums.txt inside the release artifact.
           Required when deploy.json is present (i.e. bundle-release runs).
         required: false
+      GH_TOKEN:
+        description: |
+          GitHub PAT with org-wide read access (contents + packages).
+          Required when yarn.lock contains git+https:// deps targeting
+          private repos in the same org (e.g. @sonarmd/star-config).
+          Falls back to github.token when not provided.
+        required: false
 
 permissions: {}
 
@@ -77,10 +84,15 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          # Use org-wide PAT if provided so that persisted git credentials
+          # cover private repos in the same org (e.g. git+https:// deps).
+          token: ${{ secrets.GH_TOKEN || github.token }}
 
       - name: Setup Node.js
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
         uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
 
       - name: Setup
         if: inputs.setup != ''

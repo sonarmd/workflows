@@ -10,6 +10,13 @@ inputs:
     description: Directory containing package.json and yarn.lock
     required: false
     default: '.'
+  token:
+    description: |
+      GitHub token used for private git+https:// dependencies and GitHub
+      Packages auth.  Defaults to github.token (current-repo scope only).
+      Pass a PAT with org-wide read access to resolve private cross-repo deps.
+    required: false
+    default: ${{ github.token }}
 
 runs:
   using: composite
@@ -52,19 +59,19 @@ runs:
     - name: Configure git HTTPS auth for private GitHub dependencies
       shell: bash
       env:
-        GITHUB_TOKEN: ${{ github.token }}
+        GIT_TOKEN: ${{ inputs.token }}
       run: |
-        # Rewrite SSH git:// and git@github.com: deps to HTTPS so the workflow
-        # token (persisted by actions/checkout) can authenticate them without
-        # requiring a deploy key.  Covers yarn classic git+ssh:// deps and any
-        # npm/yarn shorthand (owner/repo#ref) that resolves to git@github.com:.
-        git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-        git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:"
+        # Rewrite SSH git:// and git@github.com: deps to HTTPS so the token
+        # persisted by actions/checkout can authenticate them without a deploy
+        # key.  Covers yarn classic git+ssh:// deps and npm/yarn shorthand
+        # (owner/repo#ref) that resolves to git@github.com:.
+        git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+        git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "git@github.com:"
 
     - name: Install dependencies
       shell: bash
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       env:
-        NODE_AUTH_TOKEN: ${{ github.token }}
-        GITHUB_TOKEN: ${{ github.token }}
+        NODE_AUTH_TOKEN: ${{ inputs.token }}
+        GITHUB_TOKEN: ${{ inputs.token }}
       run: yarn install --frozen-lockfile
