@@ -49,6 +49,18 @@ runs:
         restore-keys: |
           yarn-${{ runner.os }}-
 
+    - name: Configure git HTTPS auth for private GitHub dependencies
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        # Rewrite SSH git:// and git@github.com: deps to HTTPS so the workflow
+        # token (persisted by actions/checkout) can authenticate them without
+        # requiring a deploy key.  Covers yarn classic git+ssh:// deps and any
+        # npm/yarn shorthand (owner/repo#ref) that resolves to git@github.com:.
+        git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+        git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:"
+
     - name: Install dependencies
       shell: bash
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
