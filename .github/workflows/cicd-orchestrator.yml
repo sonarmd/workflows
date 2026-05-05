@@ -68,6 +68,7 @@ permissions:
   id-token: write
   attestations: write
   actions: read
+  packages: write   # ci-core publishes / cd-core pulls from GHCR-backed artifact store
 
 jobs:
 
@@ -137,7 +138,7 @@ jobs:
       id-token: write
       attestations: write
       actions: read
-      packages: read
+      packages: write   # publish release tarball to GHCR-backed artifact store
     uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
     with:
       setup:            ${{ inputs.setup }}
@@ -167,6 +168,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      packages: read    # pull release tarball from GHCR-backed artifact store
     # cd-core takes no inputs — discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit

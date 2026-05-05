@@ -60,7 +60,7 @@ jobs:
       id-token: write
       attestations: write
       actions: read
-      packages: read
+      packages: write   # publish release tarball to GHCR-backed artifact store
     env:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
       # to node24 now so actions that haven't republished (setup-node@v4,
@@ -78,6 +78,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Cache check: if an artifact already exists for this SHA in the
+      # durable store, skip bundle-release. lint/test/scans still run.
+      - name: Probe artifact store
+        id: probe
+        if: hashFiles('deploy.json') != ''
+        uses: sonarmd/workflows/actions/artifact-store-probe@main
+
       - name: Setup Node.js
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
         uses: sonarmd/workflows/actions/setup-node@main
@@ -92,14 +99,21 @@ jobs:
         run: ${{ inputs.steps }}
 
       - name: Bundle release
-        if: hashFiles('deploy.json') != ''
+        if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true'
         uses: sonarmd/workflows/actions/bundle-release@main
         with:
           test_report_path: ${{ inputs.test_report_path }}
 
       - name: Sign release
-        if: hashFiles('deploy.json') != '' && env.HAS_SIGNING_KEY == 'true'
+        if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true' && env.HAS_SIGNING_KEY == 'true'
         uses: sonarmd/workflows/actions/sign-release@main
         with:
           artifact_path: release.tar.gz
           signing_key: ${{ secrets.CI_SIGNING_KEY }}
+
+      - name: Cache hit — artifact already published
+        if: steps.probe.outputs.present == 'true'
+        shell: bash
+        run: |
+          echo "ci-core: artifact already exists for this SHA in the store — skipped rebuild."
+          echo "ci-core: reference: ${{ steps.probe.outputs.reference }}"
