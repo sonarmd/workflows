@@ -31,11 +31,10 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '18'
       - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
-      - run: yarn install --frozen-lockfile
+      - uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          node-version: '24'
       - run: yarn lint
       - run: yarn build
       - name: Test
