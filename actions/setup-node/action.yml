@@ -56,17 +56,28 @@ runs:
         restore-keys: |
           yarn-${{ runner.os }}-
 
-    - name: Configure git HTTPS auth for private GitHub dependencies
+    - name: Clear potentially corrupt yarn cache
       shell: bash
-      env:
-        GIT_TOKEN: ${{ inputs.token }}
+      run: yarn cache clean --force 2>/dev/null || true
+
+    - name: Rewrite SSH GitHub deps to unauthenticated HTTPS
+      shell: bash
+      working-directory: ${{ github.workspace }}
       run: |
-        # Rewrite SSH git:// and git@github.com: deps to HTTPS so the token
-        # persisted by actions/checkout can authenticate them without a deploy
-        # key.  Covers yarn classic git+ssh:// deps and npm/yarn shorthand
-        # (owner/repo#ref) that resolves to git@github.com:.
-        git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-        git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "git@github.com:"
+        # SSH URLs in package.json (kept for local dev ergonomics) need to
+        # resolve over HTTPS in CI since runners have no SSH key. Use
+        # UNAUTHENTICATED HTTPS — public repos (e.g. star-config) serve fine.
+        # Injecting a token that lacks explicit access to the target repo
+        # causes GitHub to return 404 "Repository not found" even for public
+        # repos.
+        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+        # actions/checkout persists an Authorization header in the cloned
+        # repo's LOCAL config. That header is sent on EVERY git fetch from
+        # github.com — including yarn's cross-repo dep fetches — and triggers
+        # the same 404 on public repos. Strip it.
+        git config --local --unset-all http."https://github.com/".extraheader || true
 
     - name: Install dependencies
       shell: bash
