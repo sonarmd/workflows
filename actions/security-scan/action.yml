@@ -5,9 +5,12 @@ description: |
   Configs come from @sonarmd/star-config (installed in node_modules via
   yarn/npm install) when available; sensible defaults apply otherwise.
 
-  Findings are emitted as PR annotations / workflow-run logs. No GHAS
-  (no per-committer billing, no Security tab). Fails the step on
-  HIGH/CRITICAL by default — configurable via `fail_on_findings`.
+  Findings are emitted to the workflow-run logs (no SARIF upload, no
+  Security tab — that's GHAS, which this replaces). Failure semantics
+  per scanner:
+    - Semgrep: --severity ERROR/WARNING (registry rule severities)
+    - Gitleaks: any leak fails when fail_on_findings=true
+    - Trivy: HIGH/CRITICAL only (ignore-unfixed)
 
 inputs:
   scanners:
@@ -15,13 +18,21 @@ inputs:
     required: false
     default: "semgrep gitleaks trivy"
   fail_on_findings:
-    description: "Fail the step when a scanner reports HIGH/CRITICAL. Set 'false' for report-only runs."
+    description: "Fail the step on findings. Set 'false' for report-only runs."
     required: false
     default: "true"
+  semgrep_version:
+    description: "Semgrep version to install (pinned for determinism). Override for upgrades."
+    required: false
+    default: "1.95.0"
   semgrep_configs:
     description: "Space-separated list of Semgrep --config args stacked before the star-config baseline. Registry rulesets allowed."
     required: false
     default: "p/default p/typescript p/react p/nodejs p/owasp-top-ten"
+  gitleaks_version:
+    description: "Gitleaks version to download and verify."
+    required: false
+    default: "8.21.2"
   star_config_root:
     description: "Path to the @sonarmd/star-config package. Defaults to node_modules lookup."
     required: false
@@ -47,12 +58,14 @@ runs:
 
     # ────────────────────────────── Semgrep ──────────────────────────────
     - name: Install Semgrep
-      if: contains(inputs.scanners, 'semgrep')
+      if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' semgrep ') }}
       shell: bash
-      run: python3 -m pip install --quiet semgrep
+      env:
+        SEMGREP_VERSION: ${{ inputs.semgrep_version }}
+      run: python3 -m pip install --quiet "semgrep==${SEMGREP_VERSION}"
 
     - name: Run Semgrep
-      if: contains(inputs.scanners, 'semgrep')
+      if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' semgrep ') }}
       shell: bash
       env:
         STAR_INSTALLED:  ${{ steps.detect.outputs.installed }}
@@ -76,29 +89,39 @@ runs:
 
     # ────────────────────────────── Gitleaks ─────────────────────────────
     - name: Run Gitleaks
-      if: contains(inputs.scanners, 'gitleaks')
+      if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' gitleaks ') }}
       shell: bash
       env:
-        STAR_INSTALLED: ${{ steps.detect.outputs.installed }}
-        STAR_ROOT:      ${{ inputs.star_config_root }}
-        FAIL_ON:        ${{ inputs.fail_on_findings }}
+        STAR_INSTALLED:   ${{ steps.detect.outputs.installed }}
+        STAR_ROOT:        ${{ inputs.star_config_root }}
+        FAIL_ON:          ${{ inputs.fail_on_findings }}
+        GITLEAKS_VERSION: ${{ inputs.gitleaks_version }}
       run: |
         set -euo pipefail
         # Download the gitleaks binary — avoids depending on an upstream
         # third-party action's SHA, keeps the action self-contained.
-        GL_VERSION="${GITLEAKS_VERSION:-8.21.2}"
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
         ARCH=$(uname -m)
         case "$ARCH" in
           x86_64|amd64) ARCH=x64 ;;
           aarch64|arm64) ARCH=arm64 ;;
         esac
-        URL="https://github.com/gitleaks/gitleaks/releases/download/v${GL_VERSION}/gitleaks_${GL_VERSION}_${OS}_${ARCH}.tar.gz"
-        mkdir -p "$RUNNER_TEMP/gitleaks"
-        curl -fsSL "$URL" | tar -xz -C "$RUNNER_TEMP/gitleaks" gitleaks
-        chmod +x "$RUNNER_TEMP/gitleaks/gitleaks"
+        ASSET="gitleaks_${GITLEAKS_VERSION}_${OS}_${ARCH}.tar.gz"
+        BASE="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+        WORKDIR="$RUNNER_TEMP/gitleaks"
+        mkdir -p "$WORKDIR"
+        cd "$WORKDIR"
 
-        ARGS=(detect --source . --no-git --redact -v)
+        # Verify integrity: download the archive + the official checksums
+        # file from the same release, then sha256sum -c against it.
+        curl -fsSL -o "$ASSET" "$BASE/$ASSET"
+        curl -fsSL -o checksums.txt "$BASE/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+        grep " $ASSET\$" checksums.txt | sha256sum -c -
+
+        tar -xzf "$ASSET" gitleaks
+        chmod +x gitleaks
+
+        ARGS=(detect --source "$GITHUB_WORKSPACE" --no-git --redact -v)
         if [ "$STAR_INSTALLED" = "true" ] && [ -f "${STAR_ROOT}/gitleaks/default.toml" ]; then
           ARGS+=(--config "${STAR_ROOT}/gitleaks/default.toml")
         fi
@@ -108,12 +131,12 @@ runs:
           ARGS+=(--exit-code 0)
         fi
         echo "security-scan/gitleaks: gitleaks ${ARGS[*]}"
-        "$RUNNER_TEMP/gitleaks/gitleaks" "${ARGS[@]}"
+        ./gitleaks "${ARGS[@]}"
 
     # ─────────────────────────────── Trivy ───────────────────────────────
     - name: Run Trivy
-      if: contains(inputs.scanners, 'trivy')
-      uses: aquasecurity/trivy-action@0.28.0
+      if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' trivy ') }}
+      uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
       with:
         scan-type: fs
         scan-ref: .
