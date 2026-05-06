@@ -138,7 +138,7 @@ jobs:
       attestations: write
       actions: read
       packages: read
-    uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
+    uses: sonarmd/workflows/.github/workflows/ci-core.yml@fix/setup-node-git-https-auth
     with:
       setup:            ${{ inputs.setup }}
       steps:            ${{ inputs.steps }}
