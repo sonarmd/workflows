@@ -8,7 +8,10 @@ description: |
   Used by ci-core at the top of the build flow to short-circuit
   rebuilds when the SHA already has a published artifact.
 
-  Tag scheme: ghcr.io/<repo>-release:sha-<SHA>
+  Tag scheme: ghcr.io/<owner>/<repo>-release:sha-<SHA>
+
+  Caller workflow MUST grant `packages: read` permission so GITHUB_TOKEN
+  can authenticate to GHCR.
 
 inputs:
   sha:
@@ -25,14 +28,14 @@ outputs:
     description: '"true" if an artifact exists for this SHA, "false" otherwise.'
     value: ${{ steps.probe.outputs.present }}
   reference:
-    description: 'Full OCI reference probed (registry/repo-release:sha-<SHA>).'
+    description: 'Full OCI reference probed (registry/owner/repo-release:sha-<SHA>).'
     value: ${{ steps.probe.outputs.reference }}
 
 runs:
   using: composite
   steps:
     - name: Install ORAS
-      uses: oras-project/setup-oras@v1
+      uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
       with:
         version: 1.2.0
 

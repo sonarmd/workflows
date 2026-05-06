@@ -1,10 +1,11 @@
 name: Artifact Store Push
 description: |
   Pushes the release tarball (and its checksum/signature siblings) to
-  the durable artifact store, keyed by SHA. Idempotent — pushing the
-  same content under the same tag is a no-op at the registry level.
+  the durable artifact store, keyed by SHA. Pushing the same files
+  under the same tag overwrites the manifest with an identical content
+  digest at the layer level (annotations may differ).
 
-  Tag scheme: ghcr.io/<repo>-release:sha-<SHA>
+  Tag scheme: ghcr.io/<owner>/<repo>-release:sha-<SHA>
 
   Caller workflow MUST grant `packages: write` permission.
 
@@ -26,7 +27,7 @@ inputs:
 
 outputs:
   reference:
-    description: 'Full OCI reference pushed (registry/repo-release:sha-<SHA>).'
+    description: 'Full OCI reference pushed (registry/owner/repo-release:sha-<SHA>).'
     value: ${{ steps.push.outputs.reference }}
   digest:
     description: 'OCI manifest digest of the pushed artifact.'
@@ -36,7 +37,7 @@ runs:
   using: composite
   steps:
     - name: Install ORAS
-      uses: oras-project/setup-oras@v1
+      uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
       with:
         version: 1.2.0
 
@@ -72,11 +73,12 @@ runs:
         echo "artifact-store-push: pushing ${#FILES[@]} file(s) to $REF"
         for F in "${FILES[@]}"; do echo "  - $F"; done
 
+        # Note: no `image.created` annotation — keeping it out makes the
+        # manifest deterministic for identical content.
         oras push "$REF" \
           --artifact-type "application/vnd.sonarmd.release.v1+tar" \
           --annotation "org.opencontainers.image.source=https://github.com/${REPO}" \
           --annotation "org.opencontainers.image.revision=${SHA}" \
-          --annotation "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           "${FILES[@]/%/:application/octet-stream}"
 
         DIGEST=$(oras manifest fetch --descriptor "$REF" \

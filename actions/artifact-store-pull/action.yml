@@ -4,7 +4,10 @@ description: |
   store into a local directory. Fails if no artifact exists for the
   SHA — callers should probe first if a miss is acceptable.
 
-  Tag scheme: ghcr.io/<repo>-release:sha-<SHA>
+  Tag scheme: ghcr.io/<owner>/<repo>-release:sha-<SHA>
+
+  Caller workflow MUST grant `packages: read` permission so GITHUB_TOKEN
+  can authenticate to GHCR.
 
 inputs:
   sha:
@@ -32,7 +35,7 @@ runs:
   using: composite
   steps:
     - name: Install ORAS
-      uses: oras-project/setup-oras@v1
+      uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
       with:
         version: 1.2.0
 

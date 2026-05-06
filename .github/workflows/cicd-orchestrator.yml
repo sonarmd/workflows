@@ -69,7 +69,8 @@ permissions:
   id-token: write
   attestations: write
   actions: read
-  packages: write   # ci-core publishes / cd-core pulls from GHCR-backed artifact store
+  # packages perms are granted at the job level (ci: write, cd: read) to
+  # keep workflow-level defaults least-privilege.
 
 jobs:
 

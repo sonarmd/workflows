@@ -252,7 +252,3 @@ runs:
           release.tar.gz.checksum
         if-no-files-found: error
         retention-days: 90
-
-    # ── Push to durable SHA-keyed store (cross-run, no expiry) ──
-    - name: Push to artifact store
-      uses: sonarmd/workflows/actions/artifact-store-push@main
