@@ -19,6 +19,7 @@ name: CI/CD
 #     id-token: write
 #     attestations: write
 #     actions: read
+#     packages: write   # publish/pull release artifact via GHCR-backed store
 #   jobs:
 #     cicd:
 #       uses: sonarmd/workflows/.github/workflows/cicd-orchestrator.yml@main
@@ -68,6 +69,8 @@ permissions:
   id-token: write
   attestations: write
   actions: read
+  # packages perms are granted at the job level (ci: write, cd: read) to
+  # keep workflow-level defaults least-privilege.
 
 jobs:
 
@@ -137,7 +140,7 @@ jobs:
       id-token: write
       attestations: write
       actions: read
-      packages: read
+      packages: write   # publish release tarball to GHCR-backed artifact store
     uses: sonarmd/workflows/.github/workflows/ci-core.yml@fix/setup-node-git-https-auth
     with:
       setup:            ${{ inputs.setup }}
@@ -167,6 +170,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      packages: read    # pull release tarball from GHCR-backed artifact store
     # cd-core takes no inputs — discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit

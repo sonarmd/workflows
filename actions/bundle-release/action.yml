@@ -241,7 +241,7 @@ runs:
         echo ""
         echo "bundle-pipeline: complete — $BUNDLE_COUNT bundles, $RELEASE_SIZE"
 
-    # ── Upload release artifact ────────────────────────────────
+    # ── Upload release artifact (in-run, for downstream jobs) ──
     - name: Upload release artifact
       uses: actions/upload-artifact@v4
       with:

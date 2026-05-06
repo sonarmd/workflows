@@ -1,0 +1,66 @@
+name: Artifact Store Probe
+description: |
+  Checks whether a release artifact for the given SHA exists in the
+  durable artifact store (GHCR via ORAS). Sets `present` output to
+  `true` or `false`. Never fails when the artifact is absent — that's
+  a normal cache miss, not an error.
+
+  Used by ci-core at the top of the build flow to short-circuit
+  rebuilds when the SHA already has a published artifact.
+
+  Tag scheme: ghcr.io/<owner>/<repo>-release:sha-<SHA>
+
+  Caller workflow MUST grant `packages: read` permission so GITHUB_TOKEN
+  can authenticate to GHCR.
+
+inputs:
+  sha:
+    description: 'Commit SHA to probe. Defaults to github.sha.'
+    required: false
+    default: ${{ github.sha }}
+  registry:
+    description: 'OCI registry hostname.'
+    required: false
+    default: 'ghcr.io'
+
+outputs:
+  present:
+    description: '"true" if an artifact exists for this SHA, "false" otherwise.'
+    value: ${{ steps.probe.outputs.present }}
+  reference:
+    description: 'Full OCI reference probed (registry/owner/repo-release:sha-<SHA>).'
+    value: ${{ steps.probe.outputs.reference }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install ORAS
+      uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
+      with:
+        version: 1.2.0
+
+    - name: Probe registry
+      id: probe
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+        REGISTRY: ${{ inputs.registry }}
+        REPO: ${{ github.repository }}
+        GH_TOKEN: ${{ github.token }}
+        GH_ACTOR: ${{ github.actor }}
+      run: |
+        set -euo pipefail
+
+        REF="${REGISTRY}/${REPO}-release:sha-${SHA}"
+        echo "reference=$REF" >> "$GITHUB_OUTPUT"
+
+        echo "$GH_TOKEN" | oras login "$REGISTRY" \
+          -u "$GH_ACTOR" --password-stdin >/dev/null 2>&1
+
+        if oras manifest fetch "$REF" >/dev/null 2>&1; then
+          echo "artifact-store-probe: HIT — $REF"
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "artifact-store-probe: MISS — $REF"
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        fi
