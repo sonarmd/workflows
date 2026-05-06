@@ -41,24 +41,18 @@ runs:
         registry-url: 'https://npm.pkg.github.com'
         scope: '@sonarmd'
 
-    - name: Get yarn cache directory
-      id: yarn-cache
+    # No actions/cache restore — yarn v1 + cache restore has a known race
+    # where the integrity dir is repopulated from the tarball but yarn install
+    # still tries to mkdir() the same paths and dies with EEXIST. `yarn cache
+    # clean` does not fully clear v6 integrity dirs. We pay the cold-cache
+    # cost (~30s) for build determinism. If/when caching is reintroduced,
+    # it must `rm -rf $(yarn cache dir) node_modules` before install.
+    - name: Nuke any stale yarn cache and node_modules
       shell: bash
-      run: echo "dir=$(yarn cache dir)" >> "$GITHUB_OUTPUT"
-
-    - name: Cache yarn dependencies
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-      with:
-        path: |
-          ${{ steps.yarn-cache.outputs.dir }}
-          ${{ inputs.working-directory }}/node_modules
-        key: yarn-${{ runner.os }}-${{ hashFiles(format('{0}/yarn.lock', inputs.working-directory)) }}
-        restore-keys: |
-          yarn-${{ runner.os }}-
-
-    - name: Clear potentially corrupt yarn cache
-      shell: bash
-      run: yarn cache clean --force 2>/dev/null || true
+      working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
+      run: |
+        rm -rf "$(yarn cache dir)" node_modules
+        yarn cache clean --force 2>/dev/null || true
 
     - name: Rewrite SSH GitHub deps to unauthenticated HTTPS
       shell: bash
