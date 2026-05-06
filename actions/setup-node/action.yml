@@ -10,6 +10,13 @@ inputs:
     description: Directory containing package.json and yarn.lock
     required: false
     default: '.'
+  token:
+    description: |
+      GitHub token used for private git+https:// dependencies and GitHub
+      Packages auth.  Defaults to github.token (current-repo scope only).
+      Pass a PAT with org-wide read access to resolve private cross-repo deps.
+    required: false
+    default: ${{ github.token }}
 
 runs:
   using: composite
@@ -49,10 +56,33 @@ runs:
         restore-keys: |
           yarn-${{ runner.os }}-
 
+    - name: Clear potentially corrupt yarn cache
+      shell: bash
+      run: yarn cache clean --force 2>/dev/null || true
+
+    - name: Rewrite SSH GitHub deps to unauthenticated HTTPS
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        # SSH URLs in package.json (kept for local dev ergonomics) need to
+        # resolve over HTTPS in CI since runners have no SSH key. Use
+        # UNAUTHENTICATED HTTPS — public repos (e.g. star-config) serve fine.
+        # Injecting a token that lacks explicit access to the target repo
+        # causes GitHub to return 404 "Repository not found" even for public
+        # repos.
+        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+        # actions/checkout persists an Authorization header in the cloned
+        # repo's LOCAL config. That header is sent on EVERY git fetch from
+        # github.com — including yarn's cross-repo dep fetches — and triggers
+        # the same 404 on public repos. Strip it.
+        git config --local --unset-all http."https://github.com/".extraheader || true
+
     - name: Install dependencies
       shell: bash
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       env:
-        NODE_AUTH_TOKEN: ${{ github.token }}
-        GITHUB_TOKEN: ${{ github.token }}
+        NODE_AUTH_TOKEN: ${{ inputs.token }}
+        GITHUB_TOKEN: ${{ inputs.token }}
       run: yarn install --frozen-lockfile
