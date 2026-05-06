@@ -79,4 +79,7 @@ runs:
       env:
         NODE_AUTH_TOKEN: ${{ inputs.token }}
         GITHUB_TOKEN: ${{ inputs.token }}
-      run: yarn install --frozen-lockfile
+      # --network-concurrency 1: yarn v1 has a documented race where parallel
+      # tarball downloads + extraction occasionally corrupt the cache integrity
+      # dir (ENOENT/EEXIST mid-extract). Serializing fetches eliminates it.
+      run: yarn install --frozen-lockfile --network-concurrency 1
