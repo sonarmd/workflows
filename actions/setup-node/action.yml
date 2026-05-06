@@ -82,4 +82,4 @@ runs:
       # --network-concurrency 1: yarn v1 has a documented race where parallel
       # tarball downloads + extraction occasionally corrupt the cache integrity
       # dir (ENOENT/EEXIST mid-extract). Serializing fetches eliminates it.
-      run: yarn install --frozen-lockfile --network-concurrency 1
+      run: yarn install --network-concurrency 1
