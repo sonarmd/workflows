@@ -54,23 +54,31 @@ runs:
         rm -rf "$(yarn cache dir)" node_modules
         yarn cache clean --force 2>/dev/null || true
 
-    - name: Rewrite SSH GitHub deps to unauthenticated HTTPS
+    - name: Rewrite SSH GitHub deps — sonarmd authenticated, others public HTTPS
       shell: bash
       working-directory: ${{ github.workspace }}
+      env:
+        GH_TOKEN: ${{ inputs.token }}
       run: |
-        # SSH URLs in package.json (kept for local dev ergonomics) need to
-        # resolve over HTTPS in CI since runners have no SSH key. Use
-        # UNAUTHENTICATED HTTPS — public repos (e.g. star-config) serve fine.
-        # Injecting a token that lacks explicit access to the target repo
-        # causes GitHub to return 404 "Repository not found" even for public
-        # repos.
+        # SSH URLs in package.json need to resolve over HTTPS in CI since
+        # runners have no SSH key.
+        #
+        # sonarmd/* repos are private — inject the token only for that org.
+        # Other (public) repos use unauthenticated HTTPS to avoid the GitHub
+        # quirk where a token without access to a public repo returns 404.
+        git config --global url."https://x-access-token:${GH_TOKEN}@github.com/sonarmd/".insteadOf "ssh://git@github.com/sonarmd/"
+        git config --global url."https://x-access-token:${GH_TOKEN}@github.com/sonarmd/".insteadOf "git@github.com:sonarmd/"
+        git config --global url."https://x-access-token:${GH_TOKEN}@github.com/sonarmd/".insteadOf "https://github.com/sonarmd/"
+
+        # Catch-all for non-sonarmd hosts: unauthenticated HTTPS.
         git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
         git config --global url."https://github.com/".insteadOf "git@github.com:"
 
         # actions/checkout persists an Authorization header in the cloned
         # repo's LOCAL config. That header is sent on EVERY git fetch from
         # github.com — including yarn's cross-repo dep fetches — and triggers
-        # the same 404 on public repos. Strip it.
+        # the same 404 on public repos. Strip it in favor of the scoped
+        # url.insteadOf rewrites above.
         git config --local --unset-all http."https://github.com/".extraheader || true
 
     - name: Install dependencies
