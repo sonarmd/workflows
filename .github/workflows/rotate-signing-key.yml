@@ -209,7 +209,7 @@ jobs:
       # Uses GH_ADMIN_PAT for org-level secrets if available; falls back to
       # repo-level secrets via GITHUB_TOKEN.
       - name: Update GitHub secrets
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@v8
         env:
           PRIV_B64:    ${{ steps.keygen.outputs.priv_b64 }}
           TIMESTAMP:   ${{ steps.keygen.outputs.timestamp }}

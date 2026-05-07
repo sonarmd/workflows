@@ -44,7 +44,7 @@ runs:
     - name: Discover prior CI run for SHA
       id: find
       if: steps.in_run.outcome == 'failure'
-      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+      uses: actions/github-script@v8
       env:
         SHA: ${{ github.sha }}
       with:

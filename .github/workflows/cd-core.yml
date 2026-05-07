@@ -64,7 +64,7 @@ jobs:
 
       - name: Resolve context
         id: ctx
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@v8
         env:
           IDENTIFIER_VAR: ${{ vars.DEPLOY_IDENTIFIER }}
         with:
@@ -190,7 +190,7 @@ jobs:
 
       - name: Derive build number
         id: build
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@v8
         env:
           ENV:        ${{ steps.ctx.outputs.env }}
           IDENTIFIER: ${{ steps.ctx.outputs.identifier }}
