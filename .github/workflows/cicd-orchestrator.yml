@@ -68,6 +68,10 @@ permissions:
   id-token: write
   attestations: write
   actions: read
+  # Workflow-level packages is the ceiling for nested reusable workflows.
+  # ci needs write (push to GHCR), cd needs read (pull). Set to write here;
+  # individual jobs scope down further as needed.
+  packages: write
 
 jobs:
 
