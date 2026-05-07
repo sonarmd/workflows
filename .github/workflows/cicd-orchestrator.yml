@@ -69,8 +69,10 @@ permissions:
   id-token: write
   attestations: write
   actions: read
-  # packages perms are granted at the job level (ci: write, cd: read) to
-  # keep workflow-level defaults least-privilege.
+  # Workflow-level packages is the ceiling for nested reusable workflows.
+  # ci needs write (push to GHCR), cd needs read (pull). Set to write here;
+  # individual jobs scope down further as needed.
+  packages: write
 
 jobs:
 
