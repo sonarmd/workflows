@@ -9,7 +9,7 @@ account_id      = "0c4f6179a73079dd4847a690bffed296"
 # OR via CF dashboard: Workers & Pages → KV → Create namespace "smd-signing-keys"
 [[kv_namespaces]]
 binding  = "SIGNING_KEYS"
-id       = "REPLACE_WITH_KV_NAMESPACE_ID"
+id       = "18e83d16a0af4d3d8511196c8f179a58"
 
 [observability]
 enabled = true
