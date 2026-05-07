@@ -171,6 +171,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      packages: read    # pull release tarball from GHCR-backed artifact store
     # cd-core takes no inputs — discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
