@@ -143,7 +143,7 @@ jobs:
       attestations: write
       actions: read
       packages: write   # publish release tarball to GHCR-backed artifact store
-    uses: sonarmd/workflows/.github/workflows/ci-core.yml@fix/setup-node-git-https-auth
+    uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
     with:
       setup:            ${{ inputs.setup }}
       steps:            ${{ inputs.steps }}

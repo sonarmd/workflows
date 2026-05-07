@@ -94,7 +94,9 @@ jobs:
 
       - name: Setup Node.js
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
-        uses: sonarmd/workflows/actions/setup-node@fix/setup-node-git-https-auth
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
 
       - name: Setup
         if: inputs.setup != ''
