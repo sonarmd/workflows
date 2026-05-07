@@ -60,7 +60,11 @@ runs:
       shell: bash
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       run: |
-        rm -rf "$(yarn cache dir)" node_modules
+        # `yarn cache dir` only returns the offline mirror path. The integrity
+        # metadata (~/.cache/yarn/v6) lives separately and is what triggers
+        # the documented "ENOENT inside *-integrity/node_modules/..." race
+        # when reused. Nuke both plus node_modules for a clean install.
+        rm -rf "$(yarn cache dir)" ~/.cache/yarn ~/.npm/_cacache node_modules
         yarn cache clean --force 2>/dev/null || true
 
     - name: Install infra-cdk deploy key (when provided)
