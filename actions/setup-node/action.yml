@@ -12,20 +12,11 @@ inputs:
     default: '.'
   token:
     description: |
-      GitHub token used for GitHub Packages auth (npm registry). Defaults
-      to github.token. Used by the @sonarmd npm scope only — NOT for
-      private cross-repo git deps (those use deploy keys; see below).
+      GitHub token used for private git+https:// dependencies and GitHub
+      Packages auth.  Defaults to github.token (current-repo scope only).
+      Pass a PAT with org-wide read access to resolve private cross-repo deps.
     required: false
     default: ${{ github.token }}
-  infra_cdk_deploy_key:
-    description: |
-      SSH private key (ed25519) for read-only access to sonarmd/infra-cdk.
-      When present, the action installs it and rewrites the infra-cdk
-      git URL to SSH so yarn can clone without a long-lived PAT.
-      Set INFRA_CDK_DEPLOY_KEY at the org or repo secret level and
-      forward it from the caller workflow.
-    required: false
-    default: ''
 
 runs:
   using: composite
@@ -60,59 +51,27 @@ runs:
       shell: bash
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       run: |
-        # `yarn cache dir` only returns the offline mirror path. The integrity
-        # metadata (~/.cache/yarn/v6) lives separately and is what triggers
-        # the documented "ENOENT inside *-integrity/node_modules/..." race
-        # when reused. Nuke both plus node_modules for a clean install.
-        rm -rf "$(yarn cache dir)" ~/.cache/yarn ~/.npm/_cacache node_modules
+        rm -rf "$(yarn cache dir)" node_modules
         yarn cache clean --force 2>/dev/null || true
 
-    - name: Install infra-cdk deploy key (when provided)
-      if: inputs.infra_cdk_deploy_key != ''
-      shell: bash
-      env:
-        DEPLOY_KEY: ${{ inputs.infra_cdk_deploy_key }}
-      run: |
-        # Per-repo SSH alias so deploy key only authenticates for infra-cdk.
-        # Avoids leaking the key to any other github.com clone.
-        mkdir -p ~/.ssh
-        chmod 700 ~/.ssh
-        printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/infra_cdk_deploy
-        chmod 600 ~/.ssh/infra_cdk_deploy
-        ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
-        cat >> ~/.ssh/config <<'EOF'
-        Host github-infra-cdk
-          HostName github.com
-          User git
-          IdentityFile ~/.ssh/infra_cdk_deploy
-          IdentitiesOnly yes
-        EOF
-        chmod 600 ~/.ssh/config
-
-    - name: Rewrite git URLs (deploy-key SSH for infra-cdk, public HTTPS otherwise)
+    - name: Rewrite SSH GitHub deps to unauthenticated HTTPS
       shell: bash
       working-directory: ${{ github.workspace }}
       run: |
-        # infra-cdk is private — route via deploy-key SSH alias if available.
-        # Falls back to public HTTPS for non-sonarmd repos (star-config etc).
-        if [ -n "$INFRA_CDK_KEY_PRESENT" ]; then
-          git config --global url."git@github-infra-cdk:sonarmd/infra-cdk.git".insteadOf "ssh://git@github.com/sonarmd/infra-cdk.git"
-          git config --global url."git@github-infra-cdk:sonarmd/infra-cdk.git".insteadOf "git@github.com:sonarmd/infra-cdk.git"
-          git config --global url."git@github-infra-cdk:sonarmd/infra-cdk.git".insteadOf "https://github.com/sonarmd/infra-cdk.git"
-        fi
-
-        # Catch-all for everything else: unauthenticated HTTPS (works for
-        # public repos like star-config).
+        # SSH URLs in package.json (kept for local dev ergonomics) need to
+        # resolve over HTTPS in CI since runners have no SSH key. Use
+        # UNAUTHENTICATED HTTPS — public repos (e.g. star-config) serve fine.
+        # Injecting a token that lacks explicit access to the target repo
+        # causes GitHub to return 404 "Repository not found" even for public
+        # repos.
         git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
         git config --global url."https://github.com/".insteadOf "git@github.com:"
 
         # actions/checkout persists an Authorization header in the cloned
         # repo's LOCAL config. That header is sent on EVERY git fetch from
         # github.com — including yarn's cross-repo dep fetches — and triggers
-        #404s on public repos when the token lacks access. Strip it.
+        # the same 404 on public repos. Strip it.
         git config --local --unset-all http."https://github.com/".extraheader || true
-      env:
-        INFRA_CDK_KEY_PRESENT: ${{ inputs.infra_cdk_deploy_key != '' }}
 
     - name: Install dependencies
       shell: bash
@@ -120,20 +79,4 @@ runs:
       env:
         NODE_AUTH_TOKEN: ${{ inputs.token }}
         GITHUB_TOKEN: ${{ inputs.token }}
-      # yarn v1 has a documented race where parallel extracts corrupt the
-      # cache integrity dir (ENOENT mid-extract on .cache/yarn/v6/*-integrity).
-      # --network-concurrency 1 serializes downloads, not extracts; the race
-      # still triggers occasionally on fresh runners. Retry up to 3 times
-      # with --check-files (re-extracts any corrupted entry) before giving up.
-      run: |
-        set -e
-        for attempt in 1 2 3; do
-          if yarn install --network-concurrency 1 --check-files; then
-            echo "yarn install: success on attempt $attempt"
-            exit 0
-          fi
-          echo "yarn install: attempt $attempt failed — nuking cache and retrying"
-          rm -rf "$(yarn cache dir)" ~/.cache/yarn ~/.npm/_cacache node_modules
-        done
-        echo "yarn install: exhausted 3 attempts" >&2
-        exit 1
+      run: yarn install --frozen-lockfile

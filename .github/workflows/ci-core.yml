@@ -52,15 +52,6 @@ on:
           GitHub token used for @sonarmd npm Packages auth.
           Falls back to github.token when not provided.
         required: false
-      INFRA_CDK_DEPLOY_KEY:
-        description: |
-          SSH private key (ed25519) for read-only access to
-          sonarmd/infra-cdk. When present, setup-node installs it and
-          rewrites the infra-cdk URL to a per-repo SSH alias so yarn can
-          clone the private dep without a long-lived PAT. Set as an org
-          secret with visibility=all so callers don't need per-repo wiring.
-        required: false
-
 permissions: {}
 
 jobs:
@@ -103,7 +94,6 @@ jobs:
         uses: sonarmd/workflows/actions/setup-node@main
         with:
           token: ${{ secrets.GH_TOKEN || github.token }}
-          infra_cdk_deploy_key: ${{ secrets.INFRA_CDK_DEPLOY_KEY }}
 
       - name: Setup
         if: inputs.setup != ''
