@@ -120,7 +120,20 @@ runs:
       env:
         NODE_AUTH_TOKEN: ${{ inputs.token }}
         GITHUB_TOKEN: ${{ inputs.token }}
-      # --network-concurrency 1: yarn v1 has a documented race where parallel
-      # tarball downloads + extraction occasionally corrupt the cache integrity
-      # dir (ENOENT/EEXIST mid-extract). Serializing fetches eliminates it.
-      run: yarn install --network-concurrency 1
+      # yarn v1 has a documented race where parallel extracts corrupt the
+      # cache integrity dir (ENOENT mid-extract on .cache/yarn/v6/*-integrity).
+      # --network-concurrency 1 serializes downloads, not extracts; the race
+      # still triggers occasionally on fresh runners. Retry up to 3 times
+      # with --check-files (re-extracts any corrupted entry) before giving up.
+      run: |
+        set -e
+        for attempt in 1 2 3; do
+          if yarn install --network-concurrency 1 --check-files; then
+            echo "yarn install: success on attempt $attempt"
+            exit 0
+          fi
+          echo "yarn install: attempt $attempt failed — nuking cache and retrying"
+          rm -rf "$(yarn cache dir)" ~/.cache/yarn ~/.npm/_cacache node_modules
+        done
+        echo "yarn install: exhausted 3 attempts" >&2
+        exit 1
