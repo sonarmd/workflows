@@ -45,7 +45,7 @@
           "target": {
             "type": "string",
             "description": "Deployment target type.",
-            "enum": ["s3", "ec2", "eas", "cdk", "lambda"]
+            "enum": ["s3", "ec2", "eas", "cdk", "lambda", "fargate"]
           },
           "hosts": {
             "type": "object",
