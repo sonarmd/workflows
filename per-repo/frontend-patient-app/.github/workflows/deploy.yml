@@ -24,6 +24,7 @@ concurrency:
 jobs:
   # Parses tag prefix → all env-specific values in one place.
   setup:
+    timeout-minutes: 10
     name: Resolve environment
     runs-on: ubuntu-latest
     permissions: {}
@@ -58,6 +59,7 @@ jobs:
   # Deploy gate — EAS handles both build and deployment, so build-gate is skipped.
   # CI gates already passed on the commit this tag points to.
   deploy-gate:
+    timeout-minutes: 10
     needs: setup
     uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
     with:
@@ -66,6 +68,7 @@ jobs:
       build_gate_result:           skipped
 
   build:
+    timeout-minutes: 10
     needs: [setup, deploy-gate]
     if: needs.deploy-gate.outputs.gate_result == 'success'
     environment: ${{ needs.setup.outputs.env }}
@@ -80,6 +83,7 @@ jobs:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
   notify:
+    timeout-minutes: 10
     needs: [setup, build]
     if: always()
     uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main

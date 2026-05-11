@@ -29,6 +29,7 @@ jobs:
   # Parses tag prefix → all env-specific values in one place.
   # Every downstream job consumes these outputs — no env logic anywhere else.
   setup:
+    timeout-minutes: 10
     name: Resolve environment
     runs-on: ubuntu-latest
     permissions: {}
@@ -116,6 +117,7 @@ jobs:
   # GitHub Environment gates production deploys with approval.
 
   build-admin:
+    timeout-minutes: 10
     needs: setup
     runs-on: ubuntu-latest
     environment: ${{ needs.setup.outputs.env }}
@@ -135,6 +137,7 @@ jobs:
           retention-days: 7
 
   build-patient:
+    timeout-minutes: 10
     needs: setup
     runs-on: ubuntu-latest
     environment: ${{ needs.setup.outputs.env }}
@@ -154,6 +157,7 @@ jobs:
           retention-days: 7
 
   build-provider:
+    timeout-minutes: 10
     needs: setup
     runs-on: ubuntu-latest
     environment: ${{ needs.setup.outputs.env }}
@@ -173,6 +177,7 @@ jobs:
           retention-days: 7
 
   build-seat:
+    timeout-minutes: 10
     needs: setup
     runs-on: ubuntu-latest
     environment: ${{ needs.setup.outputs.env }}
@@ -194,6 +199,7 @@ jobs:
   # ── Build gate — validates all 4 builds passed ────────────────────────────
 
   summarize-builds:
+    timeout-minutes: 10
     needs: [build-admin, build-patient, build-provider, build-seat]
     if: always()
     runs-on: ubuntu-latest
@@ -220,6 +226,7 @@ jobs:
           echo "build_result=$RESULT" >> "$GITHUB_OUTPUT"
 
   build-gate:
+    timeout-minutes: 10
     needs: [summarize-builds]
     if: always()
     uses: sonarmd/workflows/.github/workflows/build-gate.yml@main
@@ -227,6 +234,7 @@ jobs:
       build_result: ${{ needs.summarize-builds.outputs.build_result }}
 
   deploy-gate:
+    timeout-minutes: 10
     needs: [build-gate]
     if: always()
     uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
@@ -242,6 +250,7 @@ jobs:
   # when a distribution ID is set (empty string = skip = dev environment).
 
   deploy-admin:
+    timeout-minutes: 10
     needs: [setup, build-admin, deploy-gate]
     if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
@@ -279,6 +288,7 @@ jobs:
             --paths "/index.html" "/asset-manifest.json"
 
   deploy-patient:
+    timeout-minutes: 10
     needs: [setup, build-patient, deploy-gate]
     if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
@@ -316,6 +326,7 @@ jobs:
             --paths "/index.html" "/asset-manifest.json"
 
   deploy-provider:
+    timeout-minutes: 10
     needs: [setup, build-provider, deploy-gate]
     if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
@@ -353,6 +364,7 @@ jobs:
             --paths "/index.html" "/asset-manifest.json"
 
   deploy-seat:
+    timeout-minutes: 10
     needs: [setup, build-seat, deploy-gate]
     if: needs.deploy-gate.outputs.gate_result == 'success'
     runs-on: ubuntu-latest
@@ -390,6 +402,7 @@ jobs:
             --paths "/index.html" "/asset-manifest.json"
 
   notify:
+    timeout-minutes: 10
     needs: [setup, deploy-admin, deploy-patient, deploy-provider, deploy-seat]
     if: always()
     uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
@@ -403,6 +416,7 @@ jobs:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   metrics:
+    timeout-minutes: 10
     needs: [setup, deploy-admin, deploy-patient, deploy-provider, deploy-seat]
     if: always() && needs.setup.outputs.collect-metrics == 'true'
     uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main

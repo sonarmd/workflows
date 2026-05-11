@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   deploy:
+    timeout-minutes: 10
     name: Deploy CF Worker
     runs-on: ubuntu-latest
     env:

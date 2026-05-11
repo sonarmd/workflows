@@ -35,6 +35,7 @@ permissions:
 
 jobs:
   rotate:
+    timeout-minutes: 10
     name: Generate and chain new signing key
     runs-on: ubuntu-latest
     env:

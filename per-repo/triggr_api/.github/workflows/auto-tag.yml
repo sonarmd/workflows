@@ -16,6 +16,7 @@ permissions: {}
 
 jobs:
   setup:
+    timeout-minutes: 10
     name: Resolve environment
     runs-on: ubuntu-latest
     permissions: {}
@@ -41,6 +42,7 @@ jobs:
           esac
 
   tag:
+    timeout-minutes: 10
     needs: setup
     permissions:
       contents: write

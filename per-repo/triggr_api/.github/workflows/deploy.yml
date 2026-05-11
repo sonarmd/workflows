@@ -28,6 +28,7 @@ jobs:
   # Parses the tag prefix and emits environment-specific values as outputs.
   # Every downstream job consumes these — no env logic lives anywhere else.
   setup:
+    timeout-minutes: 10
     name: Resolve environment
     runs-on: ubuntu-latest
     permissions: {}
@@ -73,6 +74,7 @@ jobs:
           echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
 
   build:
+    timeout-minutes: 10
     needs: setup
     runs-on: ubuntu-latest
     environment: ${{ needs.setup.outputs.env }}  # GitHub Environment — gates production with approval
@@ -107,6 +109,7 @@ jobs:
 
   # Build gate — validates the build succeeded before proceeding.
   build-gate:
+    timeout-minutes: 10
     needs: build
     if: always()
     uses: sonarmd/workflows/.github/workflows/build-gate.yml@main
@@ -115,6 +118,7 @@ jobs:
 
   # Deploy gate — validates all prerequisites before deployment.
   deploy-gate:
+    timeout-minutes: 10
     needs: build-gate
     if: always()
     uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
@@ -125,6 +129,7 @@ jobs:
       build_gate_result:           ${{ needs.build-gate.outputs.gate_result }}
 
   generate-config:
+    timeout-minutes: 10
     needs: setup
     runs-on: ubuntu-latest
     permissions:
@@ -164,6 +169,7 @@ jobs:
             "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/configuration.json"
 
   deploy:
+    timeout-minutes: 10
     needs: [setup, build, generate-config, deploy-gate]
     if: needs.deploy-gate.outputs.gate_result == 'success'
     uses: sonarmd/workflows/.github/workflows/deploy-api-ssm.yml@main
@@ -176,6 +182,7 @@ jobs:
       aws-role-arn:      ${{ vars.AWS_DEPLOY_ROLE_ARN }}
 
   notify:
+    timeout-minutes: 10
     needs: [setup, deploy]
     if: always()
     uses: sonarmd/workflows/.github/workflows/notify-slack.yml@main
@@ -189,6 +196,7 @@ jobs:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   metrics:
+    timeout-minutes: 10
     needs: [setup, deploy]
     if: always() && needs.setup.outputs.collect-metrics == 'true'
     uses: sonarmd/workflows/.github/workflows/metrics-collector.yml@main
