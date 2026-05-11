@@ -58,7 +58,7 @@ runs:
         build_dir = manifest.get("build_root", "dist")
         errors = []
 
-        VALID_TARGETS = {"s3", "ec2", "eas", "cdk", "lambda"}
+        VALID_TARGETS = {"s3", "ec2", "eas", "cdk", "lambda", "fargate"}
         IDENT_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
         NAME_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,63}$')
 
