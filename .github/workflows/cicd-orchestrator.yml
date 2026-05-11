@@ -129,6 +129,7 @@ jobs:
 
   # ── CI: runs on PR/merge_group, or on push when no prior CI ──────────────
   ci:
+    timeout-minutes: 10
     needs: check
     if: |
       always() &&
@@ -161,6 +162,7 @@ jobs:
   # Tag pushes are excluded here so the prd tag created by cd-core fires only
   # `cut_release` (below) and never re-enters CD in a loop.
   cd:
+    timeout-minutes: 10
     needs: [check, ci]
     if: |
       always() &&

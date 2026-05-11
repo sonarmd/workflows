@@ -34,6 +34,7 @@ permissions: {}
 
 jobs:
   toggle:
+    timeout-minutes: 10
     name: ${{ inputs.state == 'enabled' && 'Enable' || 'DISABLE' }} artifact verification
     runs-on: ubuntu-latest
     env:
