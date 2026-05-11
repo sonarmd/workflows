@@ -33,7 +33,7 @@ permissions: {}
 jobs:
   cd:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: write   # create tags and GitHub releases
       actions: read     # discover prior workflow runs (legacy paths)
