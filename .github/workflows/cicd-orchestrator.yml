@@ -58,7 +58,7 @@ on:
         description: 'CI job timeout in minutes.'
         required: false
         type: number
-        default: 15
+        default: 10
       working_directory:
         required: false
         type: string
@@ -128,8 +128,11 @@ jobs:
             }
 
   # ── CI: runs on PR/merge_group, or on push when no prior CI ──────────────
+  # Job-level `timeout-minutes` is not valid on reusable-workflow callers
+  # (jobs that use `uses:`). The 10-minute cap lives inside ci-core.yml's
+  # actual run job via `timeout-minutes: ${{ inputs.timeout }}` (default
+  # lowered to 10 in this stanza's `inputs.timeout` block above).
   ci:
-    timeout-minutes: 10
     needs: check
     if: |
       always() &&
@@ -161,8 +164,9 @@ jobs:
   #                 release/vX.Y.Z → master flow must precede master deploys.
   # Tag pushes are excluded here so the prd tag created by cd-core fires only
   # `cut_release` (below) and never re-enters CD in a loop.
+  # Same rule as above: no `timeout-minutes` on reusable-workflow callers.
+  # The cap lives inside cd-core.yml.
   cd:
-    timeout-minutes: 10
     needs: [check, ci]
     if: |
       always() &&
