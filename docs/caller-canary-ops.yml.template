@@ -1,0 +1,68 @@
+# Drop this file at `<caller-repo>/.github/workflows/canary-ops.yml`.
+# It is a workflow_dispatch-only operations entrypoint for the canary
+# anchor system. Does NOT run on push/PR/merge_group — never adds latency
+# to CI/CD. Compliant with the cicd directive: it does not duplicate any
+# ci-core / cd-core / cicd-orchestrator responsibilities. It exists solely
+# to invoke the canary composite actions for one-time/operational events.
+
+name: canary-ops
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Which canary operation to run'
+        required: true
+        type: choice
+        options:
+          - seed
+          - purge-orphans
+      branch:
+        description: 'Branch to target (default: repo default branch)'
+        required: false
+        default: ''
+      count:
+        description: 'For `seed`: number of random anchors to push. For `purge-orphans`: exact orphan count expected (must match what is found, or job aborts).'
+        required: false
+        default: '50'
+      confirm:
+        description: 'For `seed`, type SEED. For `purge-orphans`, type DELETE.'
+        required: true
+
+concurrency:
+  group: canary-ops-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # tag create/delete
+
+jobs:
+  seed:
+    if: inputs.action == 'seed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: sonarmd/workflows/actions/canary-seed@main
+        with:
+          branch:     ${{ inputs.branch }}
+          count:      ${{ inputs.count }}
+          confirm:    ${{ inputs.confirm }}
+
+  purge-orphans:
+    if: inputs.action == 'purge-orphans'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirmation phrase guard
+        if: inputs.confirm != 'DELETE'
+        run: |
+          echo "::error::For purge-orphans, confirm input must be the literal word DELETE."
+          exit 1
+      - uses: sonarmd/workflows/actions/canary-purge-orphans@main
+        with:
+          branch:        ${{ inputs.branch || 'main' }}
+          confirm-count: ${{ inputs.count }}
+          # Default GITHUB_TOKEN cannot delete protected tags — the bypass
+          # actor's PAT must be injected as a secret. Create a fine-scoped
+          # PAT owned by the bypass-actors team member, store as repo
+          # secret CANARY_BYPASS_TOKEN.
+          bypass-token: ${{ secrets.CANARY_BYPASS_TOKEN }}

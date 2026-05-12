@@ -1,5 +1,5 @@
 {
-  "_doc": "GitHub Ruleset for the anchor/* tag namespace. Apply per caller repo via: gh api -X POST /repos/<owner>/<repo>/rulesets --input docs/canary-tag-ruleset.json. Replace <BYPASS_ACTOR_ID> with either: (a) your organization-admin role id, or (b) a team id whose only member is you. Individual user-level bypass is not supported by rulesets; the bypass actor must be a role, team, integration, or deploy key.",
+  "_doc": "GitHub Ruleset for the anchor/* tag namespace. Prevents accidental or malicious tampering with canary anchor tags. Apply per caller repo: gh api -X POST /repos/<owner>/<repo>/rulesets --input docs/canary-tag-ruleset.json. SETUP: Before applying, (1) create an org-level team named 'canary-bypass-actors' with EXACTLY ONE member (the repo owner). (2) Resolve that team's id: gh api /orgs/sonarmd/teams/canary-bypass-actors --jq .id. (3) Substitute the numeric id below for <BYPASS_TEAM_ID>. Rationale: OrganizationAdmin bypass would allow ANY org admin to delete anchor tags by accident. Team-based bypass scoped to a single-member team locks deletion to the one authorized human.",
   "name": "history-canary-anchors",
   "target": "tag",
   "enforcement": "active",
@@ -11,8 +11,8 @@
   },
   "bypass_actors": [
     {
-      "actor_id": "<BYPASS_ACTOR_ID>",
-      "actor_type": "OrganizationAdmin",
+      "actor_id": "<BYPASS_TEAM_ID>",
+      "actor_type": "Team",
       "bypass_mode": "always"
     }
   ],
