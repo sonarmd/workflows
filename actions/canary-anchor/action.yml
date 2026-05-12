@@ -1,14 +1,19 @@
 name: 'canary-anchor'
 description: >
-  Anchor every commit added by the current push with an `anchor/<short-sha>-<reason>`
-  tag in the immutable tag namespace. Reason suffix encodes WHY the commit
-  is notable (merge / subject-marker / critical-path / large-diff / tagged)
-  or defaults to `commit` for ordinary commits. Full commit-level coverage
-  closes the gap where un-anchored commits could be silently rewritten
-  between sparse "big" anchors.
+  Anchor the HEAD of each push to main with a single immutable
+  `anchor/<short-sha>-<reason>` tag. Git commit SHAs are content-addressed
+  Merkle roots — pinning the HEAD SHA transitively covers every ancestor
+  commit's content, parents, and metadata. A force-push that rewrites any
+  commit in the chain changes the descendants' SHAs, orphaning the anchor.
 
-  Requires the caller's merge strategy to be rebase (or merge-commit) — not
-  squash — so individual commits land on main and can each be anchored.
+  Reason suffix encodes notable properties of the anchored commit (merge /
+  subject-marker / critical-path / large-diff / tagged) or defaults to
+  `commit`. One tag per push to main — manageable tag count, full
+  chain-of-custody coverage via Merkle properties of the commit graph.
+
+  Requires the caller's merge strategy to be rebase merge (not squash) so
+  PR commits land individually on main and the HEAD SHA reflects the
+  rebased PR tip.
 
   Tags are immutable once created (enforced by the caller repo's tag
   protection ruleset). This action never modifies repo files; it only
@@ -61,36 +66,11 @@ runs:
         set -euo pipefail
         git fetch --tags --force origin "refs/tags/${PREFIX}*:refs/tags/${PREFIX}*" 2>/dev/null || true
 
-    - name: Determine commits added by this push
-      id: range
-      shell: bash
-      env:
-        BEFORE: ${{ inputs.before-sha }}
-        AFTER:  ${{ inputs.after-sha }}
-      run: |
-        set -euo pipefail
-        if [[ "$BEFORE" =~ ^0+$ ]]; then
-          shas="$AFTER"
-          echo "::notice::First push to branch — scanning HEAD only."
-        else
-          shas="$(git rev-list --reverse "${BEFORE}..${AFTER}" || true)"
-        fi
-        if [ -z "${shas:-}" ]; then
-          echo "::notice::No new commits to scan."
-          echo "shas=" >> "$GITHUB_OUTPUT"
-        else
-          {
-            echo "shas<<EOF"
-            echo "$shas"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-        fi
-
-    - name: Push anchor tags for qualifying commits
+    - name: Anchor HEAD of this push
       id: anchor
       shell: bash
       env:
-        SHAS:      ${{ steps.range.outputs.shas }}
+        AFTER:     ${{ inputs.after-sha }}
         PREFIX:    ${{ inputs.tag-prefix }}
         THRESHOLD: ${{ inputs.size-threshold }}
         PATHS:     ${{ inputs.critical-paths }}
@@ -98,8 +78,11 @@ runs:
       run: |
         set -euo pipefail
 
-        if [ -z "${SHAS:-}" ]; then
-          echo "no commits to evaluate"
+        sha="$AFTER"
+
+        # Already anchored? No-op.
+        if git tag --points-at "$sha" --list "${PREFIX}*" 2>/dev/null | grep -q .; then
+          echo "::notice::HEAD ($sha) is already anchored — skipping."
           echo "created=0" >> "$GITHUB_OUTPUT"
           exit 0
         fi
@@ -115,14 +98,11 @@ runs:
 
         new_tags=()
 
-        while IFS= read -r sha; do
-          [ -z "$sha" ] && continue
+        # One pass — anchor HEAD only. The HEAD SHA is a Merkle root over
+        # all ancestor commits, so anchoring it transitively covers them.
 
-          # Has any anchor tag already been created for this SHA? Skip.
-          if git tag --points-at "$sha" --list "${PREFIX}*" 2>/dev/null | grep -q .; then
-            continue
-          fi
-
+        do_one=1
+        if [ "$do_one" = "1" ]; then
           reason=""
 
           # 1. Merge commit.
@@ -183,30 +163,22 @@ runs:
             tag="${PREFIX}${short}-${reason}-$(date -u +%s)"
           fi
 
-          # Create lightweight tag locally; push afterwards in one batch.
+          # Create lightweight tag locally; pushed below.
           git tag "$tag" "$sha"
           new_tags+=("$tag")
           echo "anchor staged: $tag → $sha (${reason})"
-        done <<< "$SHAS"
+        fi
 
         echo "created=${#new_tags[@]}" >> "$GITHUB_OUTPUT"
 
         if [ ${#new_tags[@]} -eq 0 ]; then
-          echo "::notice::No commits in this push qualified — no anchors created."
+          echo "::notice::Nothing to anchor."
           exit 0
         fi
 
-        # Atomic push of all new tags. The ruleset blocks anything but creation
-        # in the anchor/* namespace, so this either succeeds for all or fails.
-        # We do NOT use --force — anchors are append-only.
-        printf 'pushing %d new anchor tags:\n' "${#new_tags[@]}"
-        printf '  %s\n' "${new_tags[@]}"
+        # Push the new anchor. The ruleset blocks anything but creation
+        # in the anchor/* namespace; we never use --force.
+        echo "pushing anchor: ${new_tags[0]}"
+        git push origin "refs/tags/${new_tags[0]}:refs/tags/${new_tags[0]}"
 
-        # Build a refspec list to push everything atomically.
-        refspecs=()
-        for t in "${new_tags[@]}"; do
-          refspecs+=("refs/tags/$t:refs/tags/$t")
-        done
-        git push --atomic origin "${refspecs[@]}"
-
-        echo "::notice::Created ${#new_tags[@]} new anchor tags."
+        echo "::notice::Created anchor ${new_tags[0]} → $sha"
