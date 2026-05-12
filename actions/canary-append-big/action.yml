@@ -1,0 +1,202 @@
+name: 'canary-append-big'
+description: >
+  Scan commits added by the current push. Any commit qualifying as "big"
+  (merge / subject marker / critical path / large diff / tagged) gets a new
+  `anchor/<short-sha>-<reason>` tag pushed to origin. Tags are immutable once
+  created (enforced by the caller repo's tag protection ruleset).
+  This action never modifies repo files; it only creates new refs in the
+  `anchor/*` namespace.
+
+inputs:
+  tag-prefix:
+    description: 'Anchor tag namespace.'
+    required: false
+    default: 'anchor/'
+  before-sha:
+    description: 'HEAD before this push (github.event.before).'
+    required: true
+  after-sha:
+    description: 'HEAD after this push (github.sha).'
+    required: true
+  size-threshold:
+    description: 'Minimum (insertions + deletions) to qualify as "large-diff".'
+    required: false
+    default: '500'
+  critical-paths:
+    description: 'Newline-separated git pathspec globs. Touching any qualifies as "critical-path".'
+    required: false
+    default: |
+      migrations/**
+      **/schema*
+      **/auth*
+      .github/workflows/**
+      DECISIONS.md
+      **/CLAUDE.md
+  subject-markers:
+    description: 'POSIX-ERE regex; matching commit subjects qualify as "subject-marker".'
+    required: false
+    default: '\[release\]|\[migration\]|\[breaking\]|BREAKING CHANGE:'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout full history + existing anchors
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        fetch-depth: 0
+        persist-credentials: true
+
+    - name: Fetch existing anchor tags (to dedupe)
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        set -euo pipefail
+        git fetch --tags --force origin "refs/tags/${PREFIX}*:refs/tags/${PREFIX}*" 2>/dev/null || true
+
+    - name: Determine commits added by this push
+      id: range
+      shell: bash
+      env:
+        BEFORE: ${{ inputs.before-sha }}
+        AFTER:  ${{ inputs.after-sha }}
+      run: |
+        set -euo pipefail
+        if [[ "$BEFORE" =~ ^0+$ ]]; then
+          shas="$AFTER"
+          echo "::notice::First push to branch — scanning HEAD only."
+        else
+          shas="$(git rev-list --reverse "${BEFORE}..${AFTER}" || true)"
+        fi
+        if [ -z "${shas:-}" ]; then
+          echo "::notice::No new commits to scan."
+          echo "shas=" >> "$GITHUB_OUTPUT"
+        else
+          {
+            echo "shas<<EOF"
+            echo "$shas"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Push anchor tags for qualifying commits
+      id: anchor
+      shell: bash
+      env:
+        SHAS:      ${{ steps.range.outputs.shas }}
+        PREFIX:    ${{ inputs.tag-prefix }}
+        THRESHOLD: ${{ inputs.size-threshold }}
+        PATHS:     ${{ inputs.critical-paths }}
+        MARKERS:   ${{ inputs.subject-markers }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${SHAS:-}" ]; then
+          echo "no commits to evaluate"
+          echo "created=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Build pathspecs from critical-paths input.
+        pathspecs=()
+        while IFS= read -r g; do
+          g="${g#"${g%%[![:space:]]*}"}"
+          g="${g%"${g##*[![:space:]]}"}"
+          [ -z "$g" ] && continue
+          pathspecs+=(":(glob)$g")
+        done <<< "$PATHS"
+
+        new_tags=()
+
+        while IFS= read -r sha; do
+          [ -z "$sha" ] && continue
+
+          # Has any anchor tag already been created for this SHA? Skip.
+          if git tag --points-at "$sha" --list "${PREFIX}*" 2>/dev/null | grep -q .; then
+            continue
+          fi
+
+          reason=""
+
+          # 1. Merge commit.
+          parent_count=$(($(git rev-list --parents -n1 "$sha" | wc -w) - 1))
+          if [ "$parent_count" -gt 1 ]; then
+            reason="merge"
+          fi
+
+          # 2. Subject marker.
+          if [ -z "$reason" ]; then
+            subject=$(git log -1 --format=%s "$sha")
+            if echo "$subject" | grep -qE "$MARKERS"; then
+              reason="subject-marker"
+            fi
+          fi
+
+          # 3. Critical path touched.
+          if [ -z "$reason" ] && [ ${#pathspecs[@]} -gt 0 ]; then
+            if git diff-tree --no-commit-id --name-only -r "$sha" -- "${pathspecs[@]}" 2>/dev/null | grep -q .; then
+              reason="critical-path"
+            fi
+          fi
+
+          # 4. Large diff.
+          if [ -z "$reason" ]; then
+            lines=$(git show --shortstat --format= "$sha" | awk '
+              /file/ {
+                ins=0; del=0;
+                for (i=1; i<=NF; i++) {
+                  if ($i ~ /insertion/) ins=$(i-1);
+                  if ($i ~ /deletion/)  del=$(i-1);
+                }
+                print ins+del; exit;
+              }')
+            lines="${lines:-0}"
+            if [ "$lines" -ge "$THRESHOLD" ]; then
+              reason="large-diff"
+            fi
+          fi
+
+          # 5. Already version-tagged (release commit).
+          if [ -z "$reason" ]; then
+            if [ -n "$(git tag --points-at "$sha" 2>/dev/null | grep -v "^${PREFIX}" || true)" ]; then
+              reason="tagged"
+            fi
+          fi
+
+          if [ -n "$reason" ]; then
+            short="${sha:0:7}"
+            tag="${PREFIX}${short}-${reason}"
+
+            # Race-safety: collision (extremely unlikely) → suffix with full count.
+            if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+              tag="${PREFIX}${short}-${reason}-$(date -u +%s)"
+            fi
+
+            # Create lightweight tag locally; push afterwards in one batch.
+            git tag "$tag" "$sha"
+            new_tags+=("$tag")
+            echo "anchor staged: $tag → $sha (${reason})"
+          fi
+        done <<< "$SHAS"
+
+        echo "created=${#new_tags[@]}" >> "$GITHUB_OUTPUT"
+
+        if [ ${#new_tags[@]} -eq 0 ]; then
+          echo "::notice::No commits in this push qualified — no anchors created."
+          exit 0
+        fi
+
+        # Atomic push of all new tags. The ruleset blocks anything but creation
+        # in the anchor/* namespace, so this either succeeds for all or fails.
+        # We do NOT use --force — anchors are append-only.
+        printf 'pushing %d new anchor tags:\n' "${#new_tags[@]}"
+        printf '  %s\n' "${new_tags[@]}"
+
+        # Build a refspec list to push everything atomically.
+        refspecs=()
+        for t in "${new_tags[@]}"; do
+          refspecs+=("refs/tags/$t:refs/tags/$t")
+        done
+        git push --atomic origin "${refspecs[@]}"
+
+        echo "::notice::Created ${#new_tags[@]} new anchor tags."

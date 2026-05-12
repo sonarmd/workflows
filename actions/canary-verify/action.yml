@@ -1,0 +1,221 @@
+name: 'canary-verify'
+description: >
+  History-integrity tripwire. Walks every tag in the `anchor/*` namespace,
+  resolves it to a commit SHA, and verifies that SHA is still an ancestor of
+  HEAD. Any failure means history was rewritten (force-push, rebase-merge of a
+  stale branch, filter-branch, etc) — in which case we open a P0 issue,
+  notify Slack, and fail the job to block CD.
+
+inputs:
+  tag-prefix:
+    description: 'Tag namespace to check.'
+    required: false
+    default: 'anchor/'
+  fetch-depth:
+    description: 'Checkout depth. 0 = full history (required for is-ancestor against old anchors).'
+    required: false
+    default: '0'
+  slack-webhook-url:
+    description: 'Slack webhook for alerting. Empty = skip Slack (issue + log still fire).'
+    required: false
+    default: ''
+  alert-channel:
+    description: 'Slack channel for the alert.'
+    required: false
+    default: '#incidents'
+  issue-assignees:
+    description: 'Comma-separated GitHub logins assigned to the auto-opened P0 issue.'
+    required: false
+    default: 'avespoli-sonarmd'
+  issue-labels:
+    description: 'Comma-separated labels for the auto-opened issue.'
+    required: false
+    default: 'priority:p0,history-regression,needs-codeowner-review'
+
+outputs:
+  failed:
+    description: '1 if any anchor is orphaned, 0 otherwise.'
+    value: ${{ steps.verify.outputs.failed }}
+  missing:
+    description: 'Newline-separated lines describing orphaned anchors (tag → sha + subject).'
+    value: ${{ steps.verify.outputs.missing }}
+  missing_count:
+    description: 'Number of orphaned anchors.'
+    value: ${{ steps.verify.outputs.missing_count }}
+  total:
+    description: 'Total anchors checked.'
+    value: ${{ steps.verify.outputs.total }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout full history + tags
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+        # checkout@v6 doesn't fetch tags by default — explicit fetch below.
+
+    - name: Fetch all anchor tags
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        set -euo pipefail
+        git fetch --tags --force origin "refs/tags/${PREFIX}*:refs/tags/${PREFIX}*" 2>/dev/null || true
+
+    - name: Verify every anchor tag is still an ancestor of HEAD
+      id: verify
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        set -euo pipefail
+
+        # List all local anchor tags (we just fetched them).
+        mapfile -t tags < <(git tag --list "${PREFIX}*" | sort)
+
+        if [ "${#tags[@]}" -eq 0 ]; then
+          echo "::notice::No tags under '${PREFIX}*' — repo has not been seeded. Skipping verify."
+          echo "failed=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        missing=()
+        total=0
+
+        for tag in "${tags[@]}"; do
+          total=$((total + 1))
+          # Lightweight tags: tag^{commit} → commit SHA. Works for annotated too.
+          sha=$(git rev-parse --verify "${tag}^{commit}" 2>/dev/null || true)
+          if [ -z "$sha" ]; then
+            missing+=("${tag}  [tag target commit missing from repo]")
+            continue
+          fi
+          if ! git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+            subj=$(git log -1 --format=%s "$sha" 2>/dev/null | cut -c1-80 || echo '(subject unavailable)')
+            missing+=("${tag} → ${sha}  ${subj}  [NOT an ancestor of HEAD]")
+          fi
+        done
+
+        if [ "${#missing[@]}" -gt 0 ]; then
+          echo "::error::Canary check FAILED — ${#missing[@]} of $total anchor tags point to commits no longer reachable from HEAD."
+          echo "::error::History was rewritten on this branch."
+          echo ""
+          echo "Vanished commits (anchor tag → orphan SHA):"
+          printf '  %s\n' "${missing[@]}"
+
+          echo "missing_count=${#missing[@]}" >> "$GITHUB_OUTPUT"
+          echo "total=$total"               >> "$GITHUB_OUTPUT"
+          {
+            echo "missing<<EOF"
+            printf '%s\n' "${missing[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "failed=1" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "::notice::Canary check PASSED — all $total anchor tags still resolve to ancestors of HEAD."
+        echo "failed=0" >> "$GITHUB_OUTPUT"
+
+    - name: Open P0 issue (CODEOWNER / bypass-actor recovery required)
+      if: steps.verify.outputs.failed == '1'
+      uses: actions/github-script@v8
+      env:
+        MISSING:   ${{ steps.verify.outputs.missing }}
+        COUNT:     ${{ steps.verify.outputs.missing_count }}
+        TOTAL:     ${{ steps.verify.outputs.total }}
+        ASSIGNEES: ${{ inputs.issue-assignees }}
+        LABELS:    ${{ inputs.issue-labels }}
+        PREFIX:    ${{ inputs.tag-prefix }}
+      with:
+        script: |
+          const { owner, repo } = context.repo;
+          const branch = context.ref.replace(/^refs\/heads\//, '');
+          const sha = context.sha;
+          const missing = (process.env.MISSING || '').trim();
+          const count = process.env.COUNT;
+          const total = process.env.TOTAL;
+          const prefix = process.env.PREFIX;
+
+          const title = `[P0] History regression on ${branch}: ${count} anchor tags orphaned`;
+          const body = [
+            `## History integrity violation`,
+            ``,
+            `**Branch:** \`${branch}\`  `,
+            `**HEAD:** \`${sha}\`  `,
+            `**Anchor namespace:** \`${prefix}*\`  `,
+            `**Orphaned:** ${count} of ${total} anchor tags`,
+            ``,
+            `\`canary-verify\` walked every \`${prefix}*\` tag and found that ${count} of them now point to commits that are NOT ancestors of HEAD. **History was rewritten on this branch.**`,
+            ``,
+            `### Orphaned anchors`,
+            '```',
+            missing,
+            '```',
+            ``,
+            `### CD is blocked`,
+            ``,
+            `The orchestrator's \`cd\` job will refuse to run on any push to \`${branch}\` until this is resolved.`,
+            ``,
+            `### Recovery paths`,
+            ``,
+            `**A. Restore the rewritten history** (preferred — preserves real history):`,
+            `   1. Find the pre-rewrite SHA: GH audit log → \`action:git.push\` with \`force=true\` near the push time, OR local reflog of whoever force-pushed.`,
+            `   2. \`git push --force-with-lease=refs/heads/${branch}=<current-sha> origin <recovered-sha>:${branch}\``,
+            `   3. Next push runs canary-verify → all anchors resolve to ancestors again. Close this issue.`,
+            ``,
+            `**B. Accept the loss and delete the orphaned anchor tags** (only if A is impossible):`,
+            `   1. **You** (the bypass actor on the tag ruleset) delete each orphaned tag manually:`,
+            `      \`git push origin --delete <tag-name>\` for each tag listed above.`,
+            `   2. No one else has the ruleset bypass — by design.`,
+            `   3. Document in this issue why A wasn't possible before closing.`,
+            ``,
+            `### Investigation`,
+            `- This run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+            `- GH audit log: \`${context.serverUrl}/organizations/sonarmd/settings/audit-log?q=action%3Agit.push+repo%3A${owner}%2F${repo}\``,
+          ].join('\n');
+
+          const assignees = (process.env.ASSIGNEES || '').split(',').map(s => s.trim()).filter(Boolean);
+          const labels    = (process.env.LABELS    || '').split(',').map(s => s.trim()).filter(Boolean);
+
+          const existing = await github.rest.issues.listForRepo({
+            owner, repo,
+            labels: 'history-regression',
+            state: 'open',
+            per_page: 100,
+          });
+          const dup = existing.data.find(i => i.title.includes(`on ${branch}:`));
+          if (dup) {
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: dup.number,
+              body: `Canary check failed again on \`${branch}\` at \`${sha}\`. Run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+            });
+            core.notice(`Appended to existing issue #${dup.number}`);
+          } else {
+            const created = await github.rest.issues.create({
+              owner, repo, title, body, assignees, labels,
+            });
+            core.notice(`Opened P0 issue #${created.data.number}`);
+          }
+
+    - name: Notify Slack
+      if: steps.verify.outputs.failed == '1' && inputs.slack-webhook-url != ''
+      uses: sonarmd/workflows/actions/notify-slack@main
+      with:
+        webhook_url: ${{ inputs.slack-webhook-url }}
+        status:      failure
+        app_name:    ${{ github.repository }}
+        channel:     ${{ inputs.alert-channel }}
+        details: |
+          *History regression detected on `${{ github.ref_name }}`.*
+          ${{ steps.verify.outputs.missing_count }} of ${{ steps.verify.outputs.total }} anchor tags now point to orphaned commits.
+          CD blocked. Bypass-actor recovery required.
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    - name: Fail the job
+      if: steps.verify.outputs.failed == '1'
+      shell: bash
+      run: |
+        echo "::error::Canary check failed — see auto-opened P0 issue and Slack alert. CD is blocked."
+        exit 1

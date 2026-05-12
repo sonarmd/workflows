@@ -1,0 +1,24 @@
+{
+  "_doc": "GitHub Ruleset for the anchor/* tag namespace. Apply per caller repo via: gh api -X POST /repos/<owner>/<repo>/rulesets --input docs/canary-tag-ruleset.json. Replace <BYPASS_ACTOR_ID> with either: (a) your organization-admin role id, or (b) a team id whose only member is you. Individual user-level bypass is not supported by rulesets; the bypass actor must be a role, team, integration, or deploy key.",
+  "name": "history-canary-anchors",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/tags/anchor/*"],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [
+    {
+      "actor_id": "<BYPASS_ACTOR_ID>",
+      "actor_type": "OrganizationAdmin",
+      "bypass_mode": "always"
+    }
+  ],
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "update" }
+  ]
+}
