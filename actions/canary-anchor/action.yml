@@ -1,11 +1,18 @@
-name: 'canary-append-big'
+name: 'canary-anchor'
 description: >
-  Scan commits added by the current push. Any commit qualifying as "big"
-  (merge / subject marker / critical path / large diff / tagged) gets a new
-  `anchor/<short-sha>-<reason>` tag pushed to origin. Tags are immutable once
-  created (enforced by the caller repo's tag protection ruleset).
-  This action never modifies repo files; it only creates new refs in the
-  `anchor/*` namespace.
+  Anchor every commit added by the current push with an `anchor/<short-sha>-<reason>`
+  tag in the immutable tag namespace. Reason suffix encodes WHY the commit
+  is notable (merge / subject-marker / critical-path / large-diff / tagged)
+  or defaults to `commit` for ordinary commits. Full commit-level coverage
+  closes the gap where un-anchored commits could be silently rewritten
+  between sparse "big" anchors.
+
+  Requires the caller's merge strategy to be rebase (or merge-commit) — not
+  squash — so individual commits land on main and can each be anchored.
+
+  Tags are immutable once created (enforced by the caller repo's tag
+  protection ruleset). This action never modifies repo files; it only
+  creates new refs in the `anchor/*` namespace.
 
 inputs:
   tag-prefix:
@@ -163,20 +170,23 @@ runs:
             fi
           fi
 
-          if [ -n "$reason" ]; then
-            short="${sha:0:7}"
-            tag="${PREFIX}${short}-${reason}"
-
-            # Race-safety: collision (extremely unlikely) → suffix with full count.
-            if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
-              tag="${PREFIX}${short}-${reason}-$(date -u +%s)"
-            fi
-
-            # Create lightweight tag locally; push afterwards in one batch.
-            git tag "$tag" "$sha"
-            new_tags+=("$tag")
-            echo "anchor staged: $tag → $sha (${reason})"
+          # Default reason for ordinary commits → full coverage, no gaps.
+          if [ -z "$reason" ]; then
+            reason="commit"
           fi
+
+          short="${sha:0:7}"
+          tag="${PREFIX}${short}-${reason}"
+
+          # Race-safety: collision (extremely unlikely) → suffix with full count.
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            tag="${PREFIX}${short}-${reason}-$(date -u +%s)"
+          fi
+
+          # Create lightweight tag locally; push afterwards in one batch.
+          git tag "$tag" "$sha"
+          new_tags+=("$tag")
+          echo "anchor staged: $tag → $sha (${reason})"
         done <<< "$SHAS"
 
         echo "created=${#new_tags[@]}" >> "$GITHUB_OUTPUT"

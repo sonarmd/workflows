@@ -237,14 +237,18 @@ jobs:
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
 
-  # ── Canary append: anchor "big" commits as immutable tags ────────────────
+  # ── Canary anchor: tag every commit on main with an immutable anchor ─────
   # After a successful CD on a branch push, scan the commits that landed and
-  # push an `anchor/<short-sha>-<reason>` tag for each that qualifies as big
-  # (merge / subject marker / critical path / large diff / tagged).
+  # push `anchor/<short-sha>-<reason>` for each. Reason encodes a notable
+  # property (merge / subject-marker / critical-path / large-diff / tagged)
+  # or defaults to `commit`. Full commit-level coverage — no gaps for a
+  # rewrite to hide in.
   # Tags are immutable once created — enforced by the caller's tag protection
   # ruleset on `refs/tags/anchor/*` (no update, no deletion except by the
   # configured bypass actor). This action never modifies repo files.
-  canary_append:
+  # Requires caller to use rebase merge (not squash) so individual commits
+  # land on main and can each be anchored.
+  canary_anchor:
     needs: [cd]
     if: |
       always() &&
@@ -259,7 +263,7 @@ jobs:
       # update and deletion are blocked at the platform level for the workflow.
       contents: write
     steps:
-      - uses: sonarmd/workflows/actions/canary-append-big@main
+      - uses: sonarmd/workflows/actions/canary-anchor@main
         with:
           before-sha: ${{ github.event.before }}
           after-sha:  ${{ github.sha }}
