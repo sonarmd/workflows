@@ -162,8 +162,11 @@ jobs:
   # HEAD. If any have vanished, fails the run and blocks CD — history was
   # rewritten and we refuse to ship a regression.
   # No-ops gracefully if the caller has no canary file (un-seeded repo).
+  # Runs on every event (PR, merge_group, push) in parallel with `ci` — no
+  # `needs:` so CI is never gated by canary completion. Mark this job as a
+  # required status check in each caller's branch protection so merges and
+  # CD both refuse to proceed on regression.
   canary_verify:
-    if: github.event_name == 'push' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:

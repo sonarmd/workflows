@@ -49,10 +49,14 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Checkout full history + tags
+    - name: Checkout full commit graph (no blobs — fast on big repos)
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         fetch-depth: ${{ inputs.fetch-depth }}
+        # `blob:none` skips file content downloads — we only need the commit
+        # graph for `git merge-base --is-ancestor`. Dramatic speedup on repos
+        # with large histories or binary assets.
+        filter: 'blob:none'
         # checkout@v6 doesn't fetch tags by default — explicit fetch below.
 
     - name: Fetch all anchor tags
