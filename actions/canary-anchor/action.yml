@@ -66,23 +66,35 @@ runs:
         set -euo pipefail
         git fetch --tags --force origin "refs/tags/${PREFIX}*:refs/tags/${PREFIX}*" 2>/dev/null || true
 
-    - name: Anchor HEAD of this push
+    - name: Anchor HEAD of this push (branch-scoped)
       id: anchor
       shell: bash
       env:
-        AFTER:     ${{ inputs.after-sha }}
-        PREFIX:    ${{ inputs.tag-prefix }}
-        THRESHOLD: ${{ inputs.size-threshold }}
-        PATHS:     ${{ inputs.critical-paths }}
-        MARKERS:   ${{ inputs.subject-markers }}
+        AFTER:      ${{ inputs.after-sha }}
+        PREFIX:     ${{ inputs.tag-prefix }}
+        THRESHOLD:  ${{ inputs.size-threshold }}
+        PATHS:      ${{ inputs.critical-paths }}
+        MARKERS:    ${{ inputs.subject-markers }}
+        REF_NAME:   ${{ github.ref_name }}
       run: |
         set -euo pipefail
 
         sha="$AFTER"
 
-        # Already anchored? No-op.
-        if git tag --points-at "$sha" --list "${PREFIX}*" 2>/dev/null | grep -q .; then
-          echo "::notice::HEAD ($sha) is already anchored — skipping."
+        # Slug the branch name for inclusion in the tag — replace / with -
+        # so the anchor/* namespace stays flat and rulesettable. Each branch
+        # gets its own independent chain of custody.
+        # Examples:
+        #   anchor/main-a1b2c3d-merge
+        #   anchor/release-v1.2.3-a1b2c3d-merge
+        # Even after a release branch is deleted, its anchor tags remain as
+        # an immutable historical record of that release's commits.
+        slug="${REF_NAME//\//-}"
+        echo "branch slug: $slug"
+
+        # Already anchored for THIS branch slug? No-op.
+        if git tag --points-at "$sha" --list "${PREFIX}${slug}-*" 2>/dev/null | grep -q .; then
+          echo "::notice::HEAD ($sha) on $slug is already anchored — skipping."
           echo "created=0" >> "$GITHUB_OUTPUT"
           exit 0
         fi
@@ -156,11 +168,11 @@ runs:
           fi
 
           short="${sha:0:7}"
-          tag="${PREFIX}${short}-${reason}"
+          tag="${PREFIX}${slug}-${short}-${reason}"
 
-          # Race-safety: collision (extremely unlikely) → suffix with full count.
+          # Race-safety: collision (extremely unlikely) → suffix with timestamp.
           if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
-            tag="${PREFIX}${short}-${reason}-$(date -u +%s)"
+            tag="${PREFIX}${slug}-${short}-${reason}-$(date -u +%s)"
           fi
 
           # Create lightweight tag locally; pushed below.

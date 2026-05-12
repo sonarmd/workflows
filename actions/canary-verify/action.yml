@@ -59,24 +59,47 @@ runs:
         filter: 'blob:none'
         # checkout@v6 doesn't fetch tags by default — explicit fetch below.
 
-    - name: Fetch all anchor tags
+    - name: Compute target branch slug
+      id: slug
+      shell: bash
+      env:
+        EVENT:      ${{ github.event_name }}
+        REF_NAME:   ${{ github.ref_name }}
+        BASE_REF:   ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        # Verify scopes to the target branch's anchor namespace.
+        # - pull_request / merge_group: target = base_ref (the merge target)
+        # - push: target = ref_name (the branch being pushed)
+        case "$EVENT" in
+          pull_request|merge_group) target="$BASE_REF" ;;
+          *) target="$REF_NAME" ;;
+        esac
+        slug="${target//\//-}"
+        echo "slug=$slug" >> "$GITHUB_OUTPUT"
+        echo "target branch: $target  slug: $slug"
+
+    - name: Fetch anchor tags for this branch slug
       shell: bash
       env:
         PREFIX: ${{ inputs.tag-prefix }}
+        SLUG:   ${{ steps.slug.outputs.slug }}
       run: |
         set -euo pipefail
-        git fetch --tags --force origin "refs/tags/${PREFIX}*:refs/tags/${PREFIX}*" 2>/dev/null || true
+        git fetch --tags --force origin "refs/tags/${PREFIX}${SLUG}-*:refs/tags/${PREFIX}${SLUG}-*" 2>/dev/null || true
 
-    - name: Verify every anchor tag is still an ancestor of HEAD
+    - name: Verify every anchor tag for this branch is an ancestor of HEAD
       id: verify
       shell: bash
       env:
         PREFIX: ${{ inputs.tag-prefix }}
+        SLUG:   ${{ steps.slug.outputs.slug }}
       run: |
         set -euo pipefail
 
-        # List all local anchor tags (we just fetched them).
-        mapfile -t tags < <(git tag --list "${PREFIX}*" | sort)
+        # List local anchor tags scoped to this branch slug only.
+        # Each branch has its own independent chain of custody.
+        mapfile -t tags < <(git tag --list "${PREFIX}${SLUG}-*" | sort)
 
         if [ "${#tags[@]}" -eq 0 ]; then
           echo "::notice::No tags under '${PREFIX}*' — repo has not been seeded. Skipping verify."
