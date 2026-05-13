@@ -22,16 +22,6 @@ permissions:
   contents: read
 
 jobs:
-  tripwire:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    permissions:
-      actions: write
-    steps:
-      - uses: sonarmd/workflows/actions/workflow-tripwire@main
-        with:
-          kill-after-minutes: '30'
-
   lint:
     name: actionlint + yamllint + shellcheck
     runs-on: ubuntu-latest
@@ -55,8 +45,7 @@ jobs:
             actions/canary-anchor/action.yml \
             actions/canary-reconcile/action.yml \
             actions/canary-seed/action.yml \
-            actions/canary-purge-orphans/action.yml \
-            actions/workflow-tripwire/action.yml
+            actions/canary-purge-orphans/action.yml
 
       - name: yamllint (docs + templates)
         run: |
