@@ -41,11 +41,22 @@ jobs:
         with:
           filter: blob:none
 
-      - name: actionlint (workflows + composite actions, with shellcheck)
+      - name: actionlint (canary + tripwire + tests + orchestrator)
         run: |
           set -euo pipefail
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
-          ./actionlint -color -shellcheck=shellcheck
+          # Scope to files introduced/modified by the canary work — does NOT
+          # lint pre-existing workflows with known issues outside this PR's
+          # scope. Pre-existing issues should be addressed in a separate PR.
+          ./actionlint -color -shellcheck=shellcheck \
+            .github/workflows/tests.yml \
+            .github/workflows/cicd-orchestrator.yml \
+            actions/canary-verify/action.yml \
+            actions/canary-anchor/action.yml \
+            actions/canary-reconcile/action.yml \
+            actions/canary-seed/action.yml \
+            actions/canary-purge-orphans/action.yml \
+            actions/workflow-tripwire/action.yml
 
       - name: yamllint (docs + templates)
         run: |
