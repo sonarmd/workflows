@@ -169,9 +169,12 @@ jobs:
   canary_verify:
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    # No elevated permissions needed — the canary-verify action mints its
+    # own token via the smd-ci-agora GitHub App for issue creation. Caller
+    # workflows can keep their permissions tight; the App provides write
+    # access out-of-band.
     permissions:
       contents: read
-      issues:   write     # auto-open P0 issue on regression
     outputs:
       failed:        ${{ steps.vrfy.outputs.failed }}
       missing:       ${{ steps.vrfy.outputs.missing }}
@@ -196,15 +199,13 @@ jobs:
       needs.canary_verify.outputs.failed == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # No elevated permissions needed — the canary-reconcile action mints
+    # its own App token for both the recovery branch push (contents:write)
+    # and the draft PR creation (pull-requests:write). The action does its
+    # own checkout with the App token.
     permissions:
-      contents:      write   # push recovery branch
-      pull-requests: write   # open draft PR
-      issues:        write   # assign + label PR
+      contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-          persist-credentials: true
       - uses: sonarmd/workflows/actions/canary-reconcile@main
         with:
           missing: ${{ needs.canary_verify.outputs.missing }}

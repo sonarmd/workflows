@@ -8,9 +8,10 @@ description: >
   Workflow-only — never run locally. Triggered via workflow_dispatch on the
   caller's `canary-ops.yml`. Requires:
     1. Explicit confirmation input matching the count of orphans found.
-    2. A push credential belonging to the tag ruleset's bypass actor (your
-       single-member `canary-bypass-actors` team). The default GITHUB_TOKEN
-       cannot delete protected tags — caller must inject a PAT via secrets.
+    2. The smd-ci-agora GitHub App must be listed as a bypass actor on the
+       caller's `anchor/*` tag ruleset (Integration type). The action mints
+       an App token at runtime; that token has the bypass capability.
+       No per-caller PAT needed.
 
 inputs:
   branch:
@@ -23,19 +24,22 @@ inputs:
   confirm-count:
     description: 'Type the literal number of orphans you expect to delete. Must match what the action discovers, or it aborts.'
     required: true
-  bypass-token:
-    description: 'PAT belonging to a member of the bypass-actors team. Must have repo + workflow scopes. Default GITHUB_TOKEN cannot delete protected tags.'
-    required: true
-
 runs:
   using: 'composite'
   steps:
+    - name: Mint App token (smd-ci-agora) — bypasses tag ruleset
+      id: app-token
+      uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.4
+      with:
+        app-id: ${{ vars.CANARY_APP_ID }}
+        private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+
     - name: Checkout full history
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         fetch-depth: 0
         filter: 'blob:none'
-        token: ${{ inputs.bypass-token }}
+        token: ${{ steps.app-token.outputs.token }}
         persist-credentials: true
 
     - name: Identify orphaned anchors

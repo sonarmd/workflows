@@ -37,6 +37,25 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # App token mints a credential with the perms needed for contents:write
+    # (push the recovery branch) and pull-requests:write (open the PR).
+    # Caller workflow's GITHUB_TOKEN doesn't need those — the App provides
+    # them out-of-band. continue-on-error: false here because reconcile
+    # cannot meaningfully run without it.
+    - name: Mint App token (smd-ci-agora)
+      id: app-token
+      uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.4
+      with:
+        app-id: ${{ vars.CANARY_APP_ID }}
+        private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+
+    - name: Checkout with App token (gives us write access for push)
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        fetch-depth: 0
+        token: ${{ steps.app-token.outputs.token }}
+        persist-credentials: true
+
     - name: Extract orphan SHAs from verify output
       id: extract
       shell: bash
@@ -146,6 +165,7 @@ runs:
         LABELS:         ${{ inputs.pr-labels }}
         VERIFY_MISSING: ${{ inputs.missing }}
       with:
+        github-token: ${{ steps.app-token.outputs.token }}
         script: |
           const { owner, repo } = context.repo;
           const branch  = process.env.BRANCH;

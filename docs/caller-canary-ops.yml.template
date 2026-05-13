@@ -33,7 +33,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write   # tag create/delete
+  # No write perms at the caller level — canary-seed and canary-purge-orphans
+  # both mint their own App tokens from smd-ci-agora for tag operations.
+  contents: read
 
 jobs:
   seed:
@@ -61,8 +63,7 @@ jobs:
         with:
           branch:        ${{ inputs.branch || 'main' }}
           confirm-count: ${{ inputs.count }}
-          # Default GITHUB_TOKEN cannot delete protected tags — the bypass
-          # actor's PAT must be injected as a secret. Create a fine-scoped
-          # PAT owned by the bypass-actors team member, store as repo
-          # secret CANARY_BYPASS_TOKEN.
-          bypass-token: ${{ secrets.CANARY_BYPASS_TOKEN }}
+        # Authentication comes from the smd-ci-agora App (org-level
+        # CANARY_APP_ID variable + CANARY_APP_PRIVATE_KEY secret, inherited).
+        # No per-caller PAT required. The App must be a bypass actor on the
+        # anchor/* tag ruleset (configured at ruleset application time).

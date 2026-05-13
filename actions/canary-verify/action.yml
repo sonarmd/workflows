@@ -49,6 +49,20 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # Mint a token from the smd-ci-agora GitHub App. The App holds its own
+    # issues:write + pull-requests:write permissions independent of the
+    # caller workflow's GITHUB_TOKEN. This is how we open the P0 issue on
+    # regression without forcing every caller to declare elevated perms.
+    # continue-on-error so verification still runs if the App secrets are
+    # absent (degraded mode: no auto-issue, but detection + slack still work).
+    - name: Mint App token (smd-ci-agora)
+      id: app-token
+      uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.4
+      with:
+        app-id: ${{ vars.CANARY_APP_ID }}
+        private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+      continue-on-error: true
+
     - name: Checkout full commit graph (no blobs — fast on big repos)
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -145,8 +159,8 @@ runs:
         echo "::notice::Canary check PASSED — all $total anchor tags still resolve to ancestors of HEAD."
         echo "failed=0" >> "$GITHUB_OUTPUT"
 
-    - name: Open P0 issue (CODEOWNER / bypass-actor recovery required)
-      if: steps.verify.outputs.failed == '1'
+    - name: Open P0 issue (via App token — no caller perms needed)
+      if: steps.verify.outputs.failed == '1' && steps.app-token.outcome == 'success'
       uses: actions/github-script@v8
       env:
         MISSING:   ${{ steps.verify.outputs.missing }}
@@ -156,6 +170,7 @@ runs:
         LABELS:    ${{ inputs.issue-labels }}
         PREFIX:    ${{ inputs.tag-prefix }}
       with:
+        github-token: ${{ steps.app-token.outputs.token }}
         script: |
           const { owner, repo } = context.repo;
           const branch = context.ref.replace(/^refs\/heads\//, '');
