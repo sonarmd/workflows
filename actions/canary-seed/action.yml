@@ -42,10 +42,18 @@ runs:
           exit 1
         fi
 
+    - name: Mint App token (smd-ci-agora)
+      id: app-token
+      uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.4
+      with:
+        app-id: ${{ vars.CANARY_APP_ID }}
+        private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+
     - name: Checkout full history
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         fetch-depth: 0
+        token: ${{ steps.app-token.outputs.token }}
         persist-credentials: true
         filter: 'blob:none'
 
