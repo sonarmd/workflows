@@ -76,6 +76,21 @@ permissions:
 
 jobs:
 
+  # ── Tripwire: hard wall-clock ceiling for the entire orchestrator run ────
+  # Belt-and-suspenders for per-job timeout-minutes. Runs in parallel with
+  # everything else, polls job statuses, and force-cancels the run if it
+  # hasn't completed within 30 minutes. Exits early-clean as soon as all
+  # other jobs finish — does not block the run from completing normally.
+  tripwire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35     # slightly over the kill threshold
+    permissions:
+      actions: write
+    steps:
+      - uses: sonarmd/workflows/actions/workflow-tripwire@main
+        with:
+          kill-after-minutes: '30'
+
   # ── Check: only runs on push events ──────────────────────────────────────
   # Looks for a prior passing CI run on this commit SHA.
   # Outputs:  none     → no CI found, run CI then CD
