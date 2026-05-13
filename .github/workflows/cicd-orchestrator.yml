@@ -156,7 +156,60 @@ jobs:
       working_directory: ${{ inputs.working_directory }}
     secrets: inherit
 
-  # ── CD: runs on branch push only, after CI passes ────────────────────────
+  # ── Canary verify: history-integrity tripwire ───────────────────────────
+  # Runs on push to a branch BEFORE CD. Reads `.github/history-canaries.txt`
+  # in the caller and verifies every anchored SHA is still reachable from
+  # HEAD. If any have vanished, fails the run and blocks CD — history was
+  # rewritten and we refuse to ship a regression.
+  # No-ops gracefully if the caller has no canary file (un-seeded repo).
+  # Runs on every event (PR, merge_group, push) in parallel with `ci` — no
+  # `needs:` so CI is never gated by canary completion. Mark this job as a
+  # required status check in each caller's branch protection so merges and
+  # CD both refuse to proceed on regression.
+  canary_verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues:   write     # auto-open P0 issue on regression
+    outputs:
+      failed:        ${{ steps.vrfy.outputs.failed }}
+      missing:       ${{ steps.vrfy.outputs.missing }}
+      missing_count: ${{ steps.vrfy.outputs.missing_count }}
+      total:         ${{ steps.vrfy.outputs.total }}
+    steps:
+      - id: vrfy
+        uses: sonarmd/workflows/actions/canary-verify@main
+        with:
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ── Canary reconcile: auto-build a recovery PR on regression ─────────────
+  # Runs only when canary_verify finds orphaned anchors. Cherry-picks the
+  # dropped commits onto a fresh `recovery/canary-<timestamp>` branch, pushes
+  # it, and opens a draft PR assigned to the CODEOWNER. CD remains blocked
+  # — this just removes manual cherry-picking work, it doesn't bypass review.
+  canary_reconcile:
+    needs: [canary_verify]
+    if: |
+      always() &&
+      needs.canary_verify.result == 'failure' &&
+      needs.canary_verify.outputs.failed == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents:      write   # push recovery branch
+      pull-requests: write   # open draft PR
+      issues:        write   # assign + label PR
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: sonarmd/workflows/actions/canary-reconcile@main
+        with:
+          missing: ${{ needs.canary_verify.outputs.missing }}
+
+  # ── CD: runs on branch push only, after CI passes and canaries verify ────
   # cd-core handles the promote-or-generate logic internally:
   #   release/** → always cuts a new prerelease (stg).
   #   master/main → finds the prerelease on HEAD's ancestry and promotes it
@@ -167,13 +220,14 @@ jobs:
   # Same rule as above: no `timeout-minutes` on reusable-workflow callers.
   # The cap lives inside cd-core.yml.
   cd:
-    needs: [check, ci]
+    needs: [check, ci, canary_verify]
     if: |
       always() &&
       github.event_name == 'push' &&
       github.ref_type == 'branch' &&
       needs.check.result == 'success' &&
       needs.check.outputs.ci_status != 'failure' &&
+      needs.canary_verify.result == 'success' &&
       (needs.ci.result == 'success' || needs.ci.result == 'skipped')
     permissions:
       contents: write
@@ -182,6 +236,37 @@ jobs:
     # cd-core takes no inputs — discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
+
+  # ── Canary anchor: tag every commit on main with an immutable anchor ─────
+  # After a successful CD on a branch push, scan the commits that landed and
+  # push `anchor/<short-sha>-<reason>` for each. Reason encodes a notable
+  # property (merge / subject-marker / critical-path / large-diff / tagged)
+  # or defaults to `commit`. Full commit-level coverage — no gaps for a
+  # rewrite to hide in.
+  # Tags are immutable once created — enforced by the caller's tag protection
+  # ruleset on `refs/tags/anchor/*` (no update, no deletion except by the
+  # configured bypass actor). This action never modifies repo files.
+  # Requires caller to use rebase merge (not squash) so individual commits
+  # land on main and can each be anchored.
+  canary_anchor:
+    needs: [cd]
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      github.ref_type == 'branch' &&
+      needs.cd.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      # `contents: write` is required to push tags (GH treats refs as contents).
+      # The tag ruleset narrows this to creation-only in the anchor/* namespace —
+      # update and deletion are blocked at the platform level for the workflow.
+      contents: write
+    steps:
+      - uses: sonarmd/workflows/actions/canary-anchor@main
+        with:
+          before-sha: ${{ github.event.before }}
+          after-sha:  ${{ github.sha }}
 
   # ── Cut next release branch (triggered by prd tag push) ──────────────────
   # CD creates the tag `prd-<identifier>-vX.Y.Z-bN`. That tag push fires this
