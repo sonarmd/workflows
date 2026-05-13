@@ -31,30 +31,31 @@ jobs:
         with:
           filter: blob:none
 
-      - name: actionlint (canary + tripwire + tests + orchestrator)
+      - name: actionlint (workflow files in this PR's scope)
         run: |
           set -euo pipefail
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
-          # Scope to files introduced/modified by the canary work — does NOT
-          # lint pre-existing workflows with known issues outside this PR's
-          # scope. Pre-existing issues should be addressed in a separate PR.
+          # Scope to workflow files introduced/modified by the canary work.
+          # Pre-existing workflows with known issues are out of scope for
+          # this PR (separate cleanup PR).
           ./actionlint -color -shellcheck=shellcheck \
             .github/workflows/tests.yml \
-            .github/workflows/cicd-orchestrator.yml \
+            .github/workflows/cicd-orchestrator.yml
+
+      - name: yamllint (canary composite actions + docs)
+        run: |
+          set -euo pipefail
+          pip install --quiet yamllint==1.35.1
+          # actionlint misclassifies action.yml files as workflows when passed
+          # explicitly. yamllint catches syntax/structure issues; the sandbox
+          # integration test below exercises the actual bash logic.
+          yamllint -d "{extends: relaxed, rules: {line-length: disable, indentation: {indent-sequences: consistent}, document-start: disable}}" \
             actions/canary-verify/action.yml \
             actions/canary-anchor/action.yml \
             actions/canary-reconcile/action.yml \
             actions/canary-seed/action.yml \
-            actions/canary-purge-orphans/action.yml
-
-      - name: yamllint (docs + templates)
-        run: |
-          set -euo pipefail
-          pip install --quiet yamllint==1.35.1
-          # Relaxed rules: doc templates use long lines + comments; we only
-          # fail on actual YAML syntax errors and bad indentation.
-          yamllint -d "{extends: relaxed, rules: {line-length: disable, indentation: {indent-sequences: consistent}}}" \
-            docs/ || true
+            actions/canary-purge-orphans/action.yml \
+            docs/caller-canary-ops.yml.template
 
   canary-integration:
     name: canary anchor → rewrite → verify (sandbox)
