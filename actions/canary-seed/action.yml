@@ -54,6 +54,7 @@ runs:
       shell: bash
       env:
         BRANCH_INPUT: ${{ inputs.branch }}
+        GH_TOKEN:     ${{ github.token }}
       run: |
         set -euo pipefail
         if [ -n "$BRANCH_INPUT" ]; then
@@ -65,8 +66,6 @@ runs:
         echo "branch=$branch" >> "$GITHUB_OUTPUT"
         echo "slug=$slug"     >> "$GITHUB_OUTPUT"
         echo "seeding branch=$branch slug=$slug"
-      env:
-        GH_TOKEN: ${{ github.token }}
 
     - name: Sample and push anchor tags
       shell: bash
