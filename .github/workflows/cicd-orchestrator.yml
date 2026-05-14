@@ -185,6 +185,8 @@ jobs:
         uses: sonarmd/workflows/actions/canary-verify@main
         with:
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          app-id: ${{ vars.CANARY_APP_ID }}
+          app-private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
 
   # ── Canary reconcile: auto-build a recovery PR on regression ─────────────
   # Runs only when canary_verify finds orphaned anchors. Cherry-picks the
@@ -209,6 +211,8 @@ jobs:
       - uses: sonarmd/workflows/actions/canary-reconcile@main
         with:
           missing: ${{ needs.canary_verify.outputs.missing }}
+          app-id: ${{ vars.CANARY_APP_ID }}
+          app-private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
 
   # ── CD: runs on branch push only, after CI passes and canaries verify ────
   # cd-core handles the promote-or-generate logic internally:
