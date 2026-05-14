@@ -33,14 +33,14 @@ inputs:
     default: 'priority:p0,history-regression,needs-codeowner-review'
   app-id:
     description: >
-      GitHub App ID for minting the issue-creation token. Pass `${{ vars.CANARY_APP_ID }}`
+      GitHub App ID for minting the issue-creation token. Pass vars.CANARY_APP_ID
       from the calling workflow. Empty = degraded mode (no auto-issue).
     required: false
     default: ''
   app-private-key:
     description: >
       GitHub App private key for minting the issue-creation token. Pass
-      `${{ secrets.CANARY_APP_PRIVATE_KEY }}` from the calling workflow.
+      secrets.CANARY_APP_PRIVATE_KEY from the calling workflow.
       Empty = degraded mode (no auto-issue).
     required: false
     default: ''

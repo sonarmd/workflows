@@ -35,11 +35,11 @@ inputs:
     default: 'sonarmd-canary-bot@users.noreply.github.com'
   app-id:
     description: >
-      GitHub App ID. Pass `${{ vars.CANARY_APP_ID }}` from the calling workflow.
+      GitHub App ID. Pass vars.CANARY_APP_ID from the calling workflow.
     required: true
   app-private-key:
     description: >
-      GitHub App private key. Pass `${{ secrets.CANARY_APP_PRIVATE_KEY }}` from
+      GitHub App private key. Pass secrets.CANARY_APP_PRIVATE_KEY from
       the calling workflow.
     required: true
 
