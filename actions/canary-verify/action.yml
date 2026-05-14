@@ -31,6 +31,19 @@ inputs:
     description: 'Comma-separated labels for the auto-opened issue.'
     required: false
     default: 'priority:p0,history-regression,needs-codeowner-review'
+  app-id:
+    description: >
+      GitHub App ID for minting the issue-creation token. Pass `${{ vars.CANARY_APP_ID }}`
+      from the calling workflow. Empty = degraded mode (no auto-issue).
+    required: false
+    default: ''
+  app-private-key:
+    description: >
+      GitHub App private key for minting the issue-creation token. Pass
+      `${{ secrets.CANARY_APP_PRIVATE_KEY }}` from the calling workflow.
+      Empty = degraded mode (no auto-issue).
+    required: false
+    default: ''
 
 outputs:
   failed:
@@ -59,8 +72,8 @@ runs:
       id: app-token
       uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.4
       with:
-        app-id: ${{ vars.CANARY_APP_ID }}
-        private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
       continue-on-error: true
 
     - name: Checkout full commit graph (no blobs — fast on big repos)
