@@ -85,6 +85,16 @@ jobs:
         # commit in the range was unsigned. Without this, the safety tag
         # would happily anchor a chain that includes unsigned history,
         # defeating the audit purpose.
+        #
+        # Verification source of truth: GitHub's REST API
+        # (`commits/<sha>` → `.verification.verified`). The local
+        # `git log %G?` flag requires GPG keyring / SSH allowedSigners to
+        # be configured on the runner — which they aren't, and shouldn't
+        # be (no signing material in CI). GitHub already validates every
+        # commit's signature server-side against the keys the author has
+        # uploaded; we mirror that source of truth here.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           PREV_TAG=$(git for-each-ref --sort=-creatordate \
@@ -97,13 +107,26 @@ jobs:
             echo "previous tag: $PREV_TAG"
             RANGE="$PREV_TAG..HEAD"
           fi
-          BAD=$(git log --pretty='%H %G?' "$RANGE" | awk '$2 != "G" && $2 != "U" { print $1 }' || true)
+          SHAS=$(git log --pretty='%H' "$RANGE")
+          BAD=""
+          for sha in $SHAS; do
+            VERIFIED=$(gh api "repos/${{ github.repository }}/commits/$sha" \
+              --jq '.commit.verification.verified' 2>/dev/null || echo "false")
+            REASON=$(gh api "repos/${{ github.repository }}/commits/$sha" \
+              --jq '.commit.verification.reason' 2>/dev/null || echo "unknown")
+            if [[ "$VERIFIED" != "true" ]]; then
+              echo "  $sha: NOT VERIFIED (reason: $REASON)"
+              BAD="$BAD $sha"
+            else
+              echo "  $sha: verified ($REASON)"
+            fi
+          done
           if [[ -n "$BAD" ]]; then
-            echo "::error::unsigned commits found in tagged range:"
-            echo "$BAD"
+            echo "::error::unsigned/unverified commits in tagged range:"
+            for sha in $BAD; do echo "  - $sha"; done
             exit 1
           fi
-          echo "all commits in $RANGE are signed (or untrusted-good)"
+          echo "all commits in $RANGE are signed and verified"
 
       - name: Validate linear history in tagged range
         # Branch-protection's `required_linear_history` enforces this at the
