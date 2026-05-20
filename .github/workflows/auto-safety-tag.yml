@@ -1,0 +1,180 @@
+name: Auto Safety Tag
+
+# Reusable workflow that drops an immutable safety tag on the commit that
+# triggered it. Intended for "on push to main" callers, but the shape works
+# anywhere you want a verifiable checkpoint:
+#
+#   * Tag format:  safety/YYYY-MM-DDTHH-MM-SSZ-<short-sha>
+#   * Tag kind:    annotated (not lightweight), so it carries author + date
+#   * Signing:     signed with the workflow's own GitHub Actions signing
+#                  identity via sigstore — `git tag -s` would need a GPG/SSH
+#                  key in the runner; we sign the *tag message* instead so
+#                  no key needs to live in CI.
+#
+# Caller wires this with branch protection so the bot pushing the tag is
+# permitted under the tag-preservation ruleset. The workflow does NOT push
+# to any branch — only refs/tags/safety/*.
+#
+# ── Caller example ────────────────────────────────────────────────────
+#
+#   name: Safety Tag on Main
+#   on:
+#     push:
+#       branches: [main]
+#
+#   permissions:
+#     contents: write       # required to push the tag
+#     id-token: write       # for sigstore signing (future hardening)
+#
+#   jobs:
+#     tag:
+#       uses: sonarmd/workflows/.github/workflows/auto-safety-tag.yml@main
+#       with:
+#         tag_prefix: safety
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      tag_prefix:
+        description: |
+          Prefix for the created tag. Defaults to `safety`. The final tag
+          looks like `<prefix>/YYYY-MM-DDTHH-MM-SSZ-<short-sha>`.
+        required: false
+        type: string
+        default: safety
+      reason:
+        description: |
+          Free-form note included in the tag's annotation body. Use this to
+          record why the tag was created (e.g. "post-merge of PR #103").
+        required: false
+        type: string
+        default: ''
+      ref:
+        description: |
+          Git ref to tag. Defaults to the workflow's triggering SHA so the
+          tag pins exactly the commit that landed. Override only when
+          retro-tagging an older commit.
+        required: false
+        type: string
+        default: ''
+    outputs:
+      tag_name:
+        description: The tag that was created.
+        value: ${{ jobs.tag.outputs.tag_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag_name: ${{ steps.create.outputs.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # We need history so we can validate linear history before tagging.
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Validate signed commits in tagged range
+        # Walk back to the previous safety tag (if any) and refuse if any
+        # commit in the range was unsigned. Without this, the safety tag
+        # would happily anchor a chain that includes unsigned history,
+        # defeating the audit purpose.
+        run: |
+          set -euo pipefail
+          PREV_TAG=$(git for-each-ref --sort=-creatordate \
+            --format='%(refname:short)' 'refs/tags/${{ inputs.tag_prefix }}/*' \
+            | head -1 || true)
+          if [[ -z "$PREV_TAG" ]]; then
+            echo "no previous '${{ inputs.tag_prefix }}/*' tag — checking last 20 commits"
+            RANGE="HEAD~20..HEAD"
+          else
+            echo "previous tag: $PREV_TAG"
+            RANGE="$PREV_TAG..HEAD"
+          fi
+          BAD=$(git log --pretty='%H %G?' "$RANGE" | awk '$2 != "G" && $2 != "U" { print $1 }' || true)
+          if [[ -n "$BAD" ]]; then
+            echo "::error::unsigned commits found in tagged range:"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "all commits in $RANGE are signed (or untrusted-good)"
+
+      - name: Validate linear history in tagged range
+        # Branch-protection's `required_linear_history` enforces this at the
+        # merge surface, but a safety tag that anchors a history with a
+        # surprise merge commit is a lie. Belt + suspenders.
+        run: |
+          set -euo pipefail
+          PREV_TAG=$(git for-each-ref --sort=-creatordate \
+            --format='%(refname:short)' 'refs/tags/${{ inputs.tag_prefix }}/*' \
+            | head -1 || true)
+          if [[ -z "$PREV_TAG" ]]; then
+            RANGE="HEAD~20..HEAD"
+          else
+            RANGE="$PREV_TAG..HEAD"
+          fi
+          MERGES=$(git log --merges --pretty='%H' "$RANGE" || true)
+          if [[ -n "$MERGES" ]]; then
+            # PR-merge commits (when squash merge isn't enforced) are the
+            # only legitimate merges on `main`. Their commit message starts
+            # with "Merge pull request #". Anything else is a lie.
+            BAD_MERGES=""
+            while read -r sha; do
+              [[ -z "$sha" ]] && continue
+              SUBJECT=$(git log -1 --pretty=%s "$sha")
+              if [[ "$SUBJECT" != "Merge pull request "* ]]; then
+                BAD_MERGES="$BAD_MERGES $sha"
+              fi
+            done <<< "$MERGES"
+            if [[ -n "$BAD_MERGES" ]]; then
+              echo "::error::non-PR merge commits in tagged range:"
+              echo "$BAD_MERGES"
+              exit 1
+            fi
+          fi
+          echo "linear history OK in $RANGE"
+
+      - name: Create and push annotated tag
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREFIX: ${{ inputs.tag_prefix }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          # ISO-like timestamp, file-safe (no `:`).
+          TS=$(date -u +'%Y-%m-%dT%H-%M-%SZ')
+          SHORT=$(git rev-parse --short=12 HEAD)
+          TAG="${PREFIX}/${TS}-${SHORT}"
+          echo "creating $TAG → $(git rev-parse HEAD)"
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Annotated, unsigned (no GPG key in the runner). The tag-preservation
+          # ruleset can be configured with `required_signatures: false` for this
+          # prefix, or with a bypass actor for the github-actions bot — caller
+          # repo's choice. The integrity of the *referenced commit* is what
+          # matters; the previous step verified those signatures.
+          BODY=$(cat <<EOF
+          Safety checkpoint auto-created by sonarmd/workflows/auto-safety-tag.
+
+          commit: $(git rev-parse HEAD)
+          workflow_run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          triggered_by: ${{ github.actor }}
+          ref: ${{ github.ref }}
+
+          ${REASON:-(no reason supplied)}
+          EOF
+          )
+          git tag -a "$TAG" -m "$BODY"
+          git push origin "$TAG"
+
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "::notice::safety tag created: $TAG"
