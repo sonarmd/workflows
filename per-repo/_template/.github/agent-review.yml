@@ -1,0 +1,46 @@
+# Per-repo configuration for `agent-architecture-review`.
+#
+# Drop this file at `.github/agent-review.yml` in any repo to tune the
+# review behavior. Any key not set here falls back to the workflow
+# inputs (or defaults). Useful when adopting via the org-level
+# required-workflow path (Path A), where you don't otherwise have a
+# caller workflow to set inputs on.
+#
+# Every key below is OPTIONAL. Defaults shown.
+
+# review_mode: architecture | architecture+senior | security | compliance | custom
+review_mode: architecture
+
+# overlays: comma-list of senior-eye, security, hipaa-soc2
+overlays: senior-eye
+
+# enforcement_mode: advisory | soft-fail | required
+# - advisory: check always success; findings posted as signal.
+# - soft-fail: check neutral when severities meet fail_threshold.
+# - required: check failure when severities meet fail_threshold.
+enforcement_mode: advisory
+
+# Minimum severity to surface (info|low|medium|high|critical).
+severity_threshold: medium
+
+# Severities >= this fail the check in `required` mode.
+fail_threshold: high
+
+# Max inline comments to post (caps spam on large diffs).
+max_inline_comments: 20
+
+# Glob filters — newline-separated. Empty = include all / exclude none.
+include_paths: ""
+exclude_paths: |
+  **/node_modules/**
+  **/.git/**
+  dist/**
+  build/**
+
+# Toggle individual output channels.
+post_summary_comment: true
+post_inline_comments: true
+apply_labels: true
+
+# Display name for the check run on the PR.
+check_name: "Agent Architecture Review"

@@ -1,0 +1,41 @@
+name: Agent Architecture Review (org default)
+
+# Top-level workflow registered as an ORG-LEVEL REQUIRED WORKFLOW.
+# When org admin adds this to a ruleset, it runs on every PR in scope
+# with zero per-repo configuration.
+#
+# Per-repo override: drop a `.github/agent-review.yml` in your repo.
+# The reusable workflow reads it and merges over defaults.
+#
+# To enable org-wide:
+#   1. github.com/organizations/sonarmd/settings/actions
+#   2. Required workflows → Add workflow
+#   3. Source: sonarmd/workflows
+#   4. Path: .github/workflows/agent-architecture-review-default.yml
+#   5. Scope: choose repositories
+#   6. Set CLAUDE_CODE_OAUTH_TOKEN as an org-level secret (Actions secrets),
+#      scoped to the same repository set. To get the token: run
+#      `claude setup-token` locally while signed in to the subscription
+#      account you want to bill against.
+#
+#      (Alternative: set ANTHROPIC_API_KEY for per-token API billing.)
+#
+# After step 6, zero per-repo files are needed.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: write
+  packages: read
+
+jobs:
+  review:
+    uses: ./.github/workflows/agent-architecture-review.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

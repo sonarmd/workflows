@@ -1,0 +1,456 @@
+name: agent-arch-review-publish
+description: |
+  Stage 2 of agent-architecture-review. Reads findings.json (Stage 1
+  output), schema-validates, re-fetches the PR diff via the GitHub API,
+  validates every finding's file:line maps to a real RIGHT-side line in
+  the diff, then posts comments + check run + labels.
+
+  This action runs OUTSIDE the agent container, on a plain runner. It
+  has GITHUB_TOKEN scoped to (pull-requests, issues, checks: write); it
+  does NOT have ANTHROPIC_API_KEY. The LLM is fundamentally absent from
+  this stage.
+
+  Idempotent: re-runs replace prior comments via marker dedupe.
+  Never blocks the workflow on agent failure: malformed findings →
+  neutral check + "review unavailable" summary + exit 0.
+
+inputs:
+  findings_path:
+    description: 'Path to findings.json from Stage 1'
+    required: true
+  pr_number:
+    description: 'Pull request number'
+    required: true
+  enforcement_mode:
+    description: 'advisory | soft-fail | required'
+    required: false
+    default: 'advisory'
+  severity_threshold:
+    description: 'Minimum severity to surface (info|low|medium|high|critical)'
+    required: false
+    default: 'medium'
+  fail_threshold:
+    description: 'Severities at or above this flip the check red (in required mode)'
+    required: false
+    default: 'high'
+  max_inline_comments:
+    description: 'Max inline comments to post'
+    required: false
+    default: '20'
+  post_summary_comment:
+    description: 'true | false'
+    required: false
+    default: 'true'
+  post_inline_comments:
+    description: 'true | false'
+    required: false
+    default: 'true'
+  apply_labels:
+    description: 'true | false'
+    required: false
+    default: 'true'
+  check_name:
+    description: 'Display name for the check run'
+    required: false
+    default: 'Agent Architecture Review'
+  bot_marker:
+    description: 'HTML-comment marker identifying this bot'
+    required: false
+    default: 'agent-architecture-review'
+  label_prefix:
+    description: 'Only labels with this prefix are managed by the bot'
+    required: false
+    default: 'agent-review/'
+  github_token:
+    description: 'Token with pull-requests/issues/checks: write'
+    required: true
+
+outputs:
+  conclusion:
+    description: 'success | failure | neutral'
+    value: ${{ steps.publish.outputs.conclusion }}
+  posted_inline:
+    description: 'Number of inline comments posted'
+    value: ${{ steps.publish.outputs.posted_inline }}
+  dropped_unmappable:
+    description: 'Findings dropped because (file,line) did not map to the diff'
+    value: ${{ steps.publish.outputs.dropped_unmappable }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        for cmd in gh jq; do
+          if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo "::error::$cmd not installed"
+            exit 1
+          fi
+        done
+
+    - name: Publish
+      id: publish
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        FINDINGS_PATH: ${{ inputs.findings_path }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        ENFORCEMENT_MODE: ${{ inputs.enforcement_mode }}
+        SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+        FAIL_THRESHOLD: ${{ inputs.fail_threshold }}
+        MAX_INLINE: ${{ inputs.max_inline_comments }}
+        POST_SUMMARY: ${{ inputs.post_summary_comment }}
+        POST_INLINE: ${{ inputs.post_inline_comments }}
+        APPLY_LABELS: ${{ inputs.apply_labels }}
+        CHECK_NAME: ${{ inputs.check_name }}
+        BOT_MARKER: ${{ inputs.bot_marker }}
+        LABEL_PREFIX: ${{ inputs.label_prefix }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! -f "$FINDINGS_PATH" ]]; then
+          echo "::error::findings file missing: $FINDINGS_PATH"
+          exit 1
+        fi
+
+        # -------- Step 1: schema validate (light, jq-based) ----------
+        SCHEMA_OK=true
+        if ! jq -e '.schema_version == "2"' "$FINDINGS_PATH" >/dev/null 2>&1; then
+          SCHEMA_OK=false
+        fi
+        if ! jq -e 'has("findings") and (.findings | type == "array")' "$FINDINGS_PATH" >/dev/null 2>&1; then
+          SCHEMA_OK=false
+        fi
+
+        PARSER_STATUS=$(jq -r '.parser_status // "unknown"' "$FINDINGS_PATH")
+        HEAD_SHA=$(jq -r '.head_sha // empty' "$FINDINGS_PATH")
+        BASE_SHA=$(jq -r '.base_sha // empty' "$FINDINGS_PATH")
+
+        if [[ "$SCHEMA_OK" != "true" ]]; then
+          PARSER_STATUS="malformed"
+        fi
+
+        # -------- Step 2: re-fetch PR diff (deterministic) ----------
+        # We DON'T trust the diff that Stage 1 may have used. The publisher
+        # re-fetches via the API to validate line positions.
+        DIFF_JSON=$(mktemp)
+        trap 'rm -f "$DIFF_JSON"' EXIT
+        if ! gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" > "$DIFF_JSON" 2>/dev/null; then
+          echo "::warning::could not fetch PR files via API; falling back to schema-only validation"
+          DIFF_JSON=""
+        fi
+
+        # -------- Step 3: build (file, valid-lines) map from diff ----------
+        # GitHub's pulls/{n}/files endpoint returns one entry per file with a
+        # `patch` field. Lines starting with `+` (and not `+++`) are RIGHT-side
+        # lines that can receive inline comments. We compute the line numbers
+        # as encountered in the new file.
+        VALID_MAP=$(mktemp)
+        trap 'rm -f "$DIFF_JSON" "$VALID_MAP"' EXIT
+        if [[ -n "$DIFF_JSON" && -f "$DIFF_JSON" ]]; then
+          jq -r '.[] | "FILE\t" + .filename + "\n" + (.patch // "")' "$DIFF_JSON" \
+            | awk '
+              BEGIN { current=""; rline=0 }
+              /^FILE\t/ {
+                current = substr($0, 6)
+                rline = 0
+                next
+              }
+              /^@@ / {
+                # @@ -a,b +c,d @@ ...
+                match($0, /\+[0-9]+(,[0-9]+)?/)
+                if (RSTART > 0) {
+                  hunk = substr($0, RSTART+1, RLENGTH-1)
+                  split(hunk, parts, ",")
+                  rline = parts[1] - 1
+                }
+                next
+              }
+              /^\+\+\+/ { next }
+              /^\+/ {
+                rline++
+                print current "\t" rline
+                next
+              }
+              /^-/ { next }
+              /^ / {
+                rline++
+                next
+              }
+            ' > "$VALID_MAP"
+        fi
+
+        line_is_valid() {
+          local file="$1"
+          local line="$2"
+          [[ -s "$VALID_MAP" ]] || return 1
+          awk -v f="$file" -v l="$line" -F'\t' '$1==f && $2==l { found=1; exit } END { exit !found }' "$VALID_MAP"
+        }
+
+        # -------- Step 4: filter findings ----------
+        sev_rank() {
+          case "$1" in
+            critical) echo 5 ;; high) echo 4 ;; medium) echo 3 ;;
+            low) echo 2 ;; info) echo 1 ;; *) echo 0 ;;
+          esac
+        }
+        THRESHOLD_RANK=$(sev_rank "$SEVERITY_THRESHOLD")
+        FAIL_RANK=$(sev_rank "$FAIL_THRESHOLD")
+
+        DROPPED_UNMAP=0
+        DROPPED_THRESHOLD=0
+
+        FILTERED=$(mktemp)
+        trap 'rm -f "$DIFF_JSON" "$VALID_MAP" "$FILTERED"' EXIT
+        echo '[]' > "$FILTERED"
+
+        if [[ "$PARSER_STATUS" == "ok" ]] && jq -e '.findings | length > 0' "$FINDINGS_PATH" >/dev/null; then
+          # First pass: severity threshold + label prefix
+          jq --argjson trank "$THRESHOLD_RANK" '
+            def rank: if .severity == "critical" then 5
+                      elif .severity == "high" then 4
+                      elif .severity == "medium" then 3
+                      elif .severity == "low" then 2
+                      elif .severity == "info" then 1
+                      else 0 end;
+            .findings | map(select(rank >= $trank))
+          ' "$FINDINGS_PATH" > "$FILTERED"
+
+          BEFORE=$(jq 'length' "$FILTERED")
+          TOTAL=$(jq '.findings | length' "$FINDINGS_PATH")
+          DROPPED_THRESHOLD=$((TOTAL - BEFORE))
+
+          # Second pass: drop findings whose (file,line) doesn't map to the diff
+          if [[ -s "$VALID_MAP" ]]; then
+            TMP=$(mktemp)
+            : > "$TMP"
+            jq -c '.[]' "$FILTERED" | while read -r f; do
+              FILE=$(echo "$f" | jq -r '.file')
+              LSTART=$(echo "$f" | jq -r '.line_start')
+              if line_is_valid "$FILE" "$LSTART"; then
+                echo "$f" >> "$TMP"
+              else
+                DROPPED_UNMAP=$((DROPPED_UNMAP + 1))
+              fi
+            done
+            # rebuild array
+            if [[ -s "$TMP" ]]; then
+              jq -s . "$TMP" > "$FILTERED"
+            else
+              echo '[]' > "$FILTERED"
+            fi
+            rm -f "$TMP"
+          fi
+        fi
+
+        FINAL_COUNT=$(jq 'length' "$FILTERED")
+        echo "::notice::findings: total=$(jq '.findings | length' "$FINDINGS_PATH"), after-threshold=${BEFORE:-0}, after-position-map=${FINAL_COUNT}, dropped(threshold)=${DROPPED_THRESHOLD}, dropped(unmappable)=${DROPPED_UNMAP}"
+
+        # -------- Step 5: post summary comment (idempotent) ----------
+        if [[ "$POST_SUMMARY" == "true" ]]; then
+          if [[ "$PARSER_STATUS" != "ok" ]]; then
+            SUMMARY_BODY=$(cat <<EOF
+        <!-- ${BOT_MARKER}:summary -->
+        ## Agent Architecture Review — unavailable
+
+        $(jq -r '.summary_markdown' "$FINDINGS_PATH")
+
+        The agent did not produce a parseable review for this PR. The
+        check is marked **neutral** and merge is not blocked.
+
+        <sub>Re-run by pushing to this branch.</sub>
+        EOF
+        )
+          else
+            SUMMARY_TEXT=$(jq -r '.summary_markdown // "No summary."' "$FINDINGS_PATH")
+            BREAKDOWN=$(jq -r --argjson f "$(cat "$FILTERED")" '
+              ($f | group_by(.severity)
+                | map("\(length) \(.[0].severity)")
+                | join(", "))
+              // ""' /dev/null)
+            SUMMARY_BODY=$(cat <<EOF
+        <!-- ${BOT_MARKER}:summary -->
+        ## Agent Architecture Review
+
+        ${SUMMARY_TEXT}
+
+        **Findings posted:** ${FINAL_COUNT}${BREAKDOWN:+ — ${BREAKDOWN}}
+        **Head:** \`${HEAD_SHA}\`
+
+        $(if [[ "$DROPPED_UNMAP" -gt 0 ]]; then echo "_${DROPPED_UNMAP} finding(s) dropped: file:line did not map to the PR diff._"; fi)
+
+        <sub>Re-run on push. Prior comments replaced.</sub>
+        EOF
+        )
+          fi
+
+          PRIOR_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.body | contains(\"<!-- ${BOT_MARKER}:summary -->\")) | .id" \
+            | head -1 || true)
+
+          if [[ -n "$PRIOR_ID" ]]; then
+            gh api --method PATCH "repos/${REPO}/issues/comments/${PRIOR_ID}" \
+              -f body="$SUMMARY_BODY" >/dev/null
+          else
+            gh api --method POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="$SUMMARY_BODY" >/dev/null
+          fi
+        fi
+
+        # -------- Step 6: post inline review comments ----------
+        POSTED_INLINE=0
+        if [[ "$POST_INLINE" == "true" && "$PARSER_STATUS" == "ok" && "$FINAL_COUNT" -gt 0 ]]; then
+          # Delete prior bot inline comments first.
+          STALE_IDS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.body | contains(\"<!-- ${BOT_MARKER}:inline -->\")) | .id" \
+            || true)
+          for id in $STALE_IDS; do
+            gh api --method DELETE "repos/${REPO}/pulls/comments/${id}" >/dev/null || true
+          done
+
+          # Cap at max_inline_comments.
+          CAPPED=$(jq --argjson n "$MAX_INLINE" '.[0:$n]' "$FILTERED")
+          POSTED_INLINE=$(echo "$CAPPED" | jq 'length')
+
+          COMMENTS_JSON=$(echo "$CAPPED" | jq --arg marker "$BOT_MARKER" '
+            map({
+              path: .file,
+              line: .line_end,
+              start_line: (if .line_end > .line_start then .line_start else null end),
+              side: "RIGHT",
+              body: (
+                "<!-- " + $marker + ":inline -->\n" +
+                "**" + (.severity | ascii_upcase) + " · " + .category + " · " + .overlay + "** — " + .title + "\n" +
+                "_confidence: " + .confidence + "_\n\n" +
+                .rationale +
+                (if .suggested_remediation and .suggested_remediation != "" and .suggested_remediation != null
+                 then "\n\n```suggestion\n" + .suggested_remediation + "\n```"
+                 else "" end)
+              )
+            } | with_entries(select(.value != null)))
+          ')
+
+          PAYLOAD=$(jq -n --arg commit "$HEAD_SHA" --argjson c "$COMMENTS_JSON" \
+            '{commit_id: $commit, event: "COMMENT", comments: $c}')
+
+          if [[ "$POSTED_INLINE" -gt 0 ]]; then
+            echo "$PAYLOAD" | gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --input - >/dev/null
+          fi
+        fi
+
+        # -------- Step 7: labels ----------
+        if [[ "$APPLY_LABELS" == "true" && "$PARSER_STATUS" == "ok" ]]; then
+          DESIRED=$(jq -r '.labels // [] | .[] | select(startswith("'"$LABEL_PREFIX"'"))' "$FINDINGS_PATH" | sort -u || true)
+
+          # Ensure each desired label exists; create if missing.
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            if ! gh api "repos/${REPO}/labels/${label}" >/dev/null 2>&1; then
+              gh api --method POST "repos/${REPO}/labels" \
+                -f name="$label" \
+                -f color="ededed" \
+                -f description="bot-managed by ${BOT_MARKER}" >/dev/null
+            fi
+          done <<< "$DESIRED"
+
+          # Current bot-managed labels (by prefix).
+          CURRENT=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" --paginate \
+            --jq ".[] | select(.name | startswith(\"${LABEL_PREFIX}\")) | .name" \
+            | sort -u || true)
+
+          # Remove stale.
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            if ! grep -qxF "$label" <<< "$DESIRED"; then
+              gh api --method DELETE "repos/${REPO}/issues/${PR_NUMBER}/labels/${label}" >/dev/null 2>&1 || true
+            fi
+          done <<< "$CURRENT"
+
+          # Add new.
+          MISSING=()
+          while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            if ! grep -qxF "$label" <<< "$CURRENT"; then
+              MISSING+=("$label")
+            fi
+          done <<< "$DESIRED"
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            PAYLOAD=$(printf '%s\n' "${MISSING[@]}" | jq -R . | jq -s '{labels: .}')
+            echo "$PAYLOAD" | gh api --method POST "repos/${REPO}/issues/${PR_NUMBER}/labels" --input - >/dev/null
+          fi
+        fi
+
+        # -------- Step 8: check run conclusion ----------
+        # Decide conclusion based on enforcement_mode × severities present.
+        CONCLUSION="success"
+        if [[ "$PARSER_STATUS" != "ok" ]]; then
+          CONCLUSION="neutral"
+        else
+          TRIPPED=$(jq --argjson fr "$FAIL_RANK" '
+            def rank: if .severity == "critical" then 5
+                      elif .severity == "high" then 4
+                      elif .severity == "medium" then 3
+                      elif .severity == "low" then 2
+                      elif .severity == "info" then 1
+                      else 0 end;
+            map(select(rank >= $fr)) | length
+          ' "$FILTERED")
+
+          if [[ "$TRIPPED" -gt 0 ]]; then
+            case "$ENFORCEMENT_MODE" in
+              advisory)  CONCLUSION="success" ;;
+              soft-fail) CONCLUSION="neutral" ;;
+              required)  CONCLUSION="failure" ;;
+            esac
+          fi
+        fi
+
+        SUMMARY_FOR_CHECK=$(jq -r '.summary_markdown // "No summary."' "$FINDINGS_PATH")
+        DETAILS_TABLE=$(jq -r '
+          if length == 0 then "No findings at or above the configured severity threshold."
+          else
+            "| Severity | Confidence | Category | Overlay | File:Line | Title |\n|---|---|---|---|---|---|\n" +
+            (map(
+              "| " + (.severity | ascii_upcase) +
+              " | " + .confidence +
+              " | " + .category +
+              " | " + .overlay +
+              " | `" + .file + ":" + (.line_start | tostring) +
+                (if .line_end != .line_start then "-" + (.line_end | tostring) else "" end) + "`" +
+              " | " + .title + " |"
+            ) | join("\n"))
+          end
+        ' "$FILTERED")
+
+        # Build + post check run.
+        PRIOR_CHECK=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --paginate \
+          --jq ".check_runs[] | select(.name == \"${CHECK_NAME}\") | .id" \
+          | head -1 || true)
+
+        if [[ -n "$PRIOR_CHECK" ]]; then
+          jq -n \
+            --arg conclusion "$CONCLUSION" \
+            --arg title "${CHECK_NAME} — ${FINAL_COUNT} finding(s)" \
+            --arg summary "$SUMMARY_FOR_CHECK" \
+            --arg text "$DETAILS_TABLE" \
+            '{status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary, text: $text}}' \
+          | gh api --method PATCH "repos/${REPO}/check-runs/${PRIOR_CHECK}" --input - >/dev/null
+        else
+          jq -n \
+            --arg name "$CHECK_NAME" \
+            --arg head "$HEAD_SHA" \
+            --arg conclusion "$CONCLUSION" \
+            --arg title "${CHECK_NAME} — ${FINAL_COUNT} finding(s)" \
+            --arg summary "$SUMMARY_FOR_CHECK" \
+            --arg text "$DETAILS_TABLE" \
+            '{name: $name, head_sha: $head, status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary, text: $text}}' \
+          | gh api --method POST "repos/${REPO}/check-runs" --input - >/dev/null
+        fi
+
+        echo "conclusion=${CONCLUSION}" >> "$GITHUB_OUTPUT"
+        echo "posted_inline=${POSTED_INLINE}" >> "$GITHUB_OUTPUT"
+        echo "dropped_unmappable=${DROPPED_UNMAP}" >> "$GITHUB_OUTPUT"
+        echo "::notice::stage-2 publish: conclusion=${CONCLUSION}, inline_posted=${POSTED_INLINE}"

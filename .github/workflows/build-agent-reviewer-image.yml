@@ -1,0 +1,118 @@
+name: Build Agent Reviewer Image
+
+# Builds and pushes ghcr.io/sonarmd/agent-reviewer.
+#
+# Triggers:
+#   - push to main touching docker/agent-reviewer/**
+#   - weekly cron (Sun 06:00 UTC) so the bundled Claude Code CLI floats
+#   - workflow_dispatch for ad-hoc rebuilds
+#
+# Tags:
+#   :latest                    — most recent main build
+#   :sha-<12hex>               — pinned by commit
+#   :weekly-YYYY-MM-DD         — only on cron (audit trail)
+#
+# The image is PUBLIC. No secrets are ever baked in.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/agent-reviewer/**'
+      - '.github/workflows/build-agent-reviewer-image.yml'
+  schedule:
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+    inputs:
+      claude_code_version:
+        description: 'Pin a specific @anthropic-ai/claude-code version (default: latest)'
+        required: false
+        type: string
+        default: 'latest'
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: build-agent-reviewer-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image_digest: ${{ steps.push.outputs.digest }}
+      image_tag: ${{ steps.tags.outputs.sha_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHORT=$(git rev-parse --short=12 HEAD)
+          SHA_TAG="sha-${SHORT}"
+          DATE_TAG="weekly-$(date -u +%Y-%m-%d)"
+          echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "date_tag=${DATE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/agent-reviewer
+          file: docker/agent-reviewer/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            CLAUDE_CODE_VERSION=${{ inputs.claude_code_version || 'latest' }}
+            IMAGE_REVISION=${{ github.sha }}
+          tags: |
+            ghcr.io/sonarmd/agent-reviewer:latest
+            ghcr.io/sonarmd/agent-reviewer:${{ steps.tags.outputs.sha_tag }}
+            ${{ github.event_name == 'schedule' && format('ghcr.io/sonarmd/agent-reviewer:{0}', steps.tags.outputs.date_tag) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/sonarmd/agent-reviewer
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "## Agent Reviewer Image"
+            echo
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            echo "| \`latest\` | \`${{ steps.push.outputs.digest }}\` |"
+            echo "| \`${{ steps.tags.outputs.sha_tag }}\` | \`${{ steps.push.outputs.digest }}\` |"
+            if [[ "${{ github.event_name }}" == "schedule" ]]; then
+              echo "| \`${{ steps.tags.outputs.date_tag }}\` | \`${{ steps.push.outputs.digest }}\` |"
+            fi
+            echo
+            echo "Pin in reusable workflow: \`ghcr.io/sonarmd/agent-reviewer:${{ steps.tags.outputs.sha_tag }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

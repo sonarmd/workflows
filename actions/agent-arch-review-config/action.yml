@@ -1,0 +1,113 @@
+name: agent-arch-review-config
+description: |
+  Reads an optional per-repo config file (default `.github/agent-review.yml`)
+  and merges it OVER the workflow inputs. Outputs the effective config as
+  individual values for downstream steps to consume.
+
+  Precedence: per-repo config file > workflow inputs > built-in defaults.
+
+  The config file is a flat YAML map keyed by the same names as the
+  workflow inputs. Any key not present falls back to the workflow input.
+
+inputs:
+  config_path:
+    description: 'Path to the per-repo config (in the BASE branch checkout)'
+    required: false
+    default: '.github/agent-review.yml'
+  default_review_mode:        { required: true }
+  default_overlays:           { required: true }
+  default_enforcement_mode:   { required: true }
+  default_max_inline_comments:{ required: true }
+  default_severity_threshold: { required: true }
+  default_fail_threshold:     { required: true }
+  default_include_paths:      { required: true }
+  default_exclude_paths:      { required: true }
+  default_post_summary_comment: { required: true }
+  default_post_inline_comments: { required: true }
+  default_apply_labels:       { required: true }
+  default_check_name:         { required: true }
+
+outputs:
+  review_mode:
+    value: ${{ steps.merge.outputs.review_mode }}
+  overlays:
+    value: ${{ steps.merge.outputs.overlays }}
+  enforcement_mode:
+    value: ${{ steps.merge.outputs.enforcement_mode }}
+  max_inline_comments:
+    value: ${{ steps.merge.outputs.max_inline_comments }}
+  severity_threshold:
+    value: ${{ steps.merge.outputs.severity_threshold }}
+  fail_threshold:
+    value: ${{ steps.merge.outputs.fail_threshold }}
+  include_paths:
+    value: ${{ steps.merge.outputs.include_paths }}
+  exclude_paths:
+    value: ${{ steps.merge.outputs.exclude_paths }}
+  post_summary_comment:
+    value: ${{ steps.merge.outputs.post_summary_comment }}
+  post_inline_comments:
+    value: ${{ steps.merge.outputs.post_inline_comments }}
+  apply_labels:
+    value: ${{ steps.merge.outputs.apply_labels }}
+  check_name:
+    value: ${{ steps.merge.outputs.check_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Merge per-repo config over workflow inputs
+      id: merge
+      shell: bash
+      env:
+        CONFIG_PATH: ${{ inputs.config_path }}
+      run: |
+        set -euo pipefail
+
+        # Each setting: prefer per-repo file value if present, else workflow input.
+        # We read YAML via yq when present; fall back to grep for resilience.
+
+        read_yaml() {
+          local key="$1"
+          if [[ ! -f "$CONFIG_PATH" ]]; then echo ""; return; fi
+          if command -v yq >/dev/null 2>&1; then
+            yq eval -e ".${key} // \"\"" "$CONFIG_PATH" 2>/dev/null || echo ""
+          else
+            # Best-effort grep-based fallback. Matches `key: value` or `key: "value"`.
+            grep -E "^[[:space:]]*${key}[[:space:]]*:" "$CONFIG_PATH" 2>/dev/null \
+              | head -1 \
+              | sed -E "s/^[[:space:]]*${key}[[:space:]]*:[[:space:]]*//; s/^\"//; s/\"$//; s/^'//; s/'$//" \
+              || echo ""
+          fi
+        }
+
+        emit() {
+          local key="$1"
+          local default_value="$2"
+          local override
+          override="$(read_yaml "$key")"
+          if [[ -n "$override" && "$override" != "null" ]]; then
+            echo "${key}=${override}" >> "$GITHUB_OUTPUT"
+          else
+            echo "${key}=${default_value}" >> "$GITHUB_OUTPUT"
+          fi
+        }
+
+        emit review_mode         "${{ inputs.default_review_mode }}"
+        emit overlays            "${{ inputs.default_overlays }}"
+        emit enforcement_mode    "${{ inputs.default_enforcement_mode }}"
+        emit max_inline_comments "${{ inputs.default_max_inline_comments }}"
+        emit severity_threshold  "${{ inputs.default_severity_threshold }}"
+        emit fail_threshold      "${{ inputs.default_fail_threshold }}"
+        emit include_paths       "${{ inputs.default_include_paths }}"
+        emit exclude_paths       "${{ inputs.default_exclude_paths }}"
+        emit post_summary_comment "${{ inputs.default_post_summary_comment }}"
+        emit post_inline_comments "${{ inputs.default_post_inline_comments }}"
+        emit apply_labels        "${{ inputs.default_apply_labels }}"
+        emit check_name          "${{ inputs.default_check_name }}"
+
+        if [[ -f "$CONFIG_PATH" ]]; then
+          echo "::notice::merged per-repo config from ${CONFIG_PATH}"
+        else
+          echo "::notice::no per-repo config at ${CONFIG_PATH}; using workflow defaults"
+        fi
