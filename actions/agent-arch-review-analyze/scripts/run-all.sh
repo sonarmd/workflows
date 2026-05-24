@@ -136,6 +136,32 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
     done <<< "$NET_NEW"
   fi
 
+  echo "## Test coverage signal"
+  echo
+  echo "Changed source files that have no matching test file change in the same PR. Heuristic — confirm the source change actually warrants a test before flagging."
+  echo
+  TC_OUT=$("${SCRIPT_DIR}/test-coverage.sh" "$DIFF" 2>/dev/null || true)
+  if [[ "$TC_OUT" == OK* ]]; then
+    echo "_All changed source files have a matching test file in the diff._"
+  else
+    echo "$TC_OUT" | awk -F'\t' '$1 == "UNTESTED" { printf "- `%s` — %s\n", $2, $3 }'
+  fi
+  echo
+
+  echo "## Dependency additions"
+  echo
+  echo "New entries detected in package manifests (npm, PyPI, crates, Go, RubyGems). Each is a long-term commitment — see the dependency-review reference for the questions to ask."
+  echo
+  DD_OUT=$("${SCRIPT_DIR}/dependency-delta.sh" "$DIFF" 2>/dev/null || true)
+  if [[ "$DD_OUT" == OK* ]]; then
+    echo "_No new dependency additions detected._"
+  else
+    echo "| Manifest | Ecosystem | Package | Version |"
+    echo "|---|---|---|---|"
+    echo "$DD_OUT" | awk -F'\t' 'NF >= 4 { printf "| `%s` | %s | `%s` | %s |\n", $1, $2, $3, $4 }'
+  fi
+  echo
+
   echo "## How to use this report"
   echo
   echo "- Tie qualitative findings to specific rows above. A finding that says \"this function is too long\" should cite the row showing the actual line count."
