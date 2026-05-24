@@ -13,7 +13,17 @@ description: |
     - file-metrics.sh           lines/funcs/max-func-len/max-depth per file
     - dependency-direction.sh   flags outward imports (violations)
     - pattern-fit.sh            nearest-neighbor existing files for new files
+    - test-coverage.sh          flags changed source without paired tests
+    - dependency-delta.sh       detects new package-manifest entries
+    - byte-scan.sh              flags suspicious bytes / grammar violations
+                                  via vendored guarded-fs (lib/guarded-fs/)
     - run-all.sh                orchestrator → analysis.md
+
+  Vendored library:
+    - lib/guarded-fs/           multi-grammar byte/grammar scanner; source
+                                  of truth: sonarmd/tonys-toolbox at
+                                  tools/guarded-fs/. Python stdlib only;
+                                  uses python3 already on ubuntu-latest.
 
 inputs:
   diff_path:
