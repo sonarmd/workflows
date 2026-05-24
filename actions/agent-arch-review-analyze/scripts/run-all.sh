@@ -62,6 +62,25 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
   echo "**Changed files:** ${CHANGED_COUNT}  |  **Net-new files:** ${NEW_COUNT}"
   echo
 
+  # ── byte-scan runs FIRST so it lands in analysis.md even if a later
+  # analyzer crashes (run-all.sh uses set -euo pipefail). Treat this as
+  # the equivalent of `npm audit` running on every install: unconditional.
+  echo "## Suspicious byte scan"
+  echo
+  echo "Files in the diff that contain bytes an LLM commonly introduces but a human reviewer would catch: NBSP, smart quotes, em/en dashes, zero-width characters, control bytes, invalid UTF-8, roff escape misuse, shell PATH clobbers, Markdown fence breakage. Scanner: vendored guarded-fs (lib/guarded-fs/, Python stdlib only)."
+  echo
+  BS_OUT=$("${SCRIPT_DIR}/byte-scan.sh" "$DIFF" "$REPO" 2>/dev/null || true)
+  if [[ "$BS_OUT" == OK* ]]; then
+    echo "_No suspicious bytes detected in changed files._"
+  elif [[ -z "$BS_OUT" ]]; then
+    echo "_byte-scan produced no output (script error; see runner logs)._"
+  else
+    echo "| File | Findings | Reasons |"
+    echo "|---|---:|---|"
+    echo "$BS_OUT" | awk -F'\t' '$1 == "SUSPICIOUS" { printf "| `%s` | %s | %s |\n", $2, $3, $4 }'
+  fi
+  echo
+
   echo "## File metrics"
   echo
   echo "| File | Lines | Funcs | Max func | Max depth |"
@@ -159,20 +178,6 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
     echo "| Manifest | Ecosystem | Package | Version |"
     echo "|---|---|---|---|"
     echo "$DD_OUT" | awk -F'\t' 'NF >= 4 { printf "| `%s` | %s | `%s` | %s |\n", $1, $2, $3, $4 }'
-  fi
-  echo
-
-  echo "## Suspicious byte scan"
-  echo
-  echo "Files in the diff that contain bytes an LLM commonly introduces but a human reviewer would catch: NBSP, smart quotes, em/en dashes, zero-width characters, control bytes, invalid UTF-8, roff escape misuse, shell PATH clobbers, Markdown fence breakage. Scanner: vendored guarded-fs (lib/guarded-fs/, Python stdlib only)."
-  echo
-  BS_OUT=$("${SCRIPT_DIR}/byte-scan.sh" "$DIFF" "$REPO" 2>/dev/null || true)
-  if [[ "$BS_OUT" == OK* ]]; then
-    echo "_No suspicious bytes detected in changed files._"
-  else
-    echo "| File | Findings | Reasons |"
-    echo "|---|---:|---|"
-    echo "$BS_OUT" | awk -F'\t' '$1 == "SUSPICIOUS" { printf "| `%s` | %s | %s |\n", $2, $3, $4 }'
   fi
   echo
 
