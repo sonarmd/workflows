@@ -34,8 +34,11 @@ LINES=$(awk '
   END { print c+0 }
 ' "$F")
 
-# function count — coarse regex covering common forms
-FUNCS=$(grep -cE '^[[:space:]]*(function[[:space:]]+[A-Za-z_]|def[[:space:]]+[A-Za-z_]|func[[:space:]]+\(?[A-Za-z_]|fn[[:space:]]+[A-Za-z_]|public[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|private[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|protected[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|static[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[=:][[:space:]]*\(?[A-Za-z_, ]*\)?[[:space:]]*=>[[:space:]]*[{(])' "$F" 2>/dev/null || echo 0)
+# function count — coarse regex covering common forms.
+# `grep -c` always prints a count on stdout (0 when nothing matches) but exits
+# non-zero on zero matches. Swallow the exit code with `|| true`; do NOT add
+# `|| echo 0`, which would append a second "0" and produce a two-line value.
+FUNCS=$(grep -cE '^[[:space:]]*(function[[:space:]]+[A-Za-z_]|def[[:space:]]+[A-Za-z_]|func[[:space:]]+\(?[A-Za-z_]|fn[[:space:]]+[A-Za-z_]|public[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|private[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|protected[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|static[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[=:][[:space:]]*\(?[A-Za-z_, ]*\)?[[:space:]]*=>[[:space:]]*[{(])' "$F" 2>/dev/null || true)
 
 # max nesting depth — count leading spaces (assume 2 or 4-space indent)
 MAX_DEPTH=$(awk '
@@ -80,5 +83,10 @@ MAX_FUNC_LEN=$(awk '
   }
   END { flush(); print max_len+0 }
 ' "$F")
+
+LINES=${LINES:-0}
+FUNCS=${FUNCS:-0}
+MAX_FUNC_LEN=${MAX_FUNC_LEN:-0}
+MAX_DEPTH=${MAX_DEPTH:-0}
 
 printf '%s\t%d\t%d\t%d\t%d\n' "$F" "$LINES" "$FUNCS" "$MAX_FUNC_LEN" "$MAX_DEPTH"
