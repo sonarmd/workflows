@@ -60,6 +60,13 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 # Rubrics + bundled schema for self-validation.
 COPY rubrics/ /opt/rubrics/
 COPY schemas/ /opt/schemas/
+
+# Reference cards — lean one-page primers (DDD, FCIS, Clean Architecture,
+# abstraction discipline) included in the agent prompt by the entrypoint.
+# Kept deliberately short so they grouund the model without bloating
+# token usage on every PR.
+COPY references/ /opt/references/
+
 COPY entrypoint.sh /usr/local/bin/agent-review
 RUN chmod +x /usr/local/bin/agent-review
 

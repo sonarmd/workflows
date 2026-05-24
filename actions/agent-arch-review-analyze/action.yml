@@ -1,0 +1,50 @@
+name: agent-arch-review-analyze
+description: |
+  Pre-computes structural architecture analysis on the PR diff against the
+  base checkout. Produces a single markdown report (analysis.md) that the
+  Stage 1 agent reads as grounding context for its review.
+
+  Runs in the prepare job (Ubuntu, full toolchain, BASE checkout present)
+  — NOT in the agent container. The agent stays tool-free; the
+  capability lives in the analyzers that run before the LLM is invoked.
+
+  Scripts shipped:
+    - layer-classify.sh         heuristic Clean Architecture layer per file
+    - file-metrics.sh           lines/funcs/max-func-len/max-depth per file
+    - dependency-direction.sh   flags outward imports (violations)
+    - pattern-fit.sh            nearest-neighbor existing files for new files
+    - run-all.sh                orchestrator → analysis.md
+
+inputs:
+  diff_path:
+    description: 'Path to the PR diff (unified)'
+    required: true
+  base_checkout:
+    description: 'Path to the base-branch checkout (where the analyzers walk repo)'
+    required: true
+  output_path:
+    description: 'Where to write the analysis.md report'
+    required: false
+    default: 'work/analysis.md'
+
+outputs:
+  analysis_path:
+    description: 'Path of the written analysis.md'
+    value: ${{ steps.run.outputs.analysis_path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run analyzers
+      id: run
+      shell: bash
+      env:
+        DIFF_PATH: ${{ inputs.diff_path }}
+        BASE_PATH: ${{ inputs.base_checkout }}
+        OUTPUT_PATH: ${{ inputs.output_path }}
+      run: |
+        set -euo pipefail
+        chmod +x "${{ github.action_path }}/scripts/"*.sh
+        mkdir -p "$(dirname "$OUTPUT_PATH")"
+        "${{ github.action_path }}/scripts/run-all.sh" "$DIFF_PATH" "$BASE_PATH" "$OUTPUT_PATH"
+        echo "analysis_path=${OUTPUT_PATH}" >> "$GITHUB_OUTPUT"

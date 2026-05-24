@@ -254,6 +254,21 @@ jobs:
           BYTES=$(wc -c < work/diff.patch)
           echo "::notice::PR #${PR_NUMBER} — head ${HEAD_SHA:0:12}, diff ${BYTES} bytes"
 
+      - name: Pre-compute architecture analysis
+        # Run the analyzer scripts against the BASE checkout + diff and
+        # produce a structured markdown report. This is what gives the
+        # agent QUANTITATIVE grounding (line counts, layer classifications,
+        # dependency-direction violations, pattern-fit neighbors) without
+        # ever exposing the LLM to tool execution.
+        # Failure here MUST NOT block the workflow — if the analyzers
+        # crash, the agent still gets to do a text-only review.
+        continue-on-error: true
+        uses: ./actions/agent-arch-review-analyze
+        with:
+          diff_path: work/diff.patch
+          base_checkout: ${{ github.workspace }}
+          output_path: work/analysis.md
+
       - name: Upload prepared input
         uses: actions/upload-artifact@v4
         with:

@@ -314,6 +314,31 @@ EOF
     esac
   done
 
+  # Reference cards — one-page primers the agent can cite. Only included
+  # for the architecture-flavored modes since security/compliance lean on
+  # different references.
+  case "$REVIEW_MODE" in
+    architecture|architecture+senior|custom)
+      if [[ -d /opt/references ]]; then
+        for card in /opt/references/*.md; do
+          [[ -f "$card" ]] || continue
+          echo "## Reference — $(basename "$card" .md | tr 'a-z-' 'A-Z ')"
+          echo
+          cat "$card"; echo
+        done
+      fi ;;
+  esac
+
+  # Pre-computed analysis from the analyze action. Lives at /work/analysis.md
+  # when the prepare job ran the analyzers; absent otherwise (e.g. legacy
+  # caller, or analyzer step failed — graceful skip in both cases).
+  ANALYSIS_FILE="${INPUT_DIR}/analysis.md"
+  if [[ -f "$ANALYSIS_FILE" && -s "$ANALYSIS_FILE" ]]; then
+    echo "## Pre-computed analysis (grounding data)"
+    echo
+    cat "$ANALYSIS_FILE"; echo
+  fi
+
   cat <<EOF
 ## Output schema
 
