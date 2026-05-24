@@ -297,7 +297,26 @@ EOF
 RAW_OUTPUT=$(mktemp)
 trap 'rm -f "$FILTERED_DIFF" "$PROMPT_FILE" "$RAW_OUTPUT"' EXIT
 
-if ! claude --print --output-format json < "$PROMPT_FILE" > "$RAW_OUTPUT" 2>&1; then
+# SECURITY: lock claude down to JUST the LLM call — no tool access at all.
+# Without `--disallowed-tools`, the model has Bash/WebFetch/Read/Write/etc.
+# enabled by default; a prompt-injected PR diff could then exfiltrate
+# CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY via curl. We disable every
+# tool family by name. The reviewer is text-in / JSON-out only.
+if ! claude --print --output-format json \
+      --disallowed-tools "Bash" \
+      --disallowed-tools "BashOutput" \
+      --disallowed-tools "KillShell" \
+      --disallowed-tools "Edit" \
+      --disallowed-tools "Write" \
+      --disallowed-tools "NotebookEdit" \
+      --disallowed-tools "Read" \
+      --disallowed-tools "Glob" \
+      --disallowed-tools "Grep" \
+      --disallowed-tools "WebFetch" \
+      --disallowed-tools "WebSearch" \
+      --disallowed-tools "Task" \
+      --disallowed-tools "SlashCommand" \
+      < "$PROMPT_FILE" > "$RAW_OUTPUT" 2>&1; then
   echo "::error::claude invocation failed"
   head -50 "$RAW_OUTPUT" >&2 || true
   emit_malformed "claude invocation failed"

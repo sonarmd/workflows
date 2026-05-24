@@ -160,6 +160,29 @@ jobs:
       effective_apply_labels: ${{ steps.config.outputs.apply_labels }}
       effective_check_name: ${{ steps.config.outputs.check_name }}
     steps:
+      - name: Validate image_tag against allowlist
+        # SECURITY: inputs.image_tag flows into the Stage 1 container.image
+        # field. That container receives CLAUDE_CODE_OAUTH_TOKEN /
+        # ANTHROPIC_API_KEY. A caller-repo insider who can edit their
+        # workflow file could otherwise swap in an attacker-controlled
+        # image and exfiltrate those secrets. We allow only:
+        #   - the empty default (resolves to ghcr.io/sonarmd/agent-reviewer:latest)
+        #   - any tag under ghcr.io/sonarmd/agent-reviewer
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$IMAGE_TAG" ]]; then
+            echo "::notice::image_tag empty; will use ghcr.io/sonarmd/agent-reviewer:latest"
+            exit 0
+          fi
+          if [[ ! "$IMAGE_TAG" =~ ^ghcr\.io/sonarmd/agent-reviewer(:[A-Za-z0-9._-]+)?$ ]]; then
+            echo "::error::image_tag '${IMAGE_TAG}' is not in the allowlist."
+            echo "::error::Allowed: ^ghcr\\.io/sonarmd/agent-reviewer(:[A-Za-z0-9._-]+)?$"
+            exit 1
+          fi
+          echo "::notice::image_tag validated: ${IMAGE_TAG}"
+
       - name: Checkout base (for per-repo config file)
         uses: actions/checkout@v4
         with:
