@@ -96,9 +96,13 @@ for repo in "${REPOS[@]}"; do
     continue
   fi
 
-  # Skip if there's already an open PR with this title.
-  EXISTING=$(gh pr list -R "$repo" --state open --search "$PR_TITLE in:title" --json number --jq '.[].number' 2>&1) || EXISTING=""
-  if [[ -n "$EXISTING" && "$EXISTING" != *"error"* && "$EXISTING" != *"HTTP"* ]]; then
+  # Skip if there's already an open PR with this title. Do NOT redirect
+  # stderr into stdout — gh's release-notice warnings on stdout would
+  # otherwise look like PR numbers and trick the heuristic into skipping
+  # the repo. Validate the result is digit-only before treating it as a
+  # PR number list.
+  EXISTING=$(gh pr list -R "$repo" --state open --search "$PR_TITLE in:title" --json number --jq '.[].number' 2>/dev/null || true)
+  if [[ -n "$EXISTING" ]] && printf '%s\n' "$EXISTING" | grep -qE '^[0-9]+$'; then
     echo "  already has open bootstrap PR(s): $EXISTING; skipping"
     SKIPPED+=("${repo}|open PR #${EXISTING}")
     continue

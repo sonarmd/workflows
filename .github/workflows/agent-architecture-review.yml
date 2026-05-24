@@ -96,7 +96,14 @@ on:
         type: boolean
         default: false
       image_tag:
-        description: 'Override the pinned ghcr.io/sonarmd/agent-reviewer tag (testing)'
+        description: |
+          Override the agent-reviewer image. Accepts a full image ref under
+          `ghcr.io/sonarmd/agent-reviewer`, with an optional `:tag` or
+          `@sha256:<digest>` suffix. Digest pinning is the safer choice for
+          supply-chain integrity. Empty (default) → `ghcr.io/sonarmd/agent-reviewer:latest`.
+          Examples:
+            ghcr.io/sonarmd/agent-reviewer:sha-abc123def456
+            ghcr.io/sonarmd/agent-reviewer@sha256:0123...feed
         required: false
         type: string
         default: ''
@@ -167,7 +174,10 @@ jobs:
         # workflow file could otherwise swap in an attacker-controlled
         # image and exfiltrate those secrets. We allow only:
         #   - the empty default (resolves to ghcr.io/sonarmd/agent-reviewer:latest)
-        #   - any tag under ghcr.io/sonarmd/agent-reviewer
+        #   - any `:tag` under ghcr.io/sonarmd/agent-reviewer
+        #   - any `@sha256:<64-hex>` digest under the same name (preferred —
+        #     digest pinning is immutable and the strongest supply-chain
+        #     posture).
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
@@ -176,9 +186,10 @@ jobs:
             echo "::notice::image_tag empty; will use ghcr.io/sonarmd/agent-reviewer:latest"
             exit 0
           fi
-          if [[ ! "$IMAGE_TAG" =~ ^ghcr\.io/sonarmd/agent-reviewer(:[A-Za-z0-9._-]+)?$ ]]; then
+          ALLOW='^ghcr\.io/sonarmd/agent-reviewer((:[A-Za-z0-9._-]+)?(@sha256:[a-f0-9]{64})?|@sha256:[a-f0-9]{64})$'
+          if [[ ! "$IMAGE_TAG" =~ $ALLOW ]]; then
             echo "::error::image_tag '${IMAGE_TAG}' is not in the allowlist."
-            echo "::error::Allowed: ^ghcr\\.io/sonarmd/agent-reviewer(:[A-Za-z0-9._-]+)?$"
+            echo "::error::Allowed: ${ALLOW}"
             exit 1
           fi
           echo "::notice::image_tag validated: ${IMAGE_TAG}"
@@ -317,34 +328,55 @@ jobs:
           name: agent-review-findings-${{ needs.prepare.outputs.pr_number }}
           path: work/
 
-      - name: Synthesize fallback findings if missing
+      - name: Synthesize fallback findings if missing or empty
         # Graceful degradation: if the agent job crashed before writing
-        # any findings.json, fabricate a malformed-status one so the
-        # publisher still posts a neutral check + "review unavailable"
-        # comment rather than the whole publish job exploding.
-        if: ${{ hashFiles('work/findings.json') == '' }}
+        # findings.json, OR if it uploaded a zero-byte file (OOM mid-write,
+        # etc.), fabricate a malformed-status one so the publisher still
+        # posts a neutral check + "review unavailable" comment rather than
+        # the whole publish job exploding. hashFiles() returns empty only
+        # when the file doesn't exist — we additionally check for empty
+        # content via the run step's own `[[ -s ]]` test, which catches
+        # the zero-byte case.
         env:
           HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
           BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          REVIEW_MODE: ${{ needs.prepare.outputs.effective_review_mode }}
+          OVERLAYS: ${{ needs.prepare.outputs.effective_overlays }}
         run: |
           set -euo pipefail
           mkdir -p work
+          if [[ -s work/findings.json ]]; then
+            echo "::notice::findings.json present (size $(wc -c < work/findings.json) bytes); no synthesis needed"
+            exit 0
+          fi
+          # Preserve the audit trail — record what mode/overlays were
+          # requested even when degradation fires. Otherwise compliance
+          # auditors looking at check-run history see every degraded run
+          # as 'architecture / []' regardless of what the operator
+          # actually configured.
+          OVERLAYS_JSON=$(printf '%s' "$OVERLAYS" \
+            | tr ',' '\n' \
+            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            | grep -v '^$' \
+            | jq -R . | jq -s .)
           jq -n \
             --arg head "$HEAD_SHA" \
             --arg base "$BASE_SHA" \
+            --arg mode "$REVIEW_MODE" \
+            --argjson overlays "$OVERLAYS_JSON" \
             '{
               schema_version: "2",
               head_sha: $head,
               base_sha: $base,
-              review_mode: "architecture",
-              overlays_applied: [],
+              review_mode: $mode,
+              overlays_applied: $overlays,
               parser_status: "malformed",
               summary_markdown: "Agent review was unavailable for this PR. The agent job did not complete successfully — see the workflow run logs for details.",
               labels: [],
               categories_present: [],
               findings: []
             }' > work/findings.json
-          echo "::warning::synthesized fallback findings.json — review-agent job did not upload one"
+          echo "::warning::synthesized fallback findings.json — review-agent job did not upload a usable one"
 
       - name: Publish (Stage 2)
         uses: ./actions/agent-arch-review-publish

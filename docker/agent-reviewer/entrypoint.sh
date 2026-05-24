@@ -100,6 +100,13 @@ if [[ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]]; then
   # Truncate at `diff --git` block boundaries so we never feed the model
   # a half-hunk that misleads its line numbers. Drop whole files from the
   # tail once we exceed the cap.
+  #
+  # Exit semantics:
+  #   0 = nothing dropped (shouldn't happen here since we already know
+  #       we exceed cap, but kept consistent with awk's `exit 0` default)
+  #   1 = at least one file dropped (intentional truncation)
+  #   * = awk crashed — caller must NOT proceed with this output
+  set +e
   awk -v cap="$MAX_DIFF_BYTES" '
     BEGIN { bytes=0; block=""; output=""; truncated=0 }
     function flush(    bw) {
@@ -117,13 +124,43 @@ if [[ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]]; then
     END {
       flush()
       printf "%s", output
-      if (truncated) print "" > "/dev/stderr"
-      exit truncated   # 1 if we dropped any file, 0 otherwise
+      exit truncated
     }
-  ' "$DIFF_FILE" > "$TRUNCATED_FILE" 2>/dev/null && DIFF_TRUNCATED=false || DIFF_TRUNCATED=true
+  ' "$DIFF_FILE" > "$TRUNCATED_FILE"
+  AWK_EXIT=$?
+  set -e
+
+  case "$AWK_EXIT" in
+    0)  DIFF_TRUNCATED=false ;;
+    1)  DIFF_TRUNCATED=true  ;;
+    *)
+      echo "::error::truncation awk exited with code ${AWK_EXIT} — possible crash"
+      emit_malformed "diff truncation step crashed (awk exit ${AWK_EXIT})"
+      exit 0
+      ;;
+  esac
+
+  # Single-file fallback: if every file individually exceeds the cap,
+  # the file-boundary truncator produces a 0-byte output (worse than
+  # the old head -c behavior). Fall back to byte-truncating the FIRST
+  # diff block at a line boundary so the model still gets something.
+  if [[ ! -s "$TRUNCATED_FILE" ]]; then
+    echo "::warning::no file fit under cap; falling back to byte-truncation of the first file"
+    awk -v cap="$MAX_DIFF_BYTES" '
+      BEGIN { bytes=0; in_first=0 }
+      /^diff --git / { if (in_first) exit; in_first=1; print; bytes += length($0) + 1; next }
+      in_first {
+        new_bytes = bytes + length($0) + 1
+        if (new_bytes > cap) exit
+        print
+        bytes = new_bytes
+      }
+    ' "$DIFF_FILE" > "$TRUNCATED_FILE"
+    DIFF_TRUNCATED=true
+  fi
   DIFF_FILE="$TRUNCATED_FILE"
   if [[ "$DIFF_TRUNCATED" == "true" ]]; then
-    echo "::warning::diff truncated — dropped files past byte ${MAX_DIFF_BYTES}; review will be partial"
+    echo "::warning::diff truncated — review will be partial"
   fi
 fi
 

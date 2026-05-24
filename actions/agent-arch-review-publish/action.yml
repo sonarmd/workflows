@@ -127,7 +127,14 @@ runs:
         # Resolve the bot identity once. Used to filter "our" prior
         # comments from those of human users — prevents external commenters
         # from weaponizing the bot via the public marker string.
-        BOT_LOGIN=$(gh api user --jq '.login' 2>/dev/null || echo "github-actions[bot]")
+        BOT_LOGIN=$(gh api user --jq '.login' 2>/dev/null || echo "")
+        # Guard against the API returning empty / literal "null", which
+        # would make every author filter match nothing → bot would POST
+        # new summary comments on every push instead of editing the prior.
+        if [[ -z "$BOT_LOGIN" || "$BOT_LOGIN" == "null" ]]; then
+          BOT_LOGIN="github-actions[bot]"
+          echo "::warning::could not resolve bot login from gh api user; defaulting to ${BOT_LOGIN}"
+        fi
         echo "::notice::publisher acting as ${BOT_LOGIN}"
 
         # -------- Step 1: schema validate (light, jq-based) ----------
@@ -193,8 +200,13 @@ runs:
         # If we can't fetch the diff we cannot enforce that invariant, so
         # we degrade to summary-only + neutral check rather than posting
         # unvalidated inline comments.
-        DIFF_JSON=$(mktemp)
-        trap 'rm -f "$DIFF_JSON"' EXIT
+        #
+        # The trap captures ORIGINAL_DIFF_JSON, NOT the mutable DIFF_JSON
+        # variable. Otherwise nulling DIFF_JSON on failure would turn the
+        # cleanup `rm -f ""` into a no-op and leak the tempfile.
+        ORIGINAL_DIFF_JSON=$(mktemp)
+        DIFF_JSON="$ORIGINAL_DIFF_JSON"
+        trap 'rm -f "$ORIGINAL_DIFF_JSON"' EXIT
         VALIDATION_SKIPPED=false
         if ! gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" > "$DIFF_JSON" 2>&1; then
           DIFF_ERROR=$(cat "$DIFF_JSON")
@@ -210,7 +222,7 @@ runs:
         # lines that can receive inline comments. We compute the line numbers
         # as encountered in the new file.
         VALID_MAP=$(mktemp)
-        trap 'rm -f "$DIFF_JSON" "$VALID_MAP"' EXIT
+        trap 'rm -f "$ORIGINAL_DIFF_JSON" "$VALID_MAP"' EXIT
         if [[ -n "$DIFF_JSON" && -f "$DIFF_JSON" ]]; then
           jq -r '.[] | "FILE\t" + .filename + "\n" + (.patch // "")' "$DIFF_JSON" \
             | awk '
@@ -265,7 +277,7 @@ runs:
         DROPPED_THRESHOLD=0
 
         FILTERED=$(mktemp)
-        trap 'rm -f "$DIFF_JSON" "$VALID_MAP" "$FILTERED"' EXIT
+        trap 'rm -f "$ORIGINAL_DIFF_JSON" "$VALID_MAP" "$FILTERED"' EXIT
         echo '[]' > "$FILTERED"
 
         if [[ "$PARSER_STATUS" == "ok" ]] && jq -e '.findings | length > 0' "$FINDINGS_PATH" >/dev/null; then
@@ -355,8 +367,9 @@ runs:
 
           # SECURITY: filter by author so an external commenter who quotes
           # the public marker cannot make us PATCH (or count as ours) a
-          # human's comment. Without this, an external user posting first
-          # with the marker would cause a 403 on PATCH that aborts publish.
+          # human's comment. The interpolation of $BOT_LOGIN is currently
+          # safe because it's GitHub-controlled, but we now also default-
+          # guard above and document the constraint.
           PRIOR_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
             --jq ".[] | select(.user.login == \"${BOT_LOGIN}\") | select(.body | contains(\"<!-- ${BOT_MARKER}:summary -->\")) | .id" \
             | head -1 || true)
