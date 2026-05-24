@@ -317,6 +317,9 @@ jobs:
         with:
           findings_path: work/findings.json
           pr_number: ${{ needs.prepare.outputs.pr_number }}
+          # SECURITY: pass the trusted head_sha from prepare so the publisher
+          # never trusts findings.json's value for review/check-run commit_id.
+          head_sha: ${{ needs.prepare.outputs.head_sha }}
           enforcement_mode: ${{ needs.prepare.outputs.effective_enforcement }}
           severity_threshold: ${{ needs.prepare.outputs.effective_severity_threshold }}
           fail_threshold: ${{ needs.prepare.outputs.effective_fail_threshold }}

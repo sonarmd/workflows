@@ -21,6 +21,13 @@ inputs:
   pr_number:
     description: 'Pull request number'
     required: true
+  head_sha:
+    description: |
+      Trusted PR head SHA from the prepare job (NOT from findings.json).
+      Used as the commit_id for review/check-run posts. The publisher
+      asserts that findings.json's head_sha matches this value before
+      acting on any field — defense-in-depth against findings.json tamper.
+    required: true
   enforcement_mode:
     description: 'advisory | soft-fail | required'
     required: false
@@ -97,6 +104,7 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         FINDINGS_PATH: ${{ inputs.findings_path }}
         PR_NUMBER: ${{ inputs.pr_number }}
+        TRUSTED_HEAD_SHA: ${{ inputs.head_sha }}
         ENFORCEMENT_MODE: ${{ inputs.enforcement_mode }}
         SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
         FAIL_THRESHOLD: ${{ inputs.fail_threshold }}
@@ -116,31 +124,71 @@ runs:
           exit 1
         fi
 
+        # Resolve the bot identity once. Used to filter "our" prior
+        # comments from those of human users — prevents external commenters
+        # from weaponizing the bot via the public marker string.
+        BOT_LOGIN=$(gh api user --jq '.login' 2>/dev/null || echo "github-actions[bot]")
+        echo "::notice::publisher acting as ${BOT_LOGIN}"
+
         # -------- Step 1: schema validate (light, jq-based) ----------
         SCHEMA_OK=true
+        SCHEMA_REASON=""
         if ! jq -e '.schema_version == "2"' "$FINDINGS_PATH" >/dev/null 2>&1; then
-          SCHEMA_OK=false
+          SCHEMA_OK=false; SCHEMA_REASON="schema_version != \"2\""
         fi
         if ! jq -e 'has("findings") and (.findings | type == "array")' "$FINDINGS_PATH" >/dev/null 2>&1; then
-          SCHEMA_OK=false
+          SCHEMA_OK=false; SCHEMA_REASON="missing or non-array .findings"
+        fi
+
+        # Per-finding shape validation. Each finding MUST carry the fields
+        # the publisher relies on; missing fields previously meant findings
+        # were silently dropped at the threshold pass and operators couldn't
+        # distinguish "model emitted nothing" from "model emitted garbage".
+        if [[ "$SCHEMA_OK" == "true" ]]; then
+          if ! jq -e '.findings | all(
+                  has("severity") and has("confidence") and has("category")
+                  and has("overlay") and has("file")
+                  and has("line_start") and has("line_end")
+                  and has("title") and has("rationale")
+                )' "$FINDINGS_PATH" >/dev/null 2>&1; then
+            SCHEMA_OK=false; SCHEMA_REASON="one or more findings missing required fields"
+          fi
         fi
 
         PARSER_STATUS=$(jq -r '.parser_status // "unknown"' "$FINDINGS_PATH")
-        HEAD_SHA=$(jq -r '.head_sha // empty' "$FINDINGS_PATH")
+        # head_sha from findings.json is INFORMATIONAL; the trusted value
+        # comes from the prepare job via inputs.head_sha. We assert equality
+        # as a tripwire on tampered/mismatched artifacts.
+        CLAIMED_HEAD_SHA=$(jq -r '.head_sha // empty' "$FINDINGS_PATH")
+        HEAD_SHA="$TRUSTED_HEAD_SHA"
+        if [[ -n "$CLAIMED_HEAD_SHA" && "$CLAIMED_HEAD_SHA" != "$HEAD_SHA" ]]; then
+          echo "::warning::findings.json head_sha (${CLAIMED_HEAD_SHA}) != trusted prepare head_sha (${HEAD_SHA}); using trusted."
+        fi
         BASE_SHA=$(jq -r '.base_sha // empty' "$FINDINGS_PATH")
 
         if [[ "$SCHEMA_OK" != "true" ]]; then
+          echo "::warning::schema validation failed: ${SCHEMA_REASON}"
           PARSER_STATUS="malformed"
         fi
 
         # -------- Step 2: re-fetch PR diff (deterministic) ----------
         # We DON'T trust the diff that Stage 1 may have used. The publisher
         # re-fetches via the API to validate line positions.
+        #
+        # SECURITY: fail CLOSED on diff fetch failure. The publisher's core
+        # invariant is "every inline comment maps to a real diff line".
+        # If we can't fetch the diff we cannot enforce that invariant, so
+        # we degrade to summary-only + neutral check rather than posting
+        # unvalidated inline comments.
         DIFF_JSON=$(mktemp)
         trap 'rm -f "$DIFF_JSON"' EXIT
-        if ! gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" > "$DIFF_JSON" 2>/dev/null; then
-          echo "::warning::could not fetch PR files via API; falling back to schema-only validation"
+        VALIDATION_SKIPPED=false
+        if ! gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" > "$DIFF_JSON" 2>&1; then
+          DIFF_ERROR=$(cat "$DIFF_JSON")
+          echo "::warning::could not fetch PR files via API:"
+          echo "${DIFF_ERROR}" | head -10
           DIFF_JSON=""
+          VALIDATION_SKIPPED=true
         fi
 
         # -------- Step 3: build (file, valid-lines) map from diff ----------
@@ -287,8 +335,12 @@ runs:
         )
           fi
 
+          # SECURITY: filter by author so an external commenter who quotes
+          # the public marker cannot make us PATCH (or count as ours) a
+          # human's comment. Without this, an external user posting first
+          # with the marker would cause a 403 on PATCH that aborts publish.
           PRIOR_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq ".[] | select(.body | contains(\"<!-- ${BOT_MARKER}:summary -->\")) | .id" \
+            --jq ".[] | select(.user.login == \"${BOT_LOGIN}\") | select(.body | contains(\"<!-- ${BOT_MARKER}:summary -->\")) | .id" \
             | head -1 || true)
 
           if [[ -n "$PRIOR_ID" ]]; then
@@ -301,11 +353,16 @@ runs:
         fi
 
         # -------- Step 6: post inline review comments ----------
+        # SECURITY: skip inline comments when the diff fetch failed —
+        # we cannot validate positions and must not post unvalidated
+        # findings as if they were anchored to the diff.
         POSTED_INLINE=0
-        if [[ "$POST_INLINE" == "true" && "$PARSER_STATUS" == "ok" && "$FINAL_COUNT" -gt 0 ]]; then
+        if [[ "$POST_INLINE" == "true" && "$PARSER_STATUS" == "ok" && "$FINAL_COUNT" -gt 0 && "$VALIDATION_SKIPPED" != "true" ]]; then
           # Delete prior bot inline comments first.
+          # Filter by author so we cannot be tricked into deleting other
+          # users' review comments that happen to quote the public marker.
           STALE_IDS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate \
-            --jq ".[] | select(.body | contains(\"<!-- ${BOT_MARKER}:inline -->\")) | .id" \
+            --jq ".[] | select(.user.login == \"${BOT_LOGIN}\") | select(.body | contains(\"<!-- ${BOT_MARKER}:inline -->\")) | .id" \
             || true)
           for id in $STALE_IDS; do
             gh api --method DELETE "repos/${REPO}/pulls/comments/${id}" >/dev/null || true
