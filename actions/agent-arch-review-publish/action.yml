@@ -140,29 +140,42 @@ runs:
           SCHEMA_OK=false; SCHEMA_REASON="missing or non-array .findings"
         fi
 
-        # Per-finding shape validation. Each finding MUST carry the fields
-        # the publisher relies on; missing fields previously meant findings
-        # were silently dropped at the threshold pass and operators couldn't
-        # distinguish "model emitted nothing" from "model emitted garbage".
+        # Per-finding TYPE-aware validation. The prior version used has()
+        # which accepts null-valued fields — null values then crashed jq
+        # downstream (e.g. `null | ascii_upcase`). We now validate the
+        # field is the expected JSON type AND, for enums, that the value
+        # is in the allowed set.
+        #
+        # line_end is intentionally OMITTED — the inline-comments pipeline
+        # defaults `.line_end := .line_start` so missing line_end is OK.
         if [[ "$SCHEMA_OK" == "true" ]]; then
-          if ! jq -e '.findings | all(
-                  has("severity") and has("confidence") and has("category")
-                  and has("overlay") and has("file")
-                  and has("line_start") and has("line_end")
-                  and has("title") and has("rationale")
-                )' "$FINDINGS_PATH" >/dev/null 2>&1; then
-            SCHEMA_OK=false; SCHEMA_REASON="one or more findings missing required fields"
+          if ! jq -e '
+            .findings | all(
+              (.severity | type == "string") and ([. == "critical","high","medium","low","info"] | any)
+              and (.confidence | type == "string") and ([. == "high","medium","low"] | any)
+              and (.category | type == "string")
+              and (.overlay | type == "string")
+              and (.file | type == "string" and length > 0)
+              and (.line_start | type == "number" and . >= 1 and . == floor)
+              and (.title | type == "string" and length > 0)
+              and (.rationale | type == "string")
+            )' "$FINDINGS_PATH" >/dev/null 2>&1; then
+            SCHEMA_OK=false; SCHEMA_REASON="one or more findings have missing/invalid fields (type or enum check failed)"
           fi
         fi
 
         PARSER_STATUS=$(jq -r '.parser_status // "unknown"' "$FINDINGS_PATH")
         # head_sha from findings.json is INFORMATIONAL; the trusted value
-        # comes from the prepare job via inputs.head_sha. We assert equality
-        # as a tripwire on tampered/mismatched artifacts.
+        # comes from the prepare job via inputs.head_sha. On mismatch we
+        # FORCE PARSER_STATUS=malformed so the publisher routes through
+        # the neutral-check path and never trusts the rest of the file's
+        # contents (which could carry attacker-influenced
+        # summary_markdown / labels).
         CLAIMED_HEAD_SHA=$(jq -r '.head_sha // empty' "$FINDINGS_PATH")
         HEAD_SHA="$TRUSTED_HEAD_SHA"
         if [[ -n "$CLAIMED_HEAD_SHA" && "$CLAIMED_HEAD_SHA" != "$HEAD_SHA" ]]; then
-          echo "::warning::findings.json head_sha (${CLAIMED_HEAD_SHA}) != trusted prepare head_sha (${HEAD_SHA}); using trusted."
+          echo "::warning::findings.json head_sha (${CLAIMED_HEAD_SHA}) != trusted prepare head_sha (${HEAD_SHA}); marking malformed."
+          SCHEMA_OK=false; SCHEMA_REASON="head_sha mismatch — findings.json may be tampered"
         fi
         BASE_SHA=$(jq -r '.base_sha // empty' "$FINDINGS_PATH")
 
@@ -415,7 +428,12 @@ runs:
         fi
 
         # -------- Step 7: labels ----------
-        if [[ "$APPLY_LABELS" == "true" && "$PARSER_STATUS" == "ok" ]]; then
+        # SECURITY: also gate on VALIDATION_SKIPPED so LLM-controlled
+        # labels don't flow through when we couldn't validate the diff.
+        # An LLM that confused itself about a PR could still emit valid
+        # `agent-review/*`-prefixed labels and have them stick despite
+        # the publisher being in degraded mode.
+        if [[ "$APPLY_LABELS" == "true" && "$PARSER_STATUS" == "ok" && "$VALIDATION_SKIPPED" != "true" ]]; then
           DESIRED=$(jq -r '.labels // [] | .[] | select(startswith("'"$LABEL_PREFIX"'"))' "$FINDINGS_PATH" | sort -u || true)
 
           # Ensure each desired label exists; create if missing.
@@ -465,8 +483,11 @@ runs:
 
         # -------- Step 8: check run conclusion ----------
         # Decide conclusion based on enforcement_mode × severities present.
+        # SECURITY: if validation was skipped, force neutral — we are
+        # not allowed to fail (or pass) a check based on unvalidated
+        # LLM-controlled findings.
         CONCLUSION="success"
-        if [[ "$PARSER_STATUS" != "ok" ]]; then
+        if [[ "$PARSER_STATUS" != "ok" || "$VALIDATION_SKIPPED" == "true" ]]; then
           CONCLUSION="neutral"
         else
           TRIPPED=$(jq --argjson fr "$FAIL_RANK" '
