@@ -102,15 +102,32 @@ runs:
           yq eval ".${key} // \"\"" "$CONFIG_PATH" 2>/dev/null | sed '/^$/d' | head -100
         }
 
+        # GitHub Actions $GITHUB_OUTPUT requires the heredoc form for any
+        # multi-line value. include_paths / exclude_paths are explicitly
+        # newline-separated globs (see the per-repo config template), so
+        # write a per-line `<<EOF` delimiter when the value contains a
+        # newline. Single-line values use the simpler `key=value` form.
         emit() {
           local key="$1"
           local default_value="$2"
+          local value
           local override
           override="$(read_yaml "$key")"
           if [[ -n "$override" && "$override" != "null" ]]; then
-            echo "${key}=${override}" >> "$GITHUB_OUTPUT"
+            value="$override"
           else
-            echo "${key}=${default_value}" >> "$GITHUB_OUTPUT"
+            value="$default_value"
+          fi
+          if [[ "$value" == *$'\n'* ]]; then
+            # Pick a delimiter unlikely to appear in the value.
+            local delim="EOF_$(date +%s%N)_$$"
+            {
+              printf '%s<<%s\n' "$key" "$delim"
+              printf '%s\n' "$value"
+              printf '%s\n' "$delim"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
           fi
         }
 

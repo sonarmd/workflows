@@ -332,10 +332,32 @@ RAW_OUTPUT=$(mktemp)
 trap 'rm -f "$FILTERED_DIFF" "$PROMPT_FILE" "$RAW_OUTPUT"' EXIT
 
 # SECURITY: lock claude down to JUST the LLM call — no tool access at all.
-# Without `--disallowed-tools`, the model has Bash/WebFetch/Read/Write/etc.
-# enabled by default; a prompt-injected PR diff could then exfiltrate
-# CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY via curl. We disable every
-# tool family by name. The reviewer is text-in / JSON-out only.
+#
+# We use THREE layers of defense, because a blocklist of built-in tools
+# alone is fragile (new Claude Code releases can add tools that bypass it,
+# and MCP tools are not covered by --disallowed-tools at all):
+#
+#   1. --disallowed-tools — exhaustive blocklist of every built-in tool
+#      family known at time of writing. Includes Skill, TodoWrite,
+#      AskUserQuestion, ToolSearch, ExitPlanMode etc. that the prior
+#      revision missed. Pinned CLAUDE_CODE_VERSION in the Dockerfile is
+#      what makes this list deterministic.
+#
+#   2. --strict-mcp-config + an empty --mcp-config file — disables MCP
+#      auto-discovery and forces zero MCP servers. Without this, any
+#      .mcp.json that lands in the workspace (or a future feature that
+#      defaults to discovery) would let MCP tools bypass the blocklist.
+#
+#   3. The Dockerfile pins CLAUDE_CODE_VERSION to a known version (not
+#      `latest`). New Claude Code releases that add tools cannot reach
+#      production until we explicitly bump and re-review the blocklist.
+#
+# This is the "the LLM has no tools" boundary made actually true.
+
+EMPTY_MCP_CONFIG=$(mktemp)
+echo '{"mcpServers":{}}' > "$EMPTY_MCP_CONFIG"
+trap 'rm -f "$FILTERED_DIFF" "$PROMPT_FILE" "$EMPTY_MCP_CONFIG"' EXIT
+
 if ! claude --print --output-format json \
       --disallowed-tools "Bash" \
       --disallowed-tools "BashOutput" \
@@ -343,6 +365,7 @@ if ! claude --print --output-format json \
       --disallowed-tools "Edit" \
       --disallowed-tools "Write" \
       --disallowed-tools "NotebookEdit" \
+      --disallowed-tools "NotebookRead" \
       --disallowed-tools "Read" \
       --disallowed-tools "Glob" \
       --disallowed-tools "Grep" \
@@ -350,6 +373,13 @@ if ! claude --print --output-format json \
       --disallowed-tools "WebSearch" \
       --disallowed-tools "Task" \
       --disallowed-tools "SlashCommand" \
+      --disallowed-tools "Skill" \
+      --disallowed-tools "TodoWrite" \
+      --disallowed-tools "AskUserQuestion" \
+      --disallowed-tools "ToolSearch" \
+      --disallowed-tools "ExitPlanMode" \
+      --strict-mcp-config \
+      --mcp-config "$EMPTY_MCP_CONFIG" \
       < "$PROMPT_FILE" > "$RAW_OUTPUT" 2>&1; then
   echo "::error::claude invocation failed"
   head -50 "$RAW_OUTPUT" >&2 || true

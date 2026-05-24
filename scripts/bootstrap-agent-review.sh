@@ -112,7 +112,11 @@ for repo in "${REPOS[@]}"; do
     continue
   }
 
-  STAGE_ERR=""
+  # Capture stderr via a tempfile, NOT process substitution. Bash's
+  # `2> >(VAR=$(cat); export VAR)` runs the assignment in a subshell that
+  # cannot mutate the parent — STAGE_ERR would always be empty. Using a
+  # tempfile sidesteps the subshell entirely.
+  STAGE_ERR_FILE=$(mktemp)
   if ! ( cd "$WORKDIR" && {
     DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) || { echo "could not resolve default branch" >&2; exit 1; }
     git checkout -b "$BRANCH_NAME" "origin/${DEFAULT_BRANCH}" || { echo "checkout failed" >&2; exit 1; }
@@ -126,11 +130,13 @@ for repo in "${REPOS[@]}"; do
       --title "$PR_TITLE" \
       --body-file "$PR_BODY_FILE" \
       --base "$DEFAULT_BRANCH" || { echo "gh pr create failed" >&2; exit 1; }
-  } ) 2> >(STAGE_ERR=$(cat); export STAGE_ERR); then
-    record_failure "$repo" "pr-open" "${STAGE_ERR:-see logs above}"
-    rm -rf "$WORKDIR"
+  } ) 2> "$STAGE_ERR_FILE"; then
+    STAGE_ERR=$(tr '\n' ' ' < "$STAGE_ERR_FILE" | sed 's/  */ /g' | cut -c1-300)
+    record_failure "$repo" "pr-open" "${STAGE_ERR:-no stderr captured}"
+    rm -rf "$WORKDIR" "$STAGE_ERR_FILE"
     continue
   fi
+  rm -f "$STAGE_ERR_FILE"
 
   rm -rf "$WORKDIR"
   echo "  PR opened"

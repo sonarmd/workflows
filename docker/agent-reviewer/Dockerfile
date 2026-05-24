@@ -26,7 +26,11 @@
 ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-bookworm-slim
 
-ARG CLAUDE_CODE_VERSION=latest
+# Pin Claude Code to a specific version (not `latest`) so a new upstream
+# release that adds a tool family cannot bypass the entrypoint's
+# `--disallowed-tools` blocklist in production. Bump deliberately and
+# re-review the blocklist when you do.
+ARG CLAUDE_CODE_VERSION=2.0.43
 ARG IMAGE_REVISION=unknown
 
 LABEL org.opencontainers.image.source="https://github.com/sonarmd/workflows"
