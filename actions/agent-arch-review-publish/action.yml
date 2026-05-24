@@ -271,11 +271,14 @@ runs:
           TOTAL=$(jq '.findings | length' "$FINDINGS_PATH")
           DROPPED_THRESHOLD=$((TOTAL - BEFORE))
 
-          # Second pass: drop findings whose (file,line) doesn't map to the diff
+          # Second pass: drop findings whose (file,line) doesn't map to the
+          # diff. Use process substitution rather than `jq | while`, so the
+          # DROPPED_UNMAP counter survives the loop (a piped while runs in
+          # a subshell and its variable mutations are lost).
           if [[ -s "$VALID_MAP" ]]; then
             TMP=$(mktemp)
             : > "$TMP"
-            jq -c '.[]' "$FILTERED" | while read -r f; do
+            while read -r f; do
               FILE=$(echo "$f" | jq -r '.file')
               LSTART=$(echo "$f" | jq -r '.line_start')
               if line_is_valid "$FILE" "$LSTART"; then
@@ -283,7 +286,7 @@ runs:
               else
                 DROPPED_UNMAP=$((DROPPED_UNMAP + 1))
               fi
-            done
+            done < <(jq -c '.[]' "$FILTERED")
             # rebuild array
             if [[ -s "$TMP" ]]; then
               jq -s . "$TMP" > "$FILTERED"
@@ -314,11 +317,13 @@ runs:
         )
           else
             SUMMARY_TEXT=$(jq -r '.summary_markdown // "No summary."' "$FINDINGS_PATH")
-            BREAKDOWN=$(jq -r --argjson f "$(cat "$FILTERED")" '
+            # Use `-n` (null input) — feeding /dev/null gave jq zero inputs,
+            # so the filter was never invoked and BREAKDOWN was always "".
+            BREAKDOWN=$(jq -rn --argjson f "$(cat "$FILTERED")" '
               ($f | group_by(.severity)
                 | map("\(length) \(.[0].severity)")
                 | join(", "))
-              // ""' /dev/null)
+              // ""')
             SUMMARY_BODY=$(cat <<EOF
         <!-- ${BOT_MARKER}:summary -->
         ## Agent Architecture Review
@@ -368,8 +373,19 @@ runs:
             gh api --method DELETE "repos/${REPO}/pulls/comments/${id}" >/dev/null || true
           done
 
-          # Cap at max_inline_comments.
-          CAPPED=$(jq --argjson n "$MAX_INLINE" '.[0:$n]' "$FILTERED")
+          # Cap at max_inline_comments. Also: default line_end := line_start
+          # when missing/null (a single bad finding with no line_end would
+          # otherwise produce a comment with no `line:` field, which the GH
+          # reviews API rejects for the WHOLE batch — one poison-pill kills
+          # every other valid finding in the same payload).
+          CAPPED=$(jq --argjson n "$MAX_INLINE" '
+            .[0:$n]
+            | map(
+                .line_end = (.line_end // .line_start)
+                | .line_start = ([.line_start, .line_end] | min)
+                | .line_end   = ([.line_start, .line_end] | max)
+              )
+          ' "$FILTERED")
           POSTED_INLINE=$(echo "$CAPPED" | jq 'length')
 
           COMMENTS_JSON=$(echo "$CAPPED" | jq --arg marker "$BOT_MARKER" '
@@ -403,9 +419,15 @@ runs:
           DESIRED=$(jq -r '.labels // [] | .[] | select(startswith("'"$LABEL_PREFIX"'"))' "$FINDINGS_PATH" | sort -u || true)
 
           # Ensure each desired label exists; create if missing.
+          # URL-encode the label name in the GET path — labels like
+          # `agent-review/architecture-concern` contain `/` and without
+          # encoding the GET always 404s, the POST then runs, the POST
+          # succeeds first time, but the SECOND run POSTs again and gets
+          # 422 (duplicate) which aborts under set -e.
           while IFS= read -r label; do
             [[ -z "$label" ]] && continue
-            if ! gh api "repos/${REPO}/labels/${label}" >/dev/null 2>&1; then
+            ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+            if ! gh api "repos/${REPO}/labels/${ENCODED}" >/dev/null 2>&1; then
               gh api --method POST "repos/${REPO}/labels" \
                 -f name="$label" \
                 -f color="ededed" \
@@ -418,11 +440,12 @@ runs:
             --jq ".[] | select(.name | startswith(\"${LABEL_PREFIX}\")) | .name" \
             | sort -u || true)
 
-          # Remove stale.
+          # Remove stale. URL-encode for the path component.
           while IFS= read -r label; do
             [[ -z "$label" ]] && continue
             if ! grep -qxF "$label" <<< "$DESIRED"; then
-              gh api --method DELETE "repos/${REPO}/issues/${PR_NUMBER}/labels/${label}" >/dev/null 2>&1 || true
+              ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+              gh api --method DELETE "repos/${REPO}/issues/${PR_NUMBER}/labels/${ENCODED}" >/dev/null 2>&1 || true
             fi
           done <<< "$CURRENT"
 

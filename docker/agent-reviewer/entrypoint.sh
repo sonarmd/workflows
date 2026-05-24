@@ -117,8 +117,14 @@ filter_diff_paths() {
         if (g == "") continue
         re = g
         gsub(/\./, "\\.", re)
-        gsub(/\*\*/, ".*", re)
-        gsub(/\*/, "[^/]*", re)
+        # Protect with placeholders before expansion so the second gsub
+        # does not re-match the output of the first. Without this,
+        # `**/foo/**` was translating to `.[^/]*/foo/.[^/]*` (the `.*`
+        # produced by `**` was being chewed by the `*` rule).
+        gsub(/\*\*/, "\001", re)   # \001 placeholder for **
+        gsub(/\*/,   "\002", re)   # \002 placeholder for *
+        gsub(/\001/, ".*",    re)  # expand ** to .*
+        gsub(/\002/, "[^/]*", re)  # expand * to [^/]*
         gsub(/\?/, ".", re)
         if (path ~ ("^" re "$")) return 1
       }
