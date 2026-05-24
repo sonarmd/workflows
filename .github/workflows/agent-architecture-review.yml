@@ -307,10 +307,44 @@ jobs:
           fetch-depth: 1
 
       - name: Download findings
+        # `continue-on-error: true` so a missing artifact (review-agent
+        # crashed before emit_malformed could write findings.json) doesn't
+        # hard-fail the publish job. The next step synthesizes a fallback.
+        id: download
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: agent-review-findings-${{ needs.prepare.outputs.pr_number }}
           path: work/
+
+      - name: Synthesize fallback findings if missing
+        # Graceful degradation: if the agent job crashed before writing
+        # any findings.json, fabricate a malformed-status one so the
+        # publisher still posts a neutral check + "review unavailable"
+        # comment rather than the whole publish job exploding.
+        if: ${{ hashFiles('work/findings.json') == '' }}
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          jq -n \
+            --arg head "$HEAD_SHA" \
+            --arg base "$BASE_SHA" \
+            '{
+              schema_version: "2",
+              head_sha: $head,
+              base_sha: $base,
+              review_mode: "architecture",
+              overlays_applied: [],
+              parser_status: "malformed",
+              summary_markdown: "Agent review was unavailable for this PR. The agent job did not complete successfully — see the workflow run logs for details.",
+              labels: [],
+              categories_present: [],
+              findings: []
+            }' > work/findings.json
+          echo "::warning::synthesized fallback findings.json — review-agent job did not upload one"
 
       - name: Publish (Stage 2)
         uses: ./actions/agent-arch-review-publish

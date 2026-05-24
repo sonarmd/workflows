@@ -73,47 +73,98 @@ if [[ ${#REPOS[@]} -eq 0 ]]; then
   exit 2
 fi
 
+# Track per-repo outcomes for the summary table + non-zero exit on any failure.
+declare -a SUCCEEDED=()
+declare -a SKIPPED=()
+declare -a FAILED=()
+
+record_failure() {
+  local repo="$1"
+  local stage="$2"
+  local reason="$3"
+  FAILED+=("${repo}|${stage}|${reason}")
+  echo "  FAILED [${stage}]: ${reason}"
+}
+
 for repo in "${REPOS[@]}"; do
   echo "=== $repo ==="
 
   # Skip if already adopted.
   if gh api "repos/${repo}/contents/${TARGET_PATH}" >/dev/null 2>&1; then
     echo "  already has ${TARGET_PATH}; skipping"
+    SKIPPED+=("${repo}|already adopted")
     continue
   fi
 
   # Skip if there's already an open PR with this title.
-  EXISTING=$(gh pr list -R "$repo" --state open --search "$PR_TITLE in:title" --json number --jq '.[].number' || true)
-  if [[ -n "$EXISTING" ]]; then
+  EXISTING=$(gh pr list -R "$repo" --state open --search "$PR_TITLE in:title" --json number --jq '.[].number' 2>&1) || EXISTING=""
+  if [[ -n "$EXISTING" && "$EXISTING" != *"error"* && "$EXISTING" != *"HTTP"* ]]; then
     echo "  already has open bootstrap PR(s): $EXISTING; skipping"
+    SKIPPED+=("${repo}|open PR #${EXISTING}")
     continue
   fi
 
   WORKDIR=$(mktemp -d)
-  if ! gh repo clone "$repo" "$WORKDIR" -- --depth=1 >/dev/null 2>&1; then
-    echo "  clone failed; skipping"
+  # Capture stderr so we know WHY the clone failed (auth vs not-found vs net).
+  CLONE_ERR=$(gh repo clone "$repo" "$WORKDIR" -- --depth=1 2>&1 >/dev/null) || {
+    record_failure "$repo" "clone" "${CLONE_ERR}"
     rm -rf "$WORKDIR"
     continue
-  fi
+  }
 
-  (
-    cd "$WORKDIR"
-    DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
-    git checkout -b "$BRANCH_NAME" "origin/${DEFAULT_BRANCH}"
+  STAGE_ERR=""
+  if ! ( cd "$WORKDIR" && {
+    DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) || { echo "could not resolve default branch" >&2; exit 1; }
+    git checkout -b "$BRANCH_NAME" "origin/${DEFAULT_BRANCH}" || { echo "checkout failed" >&2; exit 1; }
     mkdir -p .github/workflows
-    cp "$TEMPLATE_PATH" "$TARGET_PATH"
+    cp "$TEMPLATE_PATH" "$TARGET_PATH" || { echo "copy template failed" >&2; exit 1; }
     git add "$TARGET_PATH"
-    git -c commit.gpgsign=true commit -m "chore: add agent architecture review"
-    git push -u origin "$BRANCH_NAME"
+    git -c commit.gpgsign=true commit -m "chore: add agent architecture review" || { echo "commit failed (signing? config?)" >&2; exit 1; }
+    git push -u origin "$BRANCH_NAME" || { echo "push failed (permissions?)" >&2; exit 1; }
     gh pr create \
       --draft \
       --title "$PR_TITLE" \
       --body-file "$PR_BODY_FILE" \
-      --base "$DEFAULT_BRANCH"
-  )
+      --base "$DEFAULT_BRANCH" || { echo "gh pr create failed" >&2; exit 1; }
+  } ) 2> >(STAGE_ERR=$(cat); export STAGE_ERR); then
+    record_failure "$repo" "pr-open" "${STAGE_ERR:-see logs above}"
+    rm -rf "$WORKDIR"
+    continue
+  fi
 
   rm -rf "$WORKDIR"
   echo "  PR opened"
+  SUCCEEDED+=("$repo")
 done
+
+# Summary table — operator needs visibility on bulk runs.
+echo
+echo "=========================================="
+echo "  Bootstrap summary"
+echo "=========================================="
+echo "  succeeded: ${#SUCCEEDED[@]}"
+echo "  skipped:   ${#SKIPPED[@]}"
+echo "  failed:    ${#FAILED[@]}"
+echo
+if [[ ${#SUCCEEDED[@]} -gt 0 ]]; then
+  echo "  Succeeded:"
+  for r in "${SUCCEEDED[@]}"; do echo "    + $r"; done
+fi
+if [[ ${#SKIPPED[@]} -gt 0 ]]; then
+  echo "  Skipped:"
+  for entry in "${SKIPPED[@]}"; do
+    echo "    - ${entry%%|*}   (${entry#*|})"
+  done
+fi
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+  echo "  Failed:"
+  for entry in "${FAILED[@]}"; do
+    repo="${entry%%|*}"; rest="${entry#*|}"; stage="${rest%%|*}"; reason="${rest#*|}"
+    printf "    x %-40s [%s] %s\n" "$repo" "$stage" "$reason"
+  done
+  echo
+  echo "exiting non-zero — ${#FAILED[@]} repo(s) need attention."
+  exit 1
+fi
 
 echo "done."

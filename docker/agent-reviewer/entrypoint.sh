@@ -93,10 +93,38 @@ BASE_SHA=$(jq -r '.base_sha' "$META_FILE")
 PR_TITLE=$(jq -r '.title // ""' "$META_FILE")
 
 DIFF_BYTES=$(wc -c < "$DIFF_FILE" | tr -d ' ')
+DIFF_TRUNCATED=false
 if [[ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]]; then
-  echo "::warning::diff size ${DIFF_BYTES} exceeds cap ${MAX_DIFF_BYTES}; truncating"
-  head -c "$MAX_DIFF_BYTES" "$DIFF_FILE" > "${DIFF_FILE}.truncated"
-  DIFF_FILE="${DIFF_FILE}.truncated"
+  echo "::warning::diff size ${DIFF_BYTES} exceeds cap ${MAX_DIFF_BYTES}; truncating at file boundary"
+  TRUNCATED_FILE="${DIFF_FILE}.truncated"
+  # Truncate at `diff --git` block boundaries so we never feed the model
+  # a half-hunk that misleads its line numbers. Drop whole files from the
+  # tail once we exceed the cap.
+  awk -v cap="$MAX_DIFF_BYTES" '
+    BEGIN { bytes=0; block=""; output=""; truncated=0 }
+    function flush(    bw) {
+      bw = bytes + length(block)
+      if (bw <= cap) { output = output block; bytes = bw }
+      else { truncated = 1 }
+      block = ""
+    }
+    /^diff --git / {
+      if (NR > 1) flush()
+      block = $0 "\n"
+      next
+    }
+    { block = block $0 "\n" }
+    END {
+      flush()
+      printf "%s", output
+      if (truncated) print "" > "/dev/stderr"
+      exit truncated   # 1 if we dropped any file, 0 otherwise
+    }
+  ' "$DIFF_FILE" > "$TRUNCATED_FILE" 2>/dev/null && DIFF_TRUNCATED=false || DIFF_TRUNCATED=true
+  DIFF_FILE="$TRUNCATED_FILE"
+  if [[ "$DIFF_TRUNCATED" == "true" ]]; then
+    echo "::warning::diff truncated — dropped files past byte ${MAX_DIFF_BYTES}; review will be partial"
+  fi
 fi
 
 # Apply include/exclude path filtering by editing the diff. The diff is a

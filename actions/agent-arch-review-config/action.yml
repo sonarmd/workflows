@@ -56,6 +56,33 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Ensure yq is available
+      # The prior grep fallback could not parse YAML block scalars, nested
+      # keys, or inline comments — silently producing wrong config. We now
+      # install yq if absent (rare; ubuntu-latest ships it) and use it
+      # exclusively.
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v yq >/dev/null 2>&1; then
+          echo "::notice::yq present: $(yq --version 2>&1 | head -1)"
+          exit 0
+        fi
+        echo "::notice::yq not found; installing mikefarah/yq"
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64)  YQ_ARCH=amd64 ;;
+          aarch64) YQ_ARCH=arm64 ;;
+          *) echo "::error::unsupported arch for yq: $ARCH"; exit 1 ;;
+        esac
+        # Pin a recent stable release rather than `latest` so a yq breaking
+        # change does not silently affect our config parsing.
+        YQ_VER=v4.44.3
+        sudo curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VER}/yq_linux_${YQ_ARCH}" \
+          -o /usr/local/bin/yq
+        sudo chmod +x /usr/local/bin/yq
+        yq --version
+
     - name: Merge per-repo config over workflow inputs
       id: merge
       shell: bash
@@ -64,21 +91,15 @@ runs:
       run: |
         set -euo pipefail
 
-        # Each setting: prefer per-repo file value if present, else workflow input.
-        # We read YAML via yq when present; fall back to grep for resilience.
-
+        # Per-repo file > workflow input. yq parses YAML correctly
+        # (block scalars, nested keys, comments — all the things the
+        # prior grep fallback got wrong).
         read_yaml() {
           local key="$1"
           if [[ ! -f "$CONFIG_PATH" ]]; then echo ""; return; fi
-          if command -v yq >/dev/null 2>&1; then
-            yq eval -e ".${key} // \"\"" "$CONFIG_PATH" 2>/dev/null || echo ""
-          else
-            # Best-effort grep-based fallback. Matches `key: value` or `key: "value"`.
-            grep -E "^[[:space:]]*${key}[[:space:]]*:" "$CONFIG_PATH" 2>/dev/null \
-              | head -1 \
-              | sed -E "s/^[[:space:]]*${key}[[:space:]]*:[[:space:]]*//; s/^\"//; s/\"$//; s/^'//; s/'$//" \
-              || echo ""
-          fi
+          # `e ... // ""` returns empty string for missing or null keys.
+          # `output-format=raw` so multiline block scalars come back joined.
+          yq eval ".${key} // \"\"" "$CONFIG_PATH" 2>/dev/null | sed '/^$/d' | head -100
         }
 
         emit() {
