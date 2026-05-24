@@ -14,7 +14,6 @@ import re
 from .common import (
     Finding,
     SEVERITY_BLOCK,
-    SEVERITY_SUSPICIOUS,
     offset_to_line_column,
     visible_byte_context,
 )

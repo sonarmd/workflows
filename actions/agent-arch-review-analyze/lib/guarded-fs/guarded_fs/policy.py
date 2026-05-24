@@ -27,8 +27,6 @@ import fnmatch
 import json
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Iterable
 
 from .scanners.byte_scanner import DEFAULT_FORBIDDEN_CODEPOINTS
 

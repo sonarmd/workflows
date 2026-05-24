@@ -1,4 +1,4 @@
-# Runtime audit log directory — never committed.
+# Runtime audit log directory - never committed.
 .guard/
 
 # Python bytecode (already covered by repo .gitignore, kept here for portability).

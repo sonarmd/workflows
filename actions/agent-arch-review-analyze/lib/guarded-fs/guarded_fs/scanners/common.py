@@ -8,8 +8,8 @@ of this package does not flag the package itself.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
 
 
 SEVERITY_CLEAN = "clean"

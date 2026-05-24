@@ -14,13 +14,11 @@ import os
 import shutil
 import subprocess
 import tempfile
-import uuid
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 from .audit import AuditLog
 from .policy import Policy
-from .scanners import REGISTRY, infer_grammar, scan_with
+from .scanners import infer_grammar, scan_with
 from .scanners.common import (
     Finding,
     STATUS_BINARY,

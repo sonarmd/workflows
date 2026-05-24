@@ -127,7 +127,12 @@ for repo in "${REPOS[@]}"; do
     mkdir -p .github/workflows
     cp "$TEMPLATE_PATH" "$TARGET_PATH" || { echo "copy template failed" >&2; exit 1; }
     git add "$TARGET_PATH"
-    git -c commit.gpgsign=true commit -m "chore: add agent architecture review" || { echo "commit failed (signing? config?)" >&2; exit 1; }
+    # Respect the operator's git config for signing. Repos that require
+    # signed commits will reject unsigned ones; repos that don't require
+    # signing accept either. Forcing -c commit.gpgsign=true here failed
+    # for bot accounts and operators without a configured signing key,
+    # per Codex P2 review on PR #45.
+    git commit -m "chore: add agent architecture review" || { echo "commit failed (check git config user.email and any signing requirement on the target repo)" >&2; exit 1; }
     git push -u origin "$BRANCH_NAME" || { echo "push failed (permissions?)" >&2; exit 1; }
     gh pr create \
       --draft \

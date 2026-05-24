@@ -201,9 +201,24 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 1
 
+      # Local composite actions (./actions/...) resolve against the
+      # workspace, which holds the CALLER repo. Check out this reusable
+      # workflow's own repo at the SAME ref it's running at, so
+      # `uses: ./.sonarmd-workflows/actions/...` resolves correctly in
+      # consumer repos. github.workflow_sha is the called workflow's SHA
+      # under workflow_call (NOT the caller's), so the action versions
+      # always match the workflow version. Codex P0 on PR #45.
+      - name: Checkout sonarmd/workflows (for local composite actions)
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: ${{ github.workflow_sha }}
+          path: .sonarmd-workflows
+          fetch-depth: 1
+
       - name: Merge per-repo config over workflow inputs
         id: config
-        uses: ./actions/agent-arch-review-config
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-config
         with:
           config_path: ${{ inputs.config_path }}
           default_review_mode: ${{ inputs.review_mode }}
@@ -263,7 +278,7 @@ jobs:
         # Failure here MUST NOT block the workflow — if the analyzers
         # crash, the agent still gets to do a text-only review.
         continue-on-error: true
-        uses: ./actions/agent-arch-review-analyze
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-analyze
         with:
           diff_path: work/diff.patch
           base_checkout: ${{ github.workspace }}
@@ -287,6 +302,19 @@ jobs:
     container:
       image: ${{ inputs.image_tag != '' && inputs.image_tag || 'ghcr.io/sonarmd/agent-reviewer:latest' }}
     steps:
+      # The agent runs inside a container with NO GitHub permissions.
+      # We still need the composite action's files on disk; checkout
+      # itself uses the runner's auth, not anything passed to the agent.
+      # Pinned to the workflow's own SHA so the action version always
+      # matches the workflow version. Codex P0 on PR #45.
+      - name: Checkout sonarmd/workflows (for local composite action)
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: ${{ github.workflow_sha }}
+          path: .sonarmd-workflows
+          fetch-depth: 1
+
       - name: Download prepared input
         uses: actions/download-artifact@v4
         with:
@@ -294,7 +322,7 @@ jobs:
           path: /work
 
       - name: Run agent (Stage 1)
-        uses: ./actions/agent-arch-review-agent
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-agent
         with:
           input_dir: /work
           output_path: /work/findings.json
@@ -326,10 +354,21 @@ jobs:
       issues: write
       checks: write
     steps:
-      - name: Checkout base (for the composite action)
+      - name: Checkout base (for repo metadata)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+
+      # Same rationale as the prepare and review-agent jobs: the local
+      # composite action lives in sonarmd/workflows, not the caller's
+      # repo. Pinned to the workflow's own SHA. Codex P0 on PR #45.
+      - name: Checkout sonarmd/workflows (for local composite action)
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: ${{ github.workflow_sha }}
+          path: .sonarmd-workflows
           fetch-depth: 1
 
       - name: Download findings
@@ -394,7 +433,7 @@ jobs:
           echo "::warning::synthesized fallback findings.json — review-agent job did not upload a usable one"
 
       - name: Publish (Stage 2)
-        uses: ./actions/agent-arch-review-publish
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-publish
         with:
           findings_path: work/findings.json
           pr_number: ${{ needs.prepare.outputs.pr_number }}

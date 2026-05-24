@@ -19,7 +19,6 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 
 # Heuristic patterns for secret-shaped strings. We do NOT try to be
