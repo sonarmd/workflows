@@ -35,10 +35,13 @@ on:
         required: true
 
 # No `permissions:` block — the caller's grant flows through unchanged.
-# This workflow needs contents:write (create tags + GitHub releases),
-# actions:read (discover prior workflow runs), and packages:read (pull
-# release tarball from the GHCR-backed store). The caller must offer
-# those scopes.
+# This workflow needs contents:write (create tags + GitHub releases) and
+# packages:read (pull release tarball from the GHCR-backed store). The
+# caller must offer those scopes.
+#
+# Note: `actions:read` is NOT exercised here — that's the orchestrator's
+# `check` job that calls listWorkflowRunsForRepo. Don't add actions:read
+# to a caller invoking cd-core directly.
 
 jobs:
   cd:

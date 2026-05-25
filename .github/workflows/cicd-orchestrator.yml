@@ -164,10 +164,14 @@ jobs:
   canary_verify:
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    # The canary-verify action mints its own token via the smd-ci-agora
-    # GitHub App for issue creation; it does not need elevated GITHUB_TOKEN
-    # scopes from the caller. This job inherits the caller's grant only
-    # because we don't declare a permissions block here.
+    # Explicit narrow scope — the canary-verify action mints its own token
+    # via the smd-ci-agora GitHub App for issue creation, so this job's
+    # GITHUB_TOKEN needs nothing beyond `contents: read` (used for the
+    # checkout inside the action). Declared explicitly to opt OUT of the
+    # caller's wider grant inheriting through — defense-in-depth for the
+    # rare event of a supply-chain compromise in the action.
+    permissions:
+      contents: read
     outputs:
       failed:        ${{ steps.vrfy.outputs.failed }}
       missing:       ${{ steps.vrfy.outputs.missing }}
@@ -194,10 +198,14 @@ jobs:
       needs.canary_verify.outputs.failed == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # The canary-reconcile action mints its own App token for both the
-    # recovery branch push (contents:write) and the draft PR creation
-    # (pull-requests:write). It does its own checkout with that token and
-    # does not depend on this job's GITHUB_TOKEN scopes.
+    # Explicit narrow scope — the canary-reconcile action mints its own
+    # App token for both the recovery branch push (contents:write) and
+    # the draft PR creation (pull-requests:write), and does its own
+    # checkout with that token. This job's GITHUB_TOKEN needs nothing
+    # beyond `contents: read`. Declared explicitly to opt OUT of the
+    # caller's wider grant — defense-in-depth.
+    permissions:
+      contents: read
     steps:
       - uses: sonarmd/workflows/actions/canary-reconcile@main
         with:
