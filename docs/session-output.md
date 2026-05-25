@@ -153,7 +153,7 @@ Rules:
 - `identifier` — required, must match platform mapping or CD fails
 - `build_root` — optional, default `dist`
 - `bundles` — required, min 1
-- `bundles[].target` — enum: `s3`, `ec2`, `eas`, `cdk`, `lambda`
+- `bundles[].target` — enum: `s3`, `ec2`, `eas`, `cdk`, `lambda`, `fargate`
 - `bundles[].hosts` — object (label → Ansible inventory match key), NOT array
 - Only `${env}` template variable allowed
 - `additionalProperties: false`
