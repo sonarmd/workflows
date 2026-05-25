@@ -63,7 +63,7 @@ on:
 jobs:
   ci:
     name: ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: ${{ inputs.timeout }}
     env:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in

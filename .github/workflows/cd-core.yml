@@ -42,7 +42,7 @@ on:
 
 jobs:
   cd:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
