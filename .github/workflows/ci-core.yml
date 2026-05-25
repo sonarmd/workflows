@@ -52,19 +52,19 @@ on:
           GitHub token used for @sonarmd npm Packages auth.
           Falls back to github.token when not provided.
         required: false
-permissions: {}
+
+# No `permissions:` block — the caller's grant flows through unchanged.
+# This reusable workflow runs steps that need (at minimum): contents:read for
+# the checkout, id-token:write + attestations:write for the signing/attestation
+# actions, actions:read for the artifact-store probe, and packages:write for
+# the GHCR-backed artifact-store push (only on push events). The caller must
+# offer those scopes; see cicd-orchestrator.yml's header for the canonical list.
 
 jobs:
   ci:
     name: ci
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout }}
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-      actions: read
-      packages: write   # publish release tarball to GHCR-backed artifact store
     env:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
       # to node24 now so actions that haven't republished (setup-node@v4,

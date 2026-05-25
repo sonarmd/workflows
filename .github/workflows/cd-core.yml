@@ -2,6 +2,11 @@ name: CD
 
 # ── Caller example dumb af claudes stop touching my shit ────────────────────────────────────────────────────────
 #
+# In practice this is invoked by cicd-orchestrator.yml, not directly. If you
+# do invoke it directly, the caller is the single source of truth for
+# GITHUB_TOKEN scopes — declare them on the caller's `permissions:` block;
+# this workflow declares none of its own.
+#
 #   name: CD
 #   on:
 #     push:
@@ -9,11 +14,12 @@ name: CD
 #   concurrency:
 #     group: cd-${{ github.ref_name }}
 #     cancel-in-progress: true
+#   permissions:
+#     contents: write   # create tags and GitHub releases
+#     actions: read     # download CI artifacts
+#     packages: read    # pull release tarball from GHCR-backed store
 #   jobs:
 #     cd:
-#       permissions:
-#         contents: write   # create tags and GitHub releases
-#         actions: read     # download CI artifacts
 #       uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
 #       secrets: inherit
 #
@@ -28,16 +34,16 @@ on:
       OP_SERVICE_ACCOUNT_TOKEN:
         required: true
 
-permissions: {}
+# No `permissions:` block — the caller's grant flows through unchanged.
+# This workflow needs contents:write (create tags + GitHub releases),
+# actions:read (discover prior workflow runs), and packages:read (pull
+# release tarball from the GHCR-backed store). The caller must offer
+# those scopes.
 
 jobs:
   cd:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write   # create tags and GitHub releases
-      actions: read     # discover prior workflow runs (legacy paths)
-      packages: read    # pull release tarball from GHCR-backed artifact store
     env:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
       # to node24 now so actions that haven't republished (download-artifact,
