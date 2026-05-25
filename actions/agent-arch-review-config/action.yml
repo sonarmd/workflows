@@ -1,0 +1,206 @@
+name: agent-arch-review-config
+description: |
+  Reads an optional per-repo config file (default `.github/agent-review.yml`)
+  and merges it OVER the workflow inputs. Outputs the effective config as
+  individual values for downstream steps to consume.
+
+  Precedence: per-repo config file > workflow inputs > built-in defaults.
+
+  The config file is a flat YAML map keyed by the same names as the
+  workflow inputs. Any key not present falls back to the workflow input.
+
+inputs:
+  config_path:
+    description: 'Path to the per-repo config (in the BASE branch checkout)'
+    required: false
+    default: '.github/agent-review.yml'
+  default_review_mode:        { required: true }
+  default_overlays:           { required: true }
+  default_enforcement_mode:   { required: true }
+  default_max_inline_comments:{ required: true }
+  default_severity_threshold: { required: true }
+  default_fail_threshold:     { required: true }
+  default_include_paths:      { required: true }
+  default_exclude_paths:      { required: true }
+  default_post_summary_comment: { required: true }
+  default_post_inline_comments: { required: true }
+  default_apply_labels:       { required: true }
+  default_check_name:         { required: true }
+
+outputs:
+  review_mode:
+    value: ${{ steps.merge.outputs.review_mode }}
+  overlays:
+    value: ${{ steps.merge.outputs.overlays }}
+  enforcement_mode:
+    value: ${{ steps.merge.outputs.enforcement_mode }}
+  max_inline_comments:
+    value: ${{ steps.merge.outputs.max_inline_comments }}
+  severity_threshold:
+    value: ${{ steps.merge.outputs.severity_threshold }}
+  fail_threshold:
+    value: ${{ steps.merge.outputs.fail_threshold }}
+  include_paths:
+    value: ${{ steps.merge.outputs.include_paths }}
+  exclude_paths:
+    value: ${{ steps.merge.outputs.exclude_paths }}
+  post_summary_comment:
+    value: ${{ steps.merge.outputs.post_summary_comment }}
+  post_inline_comments:
+    value: ${{ steps.merge.outputs.post_inline_comments }}
+  apply_labels:
+    value: ${{ steps.merge.outputs.apply_labels }}
+  check_name:
+    value: ${{ steps.merge.outputs.check_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Ensure mikefarah/yq is available
+      # The prior grep fallback could not parse YAML block scalars, nested
+      # keys, or inline comments — silently producing wrong config. We now
+      # require mikefarah/yq (v4). Specifically need to distinguish from
+      # kislyuk/yq (pip-installed Python jq-wrapper with incompatible CLI)
+      # which `command -v yq` would also match.
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        is_mikefarah_yq() {
+          command -v yq >/dev/null 2>&1 || return 1
+          yq --version 2>&1 | grep -q -i 'mikefarah' || return 1
+        }
+
+        if is_mikefarah_yq; then
+          echo "::notice::mikefarah/yq present: $(yq --version 2>&1 | head -1)"
+          exit 0
+        fi
+
+        if command -v yq >/dev/null 2>&1; then
+          echo "::warning::wrong yq on PATH ($(yq --version 2>&1 | head -1)) — installing mikefarah/yq alongside"
+        else
+          echo "::notice::yq not found; installing mikefarah/yq"
+        fi
+
+        # OS + arch detection. Supports Linux x86_64/aarch64 and macOS
+        # x86_64/arm64 — covers the GH-hosted runners and the most common
+        # self-hosted shapes.
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        case "$OS" in
+          linux|darwin) ;;
+          *) echo "::error::unsupported OS for yq install: $OS"; exit 1 ;;
+        esac
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64)        YQ_ARCH=amd64 ;;
+          aarch64|arm64) YQ_ARCH=arm64 ;;
+          *) echo "::error::unsupported arch for yq install: $ARCH"; exit 1 ;;
+        esac
+
+        # Pin to a known release so a yq breaking change doesn't silently
+        # affect our config parsing.
+        YQ_VER=v4.44.3
+        ASSET="yq_${OS}_${YQ_ARCH}"
+        URL="https://github.com/mikefarah/yq/releases/download/${YQ_VER}/${ASSET}"
+        CHECKSUMS_URL="https://github.com/mikefarah/yq/releases/download/${YQ_VER}/checksums"
+
+        TMPDIR_LOCAL=$(mktemp -d)
+        curl -fsSL "$URL"            -o "$TMPDIR_LOCAL/yq"
+        curl -fsSL "$CHECKSUMS_URL"  -o "$TMPDIR_LOCAL/checksums"
+
+        EXPECTED=$(awk -v asset="$ASSET" '$1 == asset && length($19) == 64 { print $19; exit }' "$TMPDIR_LOCAL/checksums")
+        if [[ -z "$EXPECTED" ]]; then
+          # Fallback: simpler checksum line format.
+          EXPECTED=$(grep -E "^[a-f0-9]{64}  $ASSET\$" "$TMPDIR_LOCAL/checksums" | awk '{print $1}')
+        fi
+        if [[ -z "$EXPECTED" ]]; then
+          echo "::error::could not find checksum for $ASSET in mikefarah/yq release checksums"
+          exit 1
+        fi
+        ACTUAL=$(shasum -a 256 "$TMPDIR_LOCAL/yq" | awk '{print $1}')
+        if [[ "$EXPECTED" != "$ACTUAL" ]]; then
+          echo "::error::checksum mismatch for yq: expected $EXPECTED, got $ACTUAL"
+          exit 1
+        fi
+        echo "::notice::yq checksum verified: $ACTUAL"
+
+        # Install to a writable PATH directory. Prefer /usr/local/bin via
+        # sudo (ubuntu-latest); fall back to ~/.local/bin if sudo isn't
+        # available (some self-hosted runners).
+        if sudo -n true >/dev/null 2>&1; then
+          sudo install -m 0755 "$TMPDIR_LOCAL/yq" /usr/local/bin/yq
+        else
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$TMPDIR_LOCAL/yq" "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        fi
+        rm -rf "$TMPDIR_LOCAL"
+        # `which` may still cache the wrong yq for this step; just verify.
+        "$(command -v yq || echo "$HOME/.local/bin/yq")" --version
+
+    - name: Merge per-repo config over workflow inputs
+      id: merge
+      shell: bash
+      env:
+        CONFIG_PATH: ${{ inputs.config_path }}
+      run: |
+        set -euo pipefail
+
+        # Per-repo file > workflow input. yq parses YAML correctly
+        # (block scalars, nested keys, comments — all the things the
+        # prior grep fallback got wrong).
+        read_yaml() {
+          local key="$1"
+          if [[ ! -f "$CONFIG_PATH" ]]; then echo ""; return; fi
+          # `e ... // ""` returns empty string for missing or null keys.
+          # `output-format=raw` so multiline block scalars come back joined.
+          yq eval ".${key} // \"\"" "$CONFIG_PATH" 2>/dev/null | sed '/^$/d' | head -100
+        }
+
+        # GitHub Actions $GITHUB_OUTPUT requires the heredoc form for any
+        # multi-line value. include_paths / exclude_paths are explicitly
+        # newline-separated globs (see the per-repo config template), so
+        # write a per-line `<<EOF` delimiter when the value contains a
+        # newline. Single-line values use the simpler `key=value` form.
+        emit() {
+          local key="$1"
+          local default_value="$2"
+          local value
+          local override
+          override="$(read_yaml "$key")"
+          if [[ -n "$override" && "$override" != "null" ]]; then
+            value="$override"
+          else
+            value="$default_value"
+          fi
+          if [[ "$value" == *$'\n'* ]]; then
+            # Pick a delimiter unlikely to appear in the value.
+            local delim="EOF_$(date +%s%N)_$$"
+            {
+              printf '%s<<%s\n' "$key" "$delim"
+              printf '%s\n' "$value"
+              printf '%s\n' "$delim"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+          fi
+        }
+
+        emit review_mode         "${{ inputs.default_review_mode }}"
+        emit overlays            "${{ inputs.default_overlays }}"
+        emit enforcement_mode    "${{ inputs.default_enforcement_mode }}"
+        emit max_inline_comments "${{ inputs.default_max_inline_comments }}"
+        emit severity_threshold  "${{ inputs.default_severity_threshold }}"
+        emit fail_threshold      "${{ inputs.default_fail_threshold }}"
+        emit include_paths       "${{ inputs.default_include_paths }}"
+        emit exclude_paths       "${{ inputs.default_exclude_paths }}"
+        emit post_summary_comment "${{ inputs.default_post_summary_comment }}"
+        emit post_inline_comments "${{ inputs.default_post_inline_comments }}"
+        emit apply_labels        "${{ inputs.default_apply_labels }}"
+        emit check_name          "${{ inputs.default_check_name }}"
+
+        if [[ -f "$CONFIG_PATH" ]]; then
+          echo "::notice::merged per-repo config from ${CONFIG_PATH}"
+        else
+          echo "::notice::no per-repo config at ${CONFIG_PATH}; using workflow defaults"
+        fi

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sonarmd/workflows/schemas/agent-review-findings.v2.schema.json",
+  "title": "Agent Review Findings v2",
+  "description": "Public contract between the agent-reviewer container (Stage 1) and the agent-arch-review-publish composite action (Stage 2). This file is the authoritative copy; the same schema is bundled inside the container at /opt/schemas/findings.v2.schema.json for self-validation.",
+  "type": "object",
+  "required": ["schema_version", "summary_markdown", "findings", "parser_status"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "2" },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "review_mode": {
+      "type": "string",
+      "enum": ["architecture", "architecture+senior", "security", "compliance", "custom"]
+    },
+    "overlays_applied": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["senior-eye", "security", "hipaa-soc2"] }
+    },
+    "parser_status": {
+      "type": "string",
+      "enum": ["ok", "partial", "malformed"]
+    },
+    "summary_markdown": { "type": "string" },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^agent-review/[a-z0-9][a-z0-9-]*[a-z0-9]$",
+        "maxLength": 60
+      },
+      "default": []
+    },
+    "categories_present": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/category" }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "category": {
+      "type": "string",
+      "enum": ["architecture", "domain-boundary", "naming", "coupling", "abstraction", "maintainability", "security", "compliance"]
+    },
+    "finding": {
+      "type": "object",
+      "required": ["severity", "confidence", "category", "overlay", "file", "line_start", "line_end", "title", "rationale"],
+      "properties": {
+        "fingerprint": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "category": { "$ref": "#/$defs/category" },
+        "overlay": {
+          "type": "string",
+          "enum": ["default", "senior-eye", "security", "hipaa-soc2"]
+        },
+        "file": { "type": "string" },
+        "line_start": { "type": "integer", "minimum": 1 },
+        "line_end": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "maxLength": 120 },
+        "rationale": { "type": "string" },
+        "suggested_remediation": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

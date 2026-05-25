@@ -1,0 +1,82 @@
+{
+  "allowed_roots": [
+    "/Users/avespoli/code"
+  ],
+  "protected_paths": [
+    "/Users/avespoli/.zshrc",
+    "/Users/avespoli/.zshenv",
+    "/Users/avespoli/.zprofile",
+    "/Users/avespoli/.bashrc",
+    "/Users/avespoli/.bash_profile",
+    "/Users/avespoli/.profile",
+    "/Users/avespoli/.config/fish/config.fish",
+    "/Users/avespoli/.claude/CLAUDE.md",
+    "/Users/avespoli/.claude/settings.json",
+    "/Users/avespoli/.claude/settings.local.json"
+  ],
+  "sensitive_globs": [
+    "*.1",
+    "*.2",
+    "*.3",
+    "*.4",
+    "*.5",
+    "*.6",
+    "*.7",
+    "*.8",
+    "*.man",
+    "Dockerfile",
+    "*.dockerfile",
+    "*.sh",
+    "*.bash",
+    "*.zsh",
+    "*.zshrc",
+    "*.zshenv",
+    "*.zprofile",
+    "*.bashrc",
+    "*.bash_profile",
+    "*.profile"
+  ],
+  "forbidden_codepoints": [
+    8,
+    27,
+    160,
+    180,
+    8203,
+    8204,
+    8205,
+    8216,
+    8217,
+    8220,
+    8221,
+    8211,
+    8212,
+    8722
+  ],
+  "roff_forbidden_patterns": [
+    "\\\\'"
+  ],
+  "shell_forbidden_patterns": [
+    "(^|;|&&|\\|\\|)\\s*(export\\s+)?PATH\\s*=\\s*(?!\\$PATH|.*\\$PATH)",
+    "(>>|>)\\s*~/\\.(zshrc|zshenv|zprofile|bashrc|bash_profile|profile)"
+  ],
+  "binary_skip_globs": [
+    ".DS_Store",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.webp",
+    "*.pdf",
+    "*.zip",
+    "*.tar",
+    "*.tar.gz",
+    "*.tgz",
+    "*.so",
+    "*.dylib",
+    "*.dll",
+    "*.pyc",
+    "*.class",
+    "*.jar",
+    "*.wasm"
+  ]
+}

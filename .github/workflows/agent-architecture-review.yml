@@ -1,0 +1,451 @@
+name: Agent Architecture Review
+
+# Reusable workflow that runs an agent-based ARCHITECTURE reviewer over
+# the PR diff. Two-stage with a hard security boundary between the LLM
+# (Stage 1, no GitHub access) and the publisher (Stage 2, scoped write).
+#
+# Triggered as `workflow_call`. Caller chooses the trigger event
+# (`pull_request_target` recommended for fork safety + secrets).
+#
+# ── Caller example ─────────────────────────────────────────────────────
+#
+#   # .github/workflows/agent-architecture-review.yml
+#   name: Agent Architecture Review
+#   on:
+#     pull_request_target:
+#       types: [opened, synchronize, reopened]
+#
+#   permissions:
+#     contents: read
+#     pull-requests: write
+#     issues: write
+#     checks: write
+#     packages: read
+#
+#   jobs:
+#     review:
+#       uses: sonarmd/workflows/.github/workflows/agent-architecture-review.yml@main
+#       secrets:
+#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      review_mode:
+        description: 'architecture | architecture+senior | security | compliance | custom'
+        required: false
+        type: string
+        default: 'architecture'
+      overlays:
+        description: 'Comma-list of overlays: senior-eye, security, hipaa-soc2'
+        required: false
+        type: string
+        default: 'senior-eye'
+      enforcement_mode:
+        description: 'advisory | soft-fail | required'
+        required: false
+        type: string
+        default: 'advisory'
+      max_inline_comments:
+        description: 'Maximum inline review comments to post'
+        required: false
+        type: number
+        default: 20
+      severity_threshold:
+        description: 'Minimum severity to surface (info|low|medium|high|critical)'
+        required: false
+        type: string
+        default: 'medium'
+      fail_threshold:
+        description: 'Severities >= this fail the check in "required" mode'
+        required: false
+        type: string
+        default: 'high'
+      include_paths:
+        description: 'Newline-separated globs (empty = all)'
+        required: false
+        type: string
+        default: ''
+      exclude_paths:
+        description: 'Newline-separated globs'
+        required: false
+        type: string
+        default: ''
+      post_summary_comment:
+        description: 'Post a summary comment on the PR'
+        required: false
+        type: boolean
+        default: true
+      post_inline_comments:
+        description: 'Post inline review comments'
+        required: false
+        type: boolean
+        default: true
+      apply_labels:
+        description: 'Apply agent-review/* labels'
+        required: false
+        type: boolean
+        default: true
+      allow_pr_head_checkout:
+        description: |
+          Security: by default, the workflow does NOT check out PR head as
+          code (only the diff via API is used). Set true to enable a
+          read-only checkout of PR head for richer context. NO package
+          manager will execute on PR code regardless.
+        required: false
+        type: boolean
+        default: false
+      image_tag:
+        description: |
+          Override the agent-reviewer image. Accepts a full image ref under
+          `ghcr.io/sonarmd/agent-reviewer`, with an optional `:tag` or
+          `@sha256:<digest>` suffix. Digest pinning is the safer choice for
+          supply-chain integrity. Empty (default) → `ghcr.io/sonarmd/agent-reviewer:latest`.
+          Examples:
+            ghcr.io/sonarmd/agent-reviewer:sha-abc123def456
+            ghcr.io/sonarmd/agent-reviewer@sha256:0123...feed
+        required: false
+        type: string
+        default: ''
+      check_name:
+        description: 'Display name for the check run'
+        required: false
+        type: string
+        default: 'Agent Architecture Review'
+      config_path:
+        description: 'Per-repo config file path (in the BASE branch)'
+        required: false
+        type: string
+        default: '.github/agent-review.yml'
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: 'Claude Code subscription OAuth token (preferred). Subscription billing.'
+        required: false
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API key (fallback). Per-token billing. One of this or CLAUDE_CODE_OAUTH_TOKEN must be set.'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: write
+  packages: read
+
+concurrency:
+  group: agent-arch-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  AGENT_REVIEWER_IMAGE: ghcr.io/sonarmd/agent-reviewer
+
+jobs:
+  # ─── STAGE 0: PREPARE ─────────────────────────────────────────────────
+  # Plain runner. Read-only permissions. Fetches the PR diff + metadata
+  # via the GitHub API and uploads them as an artifact. NEVER checks out
+  # PR head as code (unless allow_pr_head_checkout is explicitly true).
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr_number: ${{ steps.meta.outputs.pr_number }}
+      head_sha: ${{ steps.meta.outputs.head_sha }}
+      base_sha: ${{ steps.meta.outputs.base_sha }}
+      effective_review_mode: ${{ steps.config.outputs.review_mode }}
+      effective_overlays: ${{ steps.config.outputs.overlays }}
+      effective_enforcement: ${{ steps.config.outputs.enforcement_mode }}
+      effective_max_inline: ${{ steps.config.outputs.max_inline_comments }}
+      effective_severity_threshold: ${{ steps.config.outputs.severity_threshold }}
+      effective_fail_threshold: ${{ steps.config.outputs.fail_threshold }}
+      effective_include_paths: ${{ steps.config.outputs.include_paths }}
+      effective_exclude_paths: ${{ steps.config.outputs.exclude_paths }}
+      effective_post_summary: ${{ steps.config.outputs.post_summary_comment }}
+      effective_post_inline: ${{ steps.config.outputs.post_inline_comments }}
+      effective_apply_labels: ${{ steps.config.outputs.apply_labels }}
+      effective_check_name: ${{ steps.config.outputs.check_name }}
+    steps:
+      - name: Validate image_tag against allowlist
+        # SECURITY: inputs.image_tag flows into the Stage 1 container.image
+        # field. That container receives CLAUDE_CODE_OAUTH_TOKEN /
+        # ANTHROPIC_API_KEY. A caller-repo insider who can edit their
+        # workflow file could otherwise swap in an attacker-controlled
+        # image and exfiltrate those secrets. We allow only:
+        #   - the empty default (resolves to ghcr.io/sonarmd/agent-reviewer:latest)
+        #   - any `:tag` under ghcr.io/sonarmd/agent-reviewer
+        #   - any `@sha256:<64-hex>` digest under the same name (preferred —
+        #     digest pinning is immutable and the strongest supply-chain
+        #     posture).
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$IMAGE_TAG" ]]; then
+            echo "::notice::image_tag empty; will use ghcr.io/sonarmd/agent-reviewer:latest"
+            exit 0
+          fi
+          ALLOW='^ghcr\.io/sonarmd/agent-reviewer((:[A-Za-z0-9._-]+)?(@sha256:[a-f0-9]{64})?|@sha256:[a-f0-9]{64})$'
+          if [[ ! "$IMAGE_TAG" =~ $ALLOW ]]; then
+            echo "::error::image_tag '${IMAGE_TAG}' is not in the allowlist."
+            echo "::error::Allowed: ${ALLOW}"
+            exit 1
+          fi
+          echo "::notice::image_tag validated: ${IMAGE_TAG}"
+
+      - name: Checkout base (for per-repo config file)
+        uses: actions/checkout@v4
+        with:
+          # Base branch only. We do NOT check out PR head as code.
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+
+      # Local composite actions (./actions/...) resolve against the
+      # workspace, which holds the CALLER repo. Check out this reusable
+      # workflow's own repo at the SAME ref it's running at, so
+      # `uses: ./.sonarmd-workflows/actions/...` resolves correctly in
+      # consumer repos. github.workflow_sha is the called workflow's SHA
+      # under workflow_call (NOT the caller's), so the action versions
+      # always match the workflow version. Codex P0 on PR #45.
+      - name: Checkout sonarmd/workflows (for local composite actions)
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: ${{ github.workflow_sha }}
+          path: .sonarmd-workflows
+          fetch-depth: 1
+
+      - name: Merge per-repo config over workflow inputs
+        id: config
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-config
+        with:
+          config_path: ${{ inputs.config_path }}
+          default_review_mode: ${{ inputs.review_mode }}
+          default_overlays: ${{ inputs.overlays }}
+          default_enforcement_mode: ${{ inputs.enforcement_mode }}
+          default_max_inline_comments: ${{ inputs.max_inline_comments }}
+          default_severity_threshold: ${{ inputs.severity_threshold }}
+          default_fail_threshold: ${{ inputs.fail_threshold }}
+          default_include_paths: ${{ inputs.include_paths }}
+          default_exclude_paths: ${{ inputs.exclude_paths }}
+          default_post_summary_comment: ${{ inputs.post_summary_comment }}
+          default_post_inline_comments: ${{ inputs.post_inline_comments }}
+          default_apply_labels: ${{ inputs.apply_labels }}
+          default_check_name: ${{ inputs.check_name }}
+
+      - name: Fetch PR metadata + diff via API
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+
+          # Metadata
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}" > work/pr-full.json
+          jq '{
+            repo:      "'"$REPO"'",
+            pr_number: '"$PR_NUMBER"',
+            head_sha:  .head.sha,
+            base_sha:  .base.sha,
+            title:     .title,
+            author:    .user.login,
+            from_fork: .head.repo.fork
+          }' work/pr-full.json > work/pr-meta.json
+
+          HEAD_SHA=$(jq -r '.head_sha' work/pr-meta.json)
+          BASE_SHA=$(jq -r '.base_sha' work/pr-meta.json)
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Diff — Accept: application/vnd.github.v3.diff format
+          gh api -H "Accept: application/vnd.github.v3.diff" \
+            "repos/${REPO}/pulls/${PR_NUMBER}" > work/diff.patch
+
+          BYTES=$(wc -c < work/diff.patch)
+          echo "::notice::PR #${PR_NUMBER} — head ${HEAD_SHA:0:12}, diff ${BYTES} bytes"
+
+      - name: Pre-compute architecture analysis
+        # Run the analyzer scripts against the BASE checkout + diff and
+        # produce a structured markdown report. This is what gives the
+        # agent QUANTITATIVE grounding (line counts, layer classifications,
+        # dependency-direction violations, pattern-fit neighbors) without
+        # ever exposing the LLM to tool execution.
+        # Failure here MUST NOT block the workflow — if the analyzers
+        # crash, the agent still gets to do a text-only review.
+        continue-on-error: true
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-analyze
+        with:
+          diff_path: work/diff.patch
+          base_checkout: ${{ github.workspace }}
+          output_path: work/analysis.md
+
+      - name: Upload prepared input
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-review-input-${{ github.event.pull_request.number }}
+          path: work/
+          retention-days: 7
+
+  # ─── STAGE 1: AGENT ───────────────────────────────────────────────────
+  # Container runner. ZERO GitHub permissions. ANTHROPIC_API_KEY only.
+  # No gh CLI in container. Emits findings.json artifact and exits.
+  review-agent:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
+    container:
+      image: ${{ inputs.image_tag != '' && inputs.image_tag || 'ghcr.io/sonarmd/agent-reviewer:latest' }}
+    steps:
+      # The agent runs inside a container with NO GitHub permissions.
+      # We still need the composite action's files on disk; checkout
+      # itself uses the runner's auth, not anything passed to the agent.
+      # Pinned to the workflow's own SHA so the action version always
+      # matches the workflow version. Codex P0 on PR #45.
+      - name: Checkout sonarmd/workflows (for local composite action)
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: ${{ github.workflow_sha }}
+          path: .sonarmd-workflows
+          fetch-depth: 1
+
+      - name: Download prepared input
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-review-input-${{ needs.prepare.outputs.pr_number }}
+          path: /work
+
+      - name: Run agent (Stage 1)
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-agent
+        with:
+          input_dir: /work
+          output_path: /work/findings.json
+          review_mode: ${{ needs.prepare.outputs.effective_review_mode }}
+          overlays: ${{ needs.prepare.outputs.effective_overlays }}
+          include_paths: ${{ needs.prepare.outputs.effective_include_paths }}
+          exclude_paths: ${{ needs.prepare.outputs.effective_exclude_paths }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Upload findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-review-findings-${{ needs.prepare.outputs.pr_number }}
+          path: /work/findings.json
+          retention-days: 14
+
+  # ─── STAGE 2: PUBLISH ─────────────────────────────────────────────────
+  # Plain runner. Scoped write permissions. NO LLM access.
+  # Validates findings + diff positions, posts comments, labels, check.
+  publish:
+    needs: [prepare, review-agent]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+    steps:
+      - name: Checkout base (for repo metadata)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+
+      # Same rationale as the prepare and review-agent jobs: the local
+      # composite action lives in sonarmd/workflows, not the caller's
+      # repo. Pinned to the workflow's own SHA. Codex P0 on PR #45.
+      - name: Checkout sonarmd/workflows (for local composite action)
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: ${{ github.workflow_sha }}
+          path: .sonarmd-workflows
+          fetch-depth: 1
+
+      - name: Download findings
+        # `continue-on-error: true` so a missing artifact (review-agent
+        # crashed before emit_malformed could write findings.json) doesn't
+        # hard-fail the publish job. The next step synthesizes a fallback.
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-review-findings-${{ needs.prepare.outputs.pr_number }}
+          path: work/
+
+      - name: Synthesize fallback findings if missing or empty
+        # Graceful degradation: if the agent job crashed before writing
+        # findings.json, OR if it uploaded a zero-byte file (OOM mid-write,
+        # etc.), fabricate a malformed-status one so the publisher still
+        # posts a neutral check + "review unavailable" comment rather than
+        # the whole publish job exploding. hashFiles() returns empty only
+        # when the file doesn't exist — we additionally check for empty
+        # content via the run step's own `[[ -s ]]` test, which catches
+        # the zero-byte case.
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          REVIEW_MODE: ${{ needs.prepare.outputs.effective_review_mode }}
+          OVERLAYS: ${{ needs.prepare.outputs.effective_overlays }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          if [[ -s work/findings.json ]]; then
+            echo "::notice::findings.json present (size $(wc -c < work/findings.json) bytes); no synthesis needed"
+            exit 0
+          fi
+          # Preserve the audit trail — record what mode/overlays were
+          # requested even when degradation fires. Otherwise compliance
+          # auditors looking at check-run history see every degraded run
+          # as 'architecture / []' regardless of what the operator
+          # actually configured.
+          OVERLAYS_JSON=$(printf '%s' "$OVERLAYS" \
+            | tr ',' '\n' \
+            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            | grep -v '^$' \
+            | jq -R . | jq -s .)
+          jq -n \
+            --arg head "$HEAD_SHA" \
+            --arg base "$BASE_SHA" \
+            --arg mode "$REVIEW_MODE" \
+            --argjson overlays "$OVERLAYS_JSON" \
+            '{
+              schema_version: "2",
+              head_sha: $head,
+              base_sha: $base,
+              review_mode: $mode,
+              overlays_applied: $overlays,
+              parser_status: "malformed",
+              summary_markdown: "Agent review was unavailable for this PR. The agent job did not complete successfully — see the workflow run logs for details.",
+              labels: [],
+              categories_present: [],
+              findings: []
+            }' > work/findings.json
+          echo "::warning::synthesized fallback findings.json — review-agent job did not upload a usable one"
+
+      - name: Publish (Stage 2)
+        uses: ./.sonarmd-workflows/actions/agent-arch-review-publish
+        with:
+          findings_path: work/findings.json
+          pr_number: ${{ needs.prepare.outputs.pr_number }}
+          # SECURITY: pass the trusted head_sha from prepare so the publisher
+          # never trusts findings.json's value for review/check-run commit_id.
+          head_sha: ${{ needs.prepare.outputs.head_sha }}
+          enforcement_mode: ${{ needs.prepare.outputs.effective_enforcement }}
+          severity_threshold: ${{ needs.prepare.outputs.effective_severity_threshold }}
+          fail_threshold: ${{ needs.prepare.outputs.effective_fail_threshold }}
+          max_inline_comments: ${{ needs.prepare.outputs.effective_max_inline }}
+          post_summary_comment: ${{ needs.prepare.outputs.effective_post_summary }}
+          post_inline_comments: ${{ needs.prepare.outputs.effective_post_inline }}
+          apply_labels: ${{ needs.prepare.outputs.effective_apply_labels }}
+          check_name: ${{ needs.prepare.outputs.effective_check_name }}
+          github_token: ${{ github.token }}

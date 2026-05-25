@@ -1,0 +1,109 @@
+name: agent-arch-review-agent
+description: |
+  Stage 1 of agent-architecture-review. Runs the pre-baked reviewer
+  container against a prepared PR diff + metadata pair, emitting a
+  findings.json conforming to the v2 schema.
+
+  This action MUST run inside ghcr.io/sonarmd/agent-reviewer (via the
+  caller job's `container:` key). It has NO access to GITHUB_TOKEN by
+  design — the calling job declares `permissions: {}`.
+
+inputs:
+  input_dir:
+    description: 'Directory containing diff.patch and pr-meta.json'
+    required: true
+  output_path:
+    description: 'Where to write findings.json'
+    required: false
+    default: '/work/findings.json'
+  review_mode:
+    description: 'architecture | architecture+senior | security | compliance | custom'
+    required: false
+    default: 'architecture'
+  overlays:
+    description: 'Comma-list of overlays (senior-eye, security, hipaa-soc2)'
+    required: false
+    default: 'senior-eye'
+  include_paths:
+    description: 'Newline-separated globs (empty = include all)'
+    required: false
+    default: ''
+  exclude_paths:
+    description: 'Newline-separated globs'
+    required: false
+    default: ''
+  max_findings:
+    description: 'Maximum findings the agent may emit'
+    required: false
+    default: '50'
+  max_diff_bytes:
+    description: 'Diff size cap (bytes). Truncated above this.'
+    required: false
+    default: '200000'
+  claude_code_oauth_token:
+    description: 'Claude Code subscription OAuth token (preferred — subscription billing)'
+    required: false
+    default: ''
+  anthropic_api_key:
+    description: 'Anthropic API key (fallback — per-token billing). One of this or claude_code_oauth_token must be set.'
+    required: false
+    default: ''
+
+outputs:
+  findings_path:
+    description: 'Path to findings.json'
+    value: ${{ steps.run.outputs.findings_path }}
+  parser_status:
+    description: 'ok | partial | malformed'
+    value: ${{ steps.run.outputs.parser_status }}
+  findings_count:
+    description: 'Total findings emitted (post-cap)'
+    value: ${{ steps.run.outputs.findings_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify container environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v agent-review >/dev/null 2>&1; then
+          echo "::error::agent-review not found on PATH — this action must run inside ghcr.io/sonarmd/agent-reviewer"
+          exit 1
+        fi
+        if command -v gh >/dev/null 2>&1; then
+          echo "::error::gh CLI present in agent container — security boundary violated"
+          exit 1
+        fi
+
+    - name: Run reviewer
+      id: run
+      shell: bash
+      env:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        AGENT_REVIEWER_INPUT_DIR: ${{ inputs.input_dir }}
+        AGENT_REVIEWER_OUTPUT_PATH: ${{ inputs.output_path }}
+        REVIEW_MODE: ${{ inputs.review_mode }}
+        OVERLAYS: ${{ inputs.overlays }}
+        INCLUDE_PATHS: ${{ inputs.include_paths }}
+        EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+        MAX_FINDINGS: ${{ inputs.max_findings }}
+        MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+      run: |
+        set -euo pipefail
+        agent-review
+
+        OUT="${AGENT_REVIEWER_OUTPUT_PATH}"
+        if [[ ! -f "$OUT" ]]; then
+          echo "::error::agent-review did not produce findings.json at $OUT"
+          exit 1
+        fi
+
+        STATUS=$(jq -r '.parser_status // "unknown"' "$OUT")
+        COUNT=$(jq '.findings | length' "$OUT")
+
+        echo "findings_path=${OUT}" >> "$GITHUB_OUTPUT"
+        echo "parser_status=${STATUS}" >> "$GITHUB_OUTPUT"
+        echo "findings_count=${COUNT}" >> "$GITHUB_OUTPUT"
+        echo "::notice::stage-1 agent: parser=${STATUS}, findings=${COUNT}"
