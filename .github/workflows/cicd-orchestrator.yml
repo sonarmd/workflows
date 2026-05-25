@@ -86,7 +86,7 @@ jobs:
   #           failure  → CI failed/cancelled, cancel this run
   check:
     if: github.event_name == 'push' && github.ref_type == 'branch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     outputs:
       ci_status: ${{ steps.check.outputs.status }}
@@ -162,7 +162,7 @@ jobs:
   # required status check in each caller's branch protection so merges and
   # CD both refuse to proceed on regression.
   canary_verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 3
     # The canary-verify action mints its own token via the smd-ci-agora
     # GitHub App for issue creation; it does not need elevated GITHUB_TOKEN
@@ -192,7 +192,7 @@ jobs:
       always() &&
       needs.canary_verify.result == 'failure' &&
       needs.canary_verify.outputs.failed == '1'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     # The canary-reconcile action mints its own App token for both the
     # recovery branch push (contents:write) and the draft PR creation
@@ -247,7 +247,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref_type == 'branch' &&
       needs.cd.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 3
     # Requires `contents: write` from the caller to push tags (GH treats
     # refs as contents). The caller's tag ruleset on refs/tags/anchor/*
@@ -269,7 +269,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref_type == 'tag' &&
       startsWith(github.ref_name, 'prd-')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 2
     # Requires `contents: write` (push release/v<next> branch) and
     # `pull-requests: read` (infer patch/minor from the PR that shipped the
