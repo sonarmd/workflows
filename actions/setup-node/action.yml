@@ -30,32 +30,26 @@ runs:
       run: |
         # Resolution order (first match wins):
         #   1. explicit `node-version` input
-        #   2. .nvmrc in working directory
-        #   3. .node-version in working directory
-        #   4. .nvmrc / .node-version at workspace root
-        #   5. package.json engines.node (range expressions resolved to their
+        #   2. .node-version in working directory  (fnm / asdf canonical)
+        #   3. .node-version at workspace root
+        #   4. package.json engines.node (range expressions resolved to their
         #      lowest concrete version; ">=18.0.0" → "18.0.0", which is
-        #      almost never what the caller wants — prefer .nvmrc instead)
-        #   6. fall back to "24"
+        #      almost never what the caller wants — prefer .node-version)
+        #   5. fall back to "24"
         #
         # The composite previously read engines.node directly with
         # `tr -d '^~>=x '`, which silently pinned ">=18.0.0" callers to
-        # Node 18.0.0. .nvmrc / .node-version are the canonical project-
-        # local Node version files and should win when present.
+        # Node 18.0.0. .node-version is the canonical fnm/asdf file and
+        # should win when present. (We deliberately do NOT read .nvmrc —
+        # this org runs fnm, not nvm.)
         if [ -n "$INPUT_NODE_VERSION" ]; then
           VERSION="$INPUT_NODE_VERSION"
           SOURCE="input"
         else
           WORKDIR="$GITHUB_WORKSPACE/${WORKING_DIRECTORY:-.}"
-          if [ -f "$WORKDIR/.nvmrc" ]; then
-            VERSION=$(tr -d 'v \n\r' < "$WORKDIR/.nvmrc")
-            SOURCE=".nvmrc (working dir)"
-          elif [ -f "$WORKDIR/.node-version" ]; then
+          if [ -f "$WORKDIR/.node-version" ]; then
             VERSION=$(tr -d 'v \n\r' < "$WORKDIR/.node-version")
             SOURCE=".node-version (working dir)"
-          elif [ -f "$GITHUB_WORKSPACE/.nvmrc" ]; then
-            VERSION=$(tr -d 'v \n\r' < "$GITHUB_WORKSPACE/.nvmrc")
-            SOURCE=".nvmrc (workspace root)"
           elif [ -f "$GITHUB_WORKSPACE/.node-version" ]; then
             VERSION=$(tr -d 'v \n\r' < "$GITHUB_WORKSPACE/.node-version")
             SOURCE=".node-version (workspace root)"
