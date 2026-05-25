@@ -21,18 +21,51 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Detect Node version from package.json
+    - name: Detect Node version
       id: detect
       shell: bash
       env:
         INPUT_NODE_VERSION: ${{ inputs.node-version }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
       run: |
+        # Resolution order (first match wins):
+        #   1. explicit `node-version` input
+        #   2. .nvmrc in working directory
+        #   3. .node-version in working directory
+        #   4. .nvmrc / .node-version at workspace root
+        #   5. package.json engines.node (range expressions resolved to their
+        #      lowest concrete version; ">=18.0.0" → "18.0.0", which is
+        #      almost never what the caller wants — prefer .nvmrc instead)
+        #   6. fall back to "24"
+        #
+        # The composite previously read engines.node directly with
+        # `tr -d '^~>=x '`, which silently pinned ">=18.0.0" callers to
+        # Node 18.0.0. .nvmrc / .node-version are the canonical project-
+        # local Node version files and should win when present.
         if [ -n "$INPUT_NODE_VERSION" ]; then
-          echo "version=$INPUT_NODE_VERSION" >> "$GITHUB_OUTPUT"
+          VERSION="$INPUT_NODE_VERSION"
+          SOURCE="input"
         else
-          VERSION=$(jq -r '.engines.node // "24"' "$GITHUB_WORKSPACE/package.json" | tr -d '^~>=x ')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          WORKDIR="$GITHUB_WORKSPACE/${WORKING_DIRECTORY:-.}"
+          if [ -f "$WORKDIR/.nvmrc" ]; then
+            VERSION=$(tr -d 'v \n\r' < "$WORKDIR/.nvmrc")
+            SOURCE=".nvmrc (working dir)"
+          elif [ -f "$WORKDIR/.node-version" ]; then
+            VERSION=$(tr -d 'v \n\r' < "$WORKDIR/.node-version")
+            SOURCE=".node-version (working dir)"
+          elif [ -f "$GITHUB_WORKSPACE/.nvmrc" ]; then
+            VERSION=$(tr -d 'v \n\r' < "$GITHUB_WORKSPACE/.nvmrc")
+            SOURCE=".nvmrc (workspace root)"
+          elif [ -f "$GITHUB_WORKSPACE/.node-version" ]; then
+            VERSION=$(tr -d 'v \n\r' < "$GITHUB_WORKSPACE/.node-version")
+            SOURCE=".node-version (workspace root)"
+          else
+            VERSION=$(jq -r '.engines.node // "24"' "$GITHUB_WORKSPACE/package.json" | tr -d '^~>=x ')
+            SOURCE="package.json engines.node"
+          fi
         fi
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        echo "::notice::setup-node: using Node ${VERSION} (source: ${SOURCE})"
 
     - name: Setup Node.js
       uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
