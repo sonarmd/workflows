@@ -56,7 +56,7 @@ runs:
         APP=$(python3 -c "import json; print(json.load(open('deploy.json'))['app'])")
         echo "bundle-pipeline: processing $BUNDLE_COUNT bundles for $APP"
 
-        VALID_TARGETS="s3 ec2 eas cdk lambda"
+        VALID_TARGETS="s3 ec2 eas cdk lambda fargate"
         PROCESSED=0
 
         # ── Per-bundle loop ──────────────────────────────────────
