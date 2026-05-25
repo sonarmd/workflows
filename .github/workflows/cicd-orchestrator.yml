@@ -2,6 +2,12 @@ name: CI/CD
 
 # ── Caller example ────────────────────────────────────────────────────────
 #
+# The caller is the SINGLE source of truth for GITHUB_TOKEN permissions.
+# This orchestrator (and ci-core / cd-core) declares no permissions of its
+# own — every internal job inherits the caller's grant. Add a new scope to
+# the caller's workflow-level `permissions:` block and the orchestrator can
+# use it; no change here required.
+#
 #   name: CI/CD
 #   on:
 #     pull_request:
@@ -15,11 +21,12 @@ name: CI/CD
 #     group: cicd-${{ github.event.pull_request.number || github.ref_name }}
 #     cancel-in-progress: true
 #   permissions:
-#     contents: write
-#     id-token: write
-#     attestations: write
-#     actions: read
-#     packages: write   # publish/pull release artifact via GHCR-backed store
+#     contents: write     # cut release branches, push anchor tags, create GH releases
+#     id-token: write     # OIDC for sigstore / artifact attestations
+#     attestations: write # build provenance attestations
+#     actions: read       # discover prior CI runs (cache + canary-verify probe)
+#     packages: write     # push/pull release tarball via GHCR-backed artifact store
+#     pull-requests: read # cut_release infers patch/minor from PR head ref
 #   jobs:
 #     cicd:
 #       uses: sonarmd/workflows/.github/workflows/cicd-orchestrator.yml@main
@@ -64,15 +71,11 @@ on:
         type: string
         default: '.'
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  actions: read
-  # Workflow-level packages is the ceiling for nested reusable workflows.
-  # ci needs write (push to GHCR), cd needs read (pull). Set to write here;
-  # individual jobs scope down further as needed.
-  packages: write
+# No `permissions:` block — the caller is the single source of truth for
+# GITHUB_TOKEN scopes. Every job below inherits the caller's grant. See the
+# header-block caller example for the scopes the caller must offer for the
+# full CI/CD path (CI publish + CD pull from GHCR + anchor tag push + cut
+# release branch push).
 
 jobs:
 
@@ -85,8 +88,6 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      actions: read
     outputs:
       ci_status: ${{ steps.check.outputs.status }}
     steps:
@@ -141,12 +142,6 @@ jobs:
         github.event_name != 'push' ||
         needs.check.outputs.ci_status == 'none'
       )
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-      actions: read
-      packages: write   # publish release tarball to GHCR-backed artifact store
     uses: sonarmd/workflows/.github/workflows/ci-core.yml@main
     with:
       setup:            ${{ inputs.setup }}
@@ -169,12 +164,10 @@ jobs:
   canary_verify:
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    # No elevated permissions needed — the canary-verify action mints its
-    # own token via the smd-ci-agora GitHub App for issue creation. Caller
-    # workflows can keep their permissions tight; the App provides write
-    # access out-of-band.
-    permissions:
-      contents: read
+    # The canary-verify action mints its own token via the smd-ci-agora
+    # GitHub App for issue creation; it does not need elevated GITHUB_TOKEN
+    # scopes from the caller. This job inherits the caller's grant only
+    # because we don't declare a permissions block here.
     outputs:
       failed:        ${{ steps.vrfy.outputs.failed }}
       missing:       ${{ steps.vrfy.outputs.missing }}
@@ -201,12 +194,10 @@ jobs:
       needs.canary_verify.outputs.failed == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # No elevated permissions needed — the canary-reconcile action mints
-    # its own App token for both the recovery branch push (contents:write)
-    # and the draft PR creation (pull-requests:write). The action does its
-    # own checkout with the App token.
-    permissions:
-      contents: read
+    # The canary-reconcile action mints its own App token for both the
+    # recovery branch push (contents:write) and the draft PR creation
+    # (pull-requests:write). It does its own checkout with that token and
+    # does not depend on this job's GITHUB_TOKEN scopes.
     steps:
       - uses: sonarmd/workflows/actions/canary-reconcile@main
         with:
@@ -234,10 +225,6 @@ jobs:
       needs.check.outputs.ci_status != 'failure' &&
       needs.canary_verify.result == 'success' &&
       (needs.ci.result == 'success' || needs.ci.result == 'skipped')
-    permissions:
-      contents: write
-      actions: read
-      packages: read    # pull release tarball from GHCR-backed artifact store
     # cd-core takes no inputs — discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
@@ -262,11 +249,10 @@ jobs:
       needs.cd.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    permissions:
-      # `contents: write` is required to push tags (GH treats refs as contents).
-      # The tag ruleset narrows this to creation-only in the anchor/* namespace —
-      # update and deletion are blocked at the platform level for the workflow.
-      contents: write
+    # Requires `contents: write` from the caller to push tags (GH treats
+    # refs as contents). The caller's tag ruleset on refs/tags/anchor/*
+    # narrows that grant to creation-only — update and deletion are blocked
+    # at the platform level even when the workflow has write.
     steps:
       - uses: sonarmd/workflows/actions/canary-anchor@main
         with:
@@ -285,9 +271,9 @@ jobs:
       startsWith(github.ref_name, 'prd-')
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    permissions:
-      contents: write
-      pull-requests: read
+    # Requires `contents: write` (push release/v<next> branch) and
+    # `pull-requests: read` (infer patch/minor from the PR that shipped the
+    # tag) from the caller's grant.
     steps:
       - name: Parse tag and resolve commit SHA
         id: parse
