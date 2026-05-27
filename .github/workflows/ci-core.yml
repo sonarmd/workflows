@@ -61,8 +61,12 @@ on:
 # offer those scopes; see cicd-orchestrator.yml's header for the canonical list.
 
 jobs:
-  ci:
-    name: ci
+  # Inner job name is `run`, not `ci`, so callers don't get a doubled
+  # `cicd / ci / ci` segment in the check-run display. The middle `ci`
+  # segment comes from the orchestrator's lane name; this inner segment
+  # is the leaf's action ("run repo-specific install / test / build").
+  run:
+    name: run
     runs-on: ubuntu-24.04-arm
     timeout-minutes: ${{ inputs.timeout }}
     env:
