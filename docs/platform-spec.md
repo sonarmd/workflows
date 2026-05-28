@@ -123,7 +123,7 @@ File MUST exist at repo root. Name MUST be `deploy.json`.
 | `bundles` | array | yes | Bundle declarations |
 | `bundles[].name` | string | yes | Unique bundle name |
 | `bundles[].path` | string | yes | Bundle directory path relative to build root |
-| `bundles[].target` | enum | yes | `s3`, `ec2`, `eas`, `cdk`, `lambda` |
+| `bundles[].target` | enum | yes | `s3`, `ec2`, `eas`, `cdk`, `lambda`, `fargate` |
 | `bundles[].hosts` | object | yes | Label → Ansible inventory match key |
 
 ### Rules
@@ -133,7 +133,7 @@ File MUST exist at repo root. Name MUST be `deploy.json`.
 - `bundles` — required, minimum 1 item
 - `bundles[].name` — unique within manifest, pattern `^[a-z][a-z0-9_-]{0,63}$`
 - `bundles[].path` — non-empty, relative path
-- `bundles[].target` — ONLY: `s3`, `ec2`, `eas`, `cdk`, `lambda`. Anything else → FAIL
+- `bundles[].target` — ONLY: `s3`, `ec2`, `eas`, `cdk`, `lambda`, `fargate`. Anything else → FAIL
 - `bundles[].hosts` — required, non-empty object. Values must be unique within bundle. Values are opaque Ansible inventory match keys — NOT DNS, NOT networking
 - Template variables — ONLY `${env}` is allowed. No other dynamic templating.
 - `additionalProperties: false` at all levels
@@ -421,7 +421,7 @@ All failures include: what, where, why, failing command, classification.
 3. Build output MUST align with bundle declarations
 4. Every declared bundle MUST exist on disk
 5. Every disk bundle MUST be declared
-6. Targets MUST be in enum: s3, ec2, eas, cdk, lambda
+6. Targets MUST be in enum: s3, ec2, eas, cdk, lambda, fargate
 7. Hosts MUST be non-empty with unique values
 8. Only `${env}` template variable allowed
 9. SHA512 for all checksums
