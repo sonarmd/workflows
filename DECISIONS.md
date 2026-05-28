@@ -183,3 +183,29 @@ lint, and build still gate via `ci-core` + `gate.yml`.
 
 **Directive for future agents:** `docs/agent-architecture-review.md`.
 Design rationale: `.claude/plans/agent-architecture-review.md`.
+
+## 2026-05-27 - `setup-node` enables Corepack for callers that pin a package manager
+
+`actions/setup-node` now runs `corepack enable` when - and only when - the
+caller's `package.json` has a `packageManager` field. This lets a caller adopt
+a Corepack-pinned package manager (specifically yarn 4 / Berry) without breaking
+the shared action for every other caller.
+
+**Why:** `setup-node` installs dependencies (`yarn install --frozen-lockfile`)
+before the caller's own `steps` ever run, using the runner's global yarn
+(1.22.x). The moment a caller adds `"packageManager": "yarn@4.x"`, that global
+yarn 1 hard-refuses every invocation (`Corepack must currently be enabled`) -
+and because the install lives inside this action, there is no caller-side hook
+to enable Corepack first. AuraPlatform's yarn-v1 -> yarn-4 migration surfaced it.
+
+**Why it's safe for existing callers:** the `corepack enable` is gated on the
+`packageManager` field. Repos without it (every current yarn-1 caller) take the
+exact same path as before - Corepack is never enabled, the runner's default
+yarn 1.x is used. And Berry treats the action's existing `--frozen-lockfile` as
+a deprecated alias for `--immutable`, so the install command is unchanged for
+both yarn 1 and yarn 4. One install command, two package-manager majors.
+
+**Scope:** a capability addition to one composite action - not a new workflow,
+not a change to the THREE-workflow architecture. Future agents: do NOT remove
+the Corepack step as "unused flexibility." It is load-bearing for any caller
+with a `packageManager` field.
