@@ -41,7 +41,12 @@ on:
 # those scopes.
 
 jobs:
-  cd:
+  # Inner job name is `run`, not `cd`, so callers don't get a doubled
+  # `cicd / cd / cd` segment in the check-run display. The middle `cd`
+  # segment comes from the orchestrator's lane name; this inner segment
+  # is the leaf's action ("run the deploy steps").
+  run:
+    name: run
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:
