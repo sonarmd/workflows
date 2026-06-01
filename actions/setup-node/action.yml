@@ -68,24 +68,39 @@ runs:
         registry-url: 'https://npm.pkg.github.com'
         scope: '@sonarmd'
 
-    # Enable Corepack for callers that pin a package manager. A repo with a
-    # `packageManager` field (e.g. "yarn@4.x", Berry) needs Corepack to provide
-    # that exact version; without it the runner's global yarn 1.x sees the field
-    # and hard-refuses every invocation ("Corepack must currently be enabled").
-    # Repos with NO packageManager field are untouched - Corepack is never
-    # enabled and the runner's default yarn 1.x is used as before. Berry maps the
-    # `--frozen-lockfile` install below to `--immutable`, so that step is
-    # unchanged for both yarn 1 and yarn 4 callers.
-    - name: Enable Corepack for pinned package managers
+    # Enable Corepack ONLY for callers that pin a Corepack-managed package
+    # manager - a `packageManager` field of yarn 2+ (Berry), pnpm, or npm. Those
+    # need Corepack to provide that exact version; without it the runner's global
+    # yarn 1.x sees the field and hard-refuses ("Corepack must currently be
+    # enabled").
+    #
+    # We deliberately do NOT enable Corepack for classic yarn (`yarn@1.x`) or for
+    # callers with NO packageManager field: both keep the runner's pre-installed
+    # global yarn 1.x, byte-identical to this action's prior behavior. That is
+    # what leaves every yarn-1 caller (e.g. star-config) completely unaffected.
+    # The install step below uses `--frozen-lockfile`, which yarn 1 runs natively
+    # and Berry accepts as a deprecated alias for `--immutable` (verified on yarn
+    # 4.15: YN0050 warn, then proceeds) - so one command serves both majors.
+    - name: Enable Corepack for Corepack-managed package managers
       shell: bash
       working-directory: ${{ github.workspace }}/${{ inputs.working-directory }}
       run: |
-        if [ -f package.json ] && jq -e '.packageManager' package.json >/dev/null 2>&1; then
-          echo "::notice::setup-node: packageManager=$(jq -r '.packageManager' package.json); enabling Corepack"
-          corepack enable
-        else
-          echo "::notice::setup-node: no packageManager field; using the runner's default yarn"
+        # Detect the pinned package manager from package.json and switch:
+        #   no field / classic yarn@1.x -> runner's default yarn (no Corepack)
+        #   yarn@2+ / pnpm@* / npm@*    -> Corepack provides the pinned version
+        PM=""
+        if [ -f package.json ]; then
+          PM="$(jq -r '.packageManager // empty' package.json 2>/dev/null || true)"
         fi
+        case "$PM" in
+          "")
+            echo "::notice::setup-node: no packageManager field; using the runner's default yarn" ;;
+          yarn@1|yarn@1.*)
+            echo "::notice::setup-node: classic yarn pinned ($PM); using the runner's default yarn (Corepack not enabled)" ;;
+          *)
+            echo "::notice::setup-node: Corepack-managed packageManager=$PM; enabling Corepack"
+            corepack enable ;;
+        esac
 
     # No actions/cache restore — yarn v1 + cache restore has a known race
     # where the integrity dir is repopulated from the tarball but yarn install
