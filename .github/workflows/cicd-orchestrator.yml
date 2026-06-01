@@ -128,6 +128,30 @@ jobs:
               core.setOutput('status', 'none');
             }
 
+      # Observability only: surfaces the routing decision on the Actions run
+      # page. echo-only (no set -e), so it cannot fail the check job or change
+      # which jobs run - it reports the decision the step above already made.
+      - name: Routing summary
+        if: always()
+        shell: bash
+        env:
+          STATUS: ${{ steps.check.outputs.status }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          bt='`'
+          case "$STATUS" in
+            success) route="prior CI passed for this commit -> skip CI, run CD only" ;;
+            failure) route="prior CI failed or was cancelled -> stop, no deploy" ;;
+            none)    route="no usable prior CI -> run CI, then CD" ;;
+            *)       route="status ${STATUS:-unknown}" ;;
+          esac
+          {
+            echo "## CI/CD routing"
+            echo ""
+            echo "- Branch: ${bt}${BRANCH}${bt}"
+            echo "- Decision: ${route}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # -- CI: runs on PR/merge_group, or on push when no prior CI --------------
   # Job-level `timeout-minutes` is not valid on reusable-workflow callers
   # (jobs that use `uses:`). The 10-minute cap lives inside ci-core.yml's

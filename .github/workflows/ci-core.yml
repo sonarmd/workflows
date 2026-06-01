@@ -134,3 +134,43 @@ jobs:
         run: |
           echo "ci-core: artifact already exists for this SHA in the store - skipped rebuild."
           echo "ci-core: reference: ${{ steps.probe.outputs.reference }}"
+
+      # Observability only: renders a CI card on the Actions run page. Writes
+      # only to $GITHUB_STEP_SUMMARY (no set -e, echo only), so it can never
+      # fail the job or change what CI does.
+      - name: CI summary
+        if: always()
+        shell: bash
+        env:
+          HAS_DEPLOY:  ${{ hashFiles('deploy.json') != '' }}
+          CACHE_HIT:   ${{ steps.probe.outputs.present }}
+          REFERENCE:   ${{ steps.probe.outputs.reference }}
+          EVENT:       ${{ github.event_name }}
+          BRANCH:      ${{ github.ref_name }}
+          COMMIT_SHA:  ${{ github.sha }}
+          JOB_STATUS:  ${{ job.status }}
+        run: |
+          bt='`'
+          short_sha="${COMMIT_SHA:0:8}"
+          if [ "$HAS_DEPLOY" = "true" ]; then
+            if [ "$CACHE_HIT" = "true" ]; then
+              artifact="cache hit - reused ${bt}${REFERENCE}${bt}"
+            elif [ "$EVENT" = "push" ]; then
+              artifact="built, signed, and pushed to the artifact store"
+            else
+              artifact="built and signed (not pushed - ${EVENT})"
+            fi
+          else
+            artifact="no deploy.json - checks only, no release artifact"
+          fi
+          {
+            echo "## CI summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Result | ${JOB_STATUS:-unknown} |"
+            echo "| Event | ${EVENT} |"
+            echo "| Branch | ${bt}${BRANCH}${bt} |"
+            echo "| Commit | ${bt}${short_sha}${bt} |"
+            echo "| Artifact | ${artifact} |"
+          } >> "$GITHUB_STEP_SUMMARY"

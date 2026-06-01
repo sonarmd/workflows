@@ -285,3 +285,50 @@ jobs:
           environment: ${{ steps.ctx.outputs.env }}
           tag: ${{ steps.build.outputs.tag }}
           details: ${{ job.status }}
+
+      # Observability only: renders a deploy card on the Actions run page from
+      # outputs the deploy already produced. Pure presentation - it writes to
+      # $GITHUB_STEP_SUMMARY and nothing else, so it can never alter the deploy
+      # or fail the job (no set -e, only echo).
+      - name: Deploy summary
+        if: always()
+        shell: bash
+        env:
+          ENVIRONMENT:   ${{ steps.ctx.outputs.env }}
+          IDENTIFIER:    ${{ steps.ctx.outputs.identifier }}
+          VERSION:       ${{ steps.ctx.outputs.version }}
+          BUILD_TAG:     ${{ steps.build.outputs.tag }}
+          PROMOTED_FROM: ${{ steps.ctx.outputs.promoted_from }}
+          RELEASE_URL:   ${{ steps.release.outputs.release_url }}
+          ARTIFACT_URL:  ${{ steps.artifact.outputs.artifact_url }}
+          COMMIT_SHA:    ${{ github.sha }}
+          ACTOR:         ${{ github.actor }}
+          JOB_STATUS:    ${{ job.status }}
+        run: |
+          bt='`'
+          short_sha="${COMMIT_SHA:0:8}"
+          case "$ENVIRONMENT" in
+            prd) title="Production deploy" ;;
+            stg) title="Staging deploy" ;;
+            *)   title="Deploy" ;;
+          esac
+          {
+            echo "## ${title}: ${IDENTIFIER:-app} ${VERSION:+v$VERSION}"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Status | ${JOB_STATUS:-unknown} |"
+            echo "| Environment | ${bt}${ENVIRONMENT:-?}${bt} |"
+            echo "| App | ${bt}${IDENTIFIER:-?}${bt} |"
+            echo "| Version | ${bt}${VERSION:-?}${bt} |"
+            [ -n "$BUILD_TAG" ]     && echo "| Tag | ${bt}${BUILD_TAG}${bt} |"
+            [ -n "$PROMOTED_FROM" ] && echo "| Promoted from | ${bt}${PROMOTED_FROM}${bt} |"
+            [ -n "$RELEASE_URL" ]   && echo "| Release | [${BUILD_TAG:-release}](${RELEASE_URL}) |"
+            [ -n "$ARTIFACT_URL" ]  && echo "| Artifact | [download](${ARTIFACT_URL}) |"
+            echo "| Commit | ${bt}${short_sha}${bt} |"
+            echo "| Triggered by | @${ACTOR} |"
+            echo ""
+            if [ "$JOB_STATUS" = "success" ] && [ -n "$BUILD_TAG" ]; then
+              echo "Slack deploy trigger sent to the deploy channel - the runner picks it up from there."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
