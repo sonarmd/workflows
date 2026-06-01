@@ -70,10 +70,15 @@ runs:
           echo ""
           echo "━━━ Bundle: $NAME ━━━"
 
-          # 1. Validate bundle directory exists (path is repo-relative)
-          BUNDLE_PATH="$BPATH"
-          if [ ! -d "$BUNDLE_PATH" ]; then
-            echo "::error::bundle-pipeline: bundle '$NAME' path '$BUNDLE_PATH' not found"
+          # 1. Resolve + validate the bundle directory. The bundle `path` is
+          # relative to `build_root` (matching validate-release-contract); fall
+          # back to a repo-relative path for back-compat with older callers.
+          if [ -d "$BUILD_DIR/$BPATH" ]; then
+            BUNDLE_PATH="$BUILD_DIR/$BPATH"
+          elif [ -d "$BPATH" ]; then
+            BUNDLE_PATH="$BPATH"
+          else
+            echo "::error::bundle-pipeline: bundle '$NAME' path '$BPATH' not found (looked in '$BUILD_DIR/$BPATH' and '$BPATH')"
             exit 1
           fi
 
