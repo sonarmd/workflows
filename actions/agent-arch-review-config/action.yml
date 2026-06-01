@@ -17,7 +17,7 @@ inputs:
   default_review_mode:        { required: true }
   default_overlays:           { required: true }
   default_enforcement_mode:   { required: true }
-  default_max_inline_comments:{ required: true }
+  default_max_inline_comments: { required: true }
   default_severity_threshold: { required: true }
   default_fail_threshold:     { required: true }
   default_include_paths:      { required: true }
