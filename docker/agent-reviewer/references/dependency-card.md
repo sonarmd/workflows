@@ -28,4 +28,4 @@ The `dependency-delta.sh` analyzer detects additions to `package.json`, `require
 
 ## When this card is relevant
 
-Whenever the diff touches a package manifest. Adding a dep deserves its own finding — don't bury it in a list of other observations. Cite the specific dep name and what alternatives were considered (or not).
+Whenever the diff touches a package manifest. Adding a dep deserves its own finding - don't bury it in a list of other observations. Cite the specific dep name and what alternatives were considered (or not).

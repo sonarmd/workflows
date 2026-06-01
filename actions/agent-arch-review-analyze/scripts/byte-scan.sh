@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# byte-scan.sh — flag changed files containing suspicious bytes that an
+# byte-scan.sh - flag changed files containing suspicious bytes that an
 # LLM may have introduced: NBSP, smart quotes, em/en dashes, zero-width
 # characters, control bytes, invalid UTF-8, roff escape misuse, shell
 # PATH clobbers, and Markdown fence breakage.
 #
 # Powered by the vendored guarded-fs CLI (see ../lib/guarded-fs/).
 # Uses python3 from the runner (ubuntu-latest has it; no install step).
-# Stdlib only — no pip dependencies.
+# Stdlib only - no pip dependencies.
 #
 # Usage:  byte-scan.sh <diff.patch> <repo-root>
 # Output: tab-separated lines:
@@ -46,7 +46,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-# Redirect audit log to the runner temp dir — never inside the repo.
+# Redirect audit log to the runner temp dir - never inside the repo.
 export GUARDED_FS_AUDIT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/guarded-fs-audit.jsonl"
 
 # Extract list of changed files (post-image paths). Skip pure-deletes.

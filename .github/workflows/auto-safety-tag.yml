@@ -7,15 +7,15 @@ name: Auto Safety Tag
 #   * Tag format:  safety/YYYY-MM-DDTHH-MM-SSZ-<short-sha>
 #   * Tag kind:    annotated (not lightweight), so it carries author + date
 #   * Signing:     signed with the workflow's own GitHub Actions signing
-#                  identity via sigstore — `git tag -s` would need a GPG/SSH
+#                  identity via sigstore - `git tag -s` would need a GPG/SSH
 #                  key in the runner; we sign the *tag message* instead so
 #                  no key needs to live in CI.
 #
 # Caller wires this with branch protection so the bot pushing the tag is
 # permitted under the tag-preservation ruleset. The workflow does NOT push
-# to any branch — only refs/tags/safety/*.
+# to any branch - only refs/tags/safety/*.
 #
-# ── Caller example ────────────────────────────────────────────────────
+# -- Caller example ----------------------------------------------------
 #
 #   name: Safety Tag on Main
 #   on:
@@ -87,9 +87,9 @@ jobs:
         # defeating the audit purpose.
         #
         # Verification source of truth: GitHub's REST API
-        # (`commits/<sha>` → `.verification.verified`). The local
+        # (`commits/<sha>` -> `.verification.verified`). The local
         # `git log %G?` flag requires GPG keyring / SSH allowedSigners to
-        # be configured on the runner — which they aren't, and shouldn't
+        # be configured on the runner - which they aren't, and shouldn't
         # be (no signing material in CI). GitHub already validates every
         # commit's signature server-side against the keys the author has
         # uploaded; we mirror that source of truth here.
@@ -101,7 +101,7 @@ jobs:
             --format='%(refname:short)' 'refs/tags/${{ inputs.tag_prefix }}/*' \
             | head -1 || true)
           if [[ -z "$PREV_TAG" ]]; then
-            echo "no previous '${{ inputs.tag_prefix }}/*' tag — checking last 20 commits"
+            echo "no previous '${{ inputs.tag_prefix }}/*' tag - checking last 20 commits"
             RANGE="HEAD~20..HEAD"
           else
             echo "previous tag: $PREV_TAG"
@@ -175,14 +175,14 @@ jobs:
           TS=$(date -u +'%Y-%m-%dT%H-%M-%SZ')
           SHORT=$(git rev-parse --short=12 HEAD)
           TAG="${PREFIX}/${TS}-${SHORT}"
-          echo "creating $TAG → $(git rev-parse HEAD)"
+          echo "creating $TAG -> $(git rev-parse HEAD)"
 
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           # Annotated, unsigned (no GPG key in the runner). The tag-preservation
           # ruleset can be configured with `required_signatures: false` for this
-          # prefix, or with a bypass actor for the github-actions bot — caller
+          # prefix, or with a bypass actor for the github-actions bot - caller
           # repo's choice. The integrity of the *referenced commit* is what
           # matters; the previous step verified those signatures.
           BODY=$(cat <<EOF

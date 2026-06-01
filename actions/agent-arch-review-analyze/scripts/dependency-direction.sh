@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# dependency-direction.sh — flag inward-pointing dependency violations.
+# dependency-direction.sh - flag inward-pointing dependency violations.
 #
 # Clean Architecture rule: dependencies point INWARD only.
-#   interface → application → domain
-#   infrastructure → domain  (NOT domain → infrastructure)
-#   presentation → application → domain
+#   interface -> application -> domain
+#   infrastructure -> domain  (NOT domain -> infrastructure)
+#   presentation -> application -> domain
 #
 # This script extracts imports from a file and classifies the imported
 # module's layer using the same heuristic as layer-classify.sh. It flags
@@ -14,7 +14,7 @@
 #
 # Usage:  dependency-direction.sh <file-path> <repo-root>
 # Output: tab-separated lines:
-#           VIOLATION  <file>  imports  <imported-path>  (<self-layer> → <imp-layer>)
+#           VIOLATION  <file>  imports  <imported-path>  (<self-layer> -> <imp-layer>)
 #         or:
 #           OK         <file>  (no violations among N imports)
 
@@ -100,19 +100,19 @@ while IFS= read -r imp; do
   [[ -z "$imp" ]] && continue
   TOTAL=$((TOTAL+1))
   RESOLVED=$(resolve_in_repo "$imp" "$(dirname "$F")")
-  [[ -z "$RESOLVED" ]] && continue   # external / unresolved — skip
+  [[ -z "$RESOLVED" ]] && continue   # external / unresolved - skip
 
   IMP_LAYER=$("${SCRIPT_DIR}/layer-classify.sh" "${REPO}/${RESOLVED}" | awk -F'\t' '{print $2}')
   IMP_RANK=$(layer_rank "$IMP_LAYER")
 
-  # Cross-cutting / test / unknown — neutral.
+  # Cross-cutting / test / unknown - neutral.
   if [[ "$SELF_RANK" -ge 9 || "$IMP_RANK" -ge 9 ]]; then
     continue
   fi
 
   # Inner (lower rank) importing from outer (higher rank) is the violation.
   if [[ "$SELF_RANK" -lt "$IMP_RANK" ]]; then
-    printf 'VIOLATION\t%s\timports\t%s\t(%s → %s)\n' "$F" "$RESOLVED" "$SELF_LAYER" "$IMP_LAYER"
+    printf 'VIOLATION\t%s\timports\t%s\t(%s -> %s)\n' "$F" "$RESOLVED" "$SELF_LAYER" "$IMP_LAYER"
     VIOLATIONS=$((VIOLATIONS+1))
   fi
 done < <(extract_imports "$F")

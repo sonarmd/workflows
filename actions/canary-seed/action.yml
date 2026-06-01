@@ -3,7 +3,7 @@ description: >
   One-time-per-branch seeder. Samples N random commits from the branch's
   history and pushes them as `anchor/<branch-slug>-<short-sha>-seed` tags.
   Designed for `workflow_dispatch` invocation from a caller's `canary-ops.yml`
-  — never runs in CI/CD path. Idempotent: skips SHAs that already have an
+  - never runs in CI/CD path. Idempotent: skips SHAs that already have an
   anchor tag in this branch's namespace.
 
   After seeding, every push to the branch creates incremental anchors via
@@ -38,7 +38,7 @@ runs:
       run: |
         set -euo pipefail
         if [ "$CONFIRM" != "SEED" ]; then
-          echo "::error::Confirmation phrase mismatch — expected literal 'SEED', got '$CONFIRM'. Aborting."
+          echo "::error::Confirmation phrase mismatch - expected literal 'SEED', got '$CONFIRM'. Aborting."
           exit 1
         fi
 
@@ -89,7 +89,7 @@ runs:
         git rev-parse --verify "$REF" >/dev/null 2>&1 || REF="$BRANCH"
 
         TOTAL=$(git rev-list --count "$REF")
-        echo "scanning $REF — $TOTAL commits total, seeding up to $COUNT random anchors"
+        echo "scanning $REF - $TOTAL commits total, seeding up to $COUNT random anchors"
         if [ "$TOTAL" -lt "$COUNT" ]; then
           echo "warning: only $TOTAL commits available; using all"
           COUNT="$TOTAL"

@@ -1,10 +1,10 @@
 name: Auto-Tag Release
 
-# Fires on merge to release/** (→ stg tag) and master (→ prd tag).
-# The created tag triggers deploy.yml immediately — no manual step required.
+# Fires on merge to release/** (-> stg tag) and master (-> prd tag).
+# The created tag triggers deploy.yml immediately - no manual step required.
 #
-#   release/** merge  →  stg-fe-<version>-b<N>  →  staging deploy
-#   master     merge  →  prd-fe-<version>-b<N>  →  production deploy
+#   release/** merge  ->  stg-fe-<version>-b<N>  ->  staging deploy
+#   master     merge  ->  prd-fe-<version>-b<N>  ->  production deploy
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
       env: ${{ steps.parse.outputs.env }}
     steps:
       - id: parse
-        name: Map branch → environment
+        name: Map branch -> environment
         run: |
           set -euo pipefail
           BRANCH="${GITHUB_REF#refs/heads/}"

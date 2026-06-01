@@ -9,20 +9,20 @@ dependency direction, abstraction leakage, small/clean code, maintainability,
 coupling, and whether the PR fits existing project patterns. Optional
 overlays add senior-eye, security, and HIPAA/SOC2 lenses.
 
-## Adoption — pick one path
+## Adoption - pick one path
 
-### Path A — Org-level required workflow (zero per-repo effort)
+### Path A - Org-level required workflow (zero per-repo effort)
 
 For org admins. Reviews every PR in the org's scoped repos automatically.
 
-1. **Settings → Actions → Secrets**: add `CLAUDE_CODE_OAUTH_TOKEN` as an
-   organization secret (preferred — uses your Claude Code subscription,
+1. **Settings -> Actions -> Secrets**: add `CLAUDE_CODE_OAUTH_TOKEN` as an
+   organization secret (preferred - uses your Claude Code subscription,
    not per-token API billing). Generate it locally with `claude setup-token`
    while signed in to the subscription account you want to bill against.
    Scope to the repos that should run the reviewer.
    _(Or `ANTHROPIC_API_KEY` for per-token billing.)_
-2. **Settings → Actions → General → Required workflows**:
-   - Add workflow → source repo: `sonarmd/workflows`
+2. **Settings -> Actions -> General -> Required workflows**:
+   - Add workflow -> source repo: `sonarmd/workflows`
    - Path: `.github/workflows/agent-architecture-review-default.yml`
    - Ref: `main`
    - Scope to selected repositories.
@@ -31,7 +31,7 @@ For org admins. Reviews every PR in the org's scoped repos automatically.
 To tune per-repo: drop `.github/agent-review.yml` in the repo (see
 [template](../per-repo/_template/.github/agent-review.yml)).
 
-### Path B — Bootstrap PR per repo (fallback)
+### Path B - Bootstrap PR per repo (fallback)
 
 For repos not covered by Path A. Opens a DRAFT PR adding the thin caller
 template.
@@ -42,7 +42,7 @@ scripts/bootstrap-agent-review.sh sonarmd/triggr_api sonarmd/frontend
 scripts/bootstrap-agent-review.sh --from-file repos.txt
 ```
 
-The script is idempotent — repeated runs skip repos that already adopted.
+The script is idempotent - repeated runs skip repos that already adopted.
 
 ### Minimal caller example (Path B)
 
@@ -69,11 +69,11 @@ jobs:
 ## How it works
 
 The reusable workflow runs three jobs in sequence with a **hard
-agent→publisher security boundary**:
+agent->publisher security boundary**:
 
 ```
-prepare → review-agent → publish
-─────────────────────────────────
+prepare -> review-agent -> publish
+---------------------------------
 ubuntu     container      ubuntu
 read-only  NO GH access   pr/issue/check: write
 fetch diff run LLM        validate + post
@@ -87,7 +87,7 @@ artifact   artifact       comments + labels + check
 | **review-agent** | Call Anthropic API with the diff | Write to GitHub (no token at all). Run gh CLI (not installed). Execute PR code (no checkout). |
 | **publish** | Post comments, labels, check run | Call the LLM. Apply labels outside `agent-review/*` prefix. Post inline comments at positions not in the diff. |
 
-The LLM cannot cause arbitrary GitHub writes — every action the publisher
+The LLM cannot cause arbitrary GitHub writes - every action the publisher
 takes is constrained to validated findings and the `agent-review/*` label
 prefix.
 
@@ -97,8 +97,8 @@ Composed into a SINGLE agent call (one Anthropic API request per PR).
 
 | Mode / Overlay | Default? | Purpose |
 |---|---|---|
-| **architecture** (default mode) | ✅ | Naming, boundaries, separation, dependency direction, abstraction, small clean code, maintainability, coupling, pattern fit. Caps at `medium` severity. |
-| **senior-eye** (default overlay) | ✅ | Blast radius, missing tests for changed behavior, things juniors miss. |
+| **architecture** (default mode) | [OK] | Naming, boundaries, separation, dependency direction, abstraction, small clean code, maintainability, coupling, pattern fit. Caps at `medium` severity. |
+| **senior-eye** (default overlay) | [OK] | Blast radius, missing tests for changed behavior, things juniors miss. |
 | **security** (opt-in overlay or mode) | | Injection, auth, secret leaks, SSRF/XSS, IAM scope. |
 | **hipaa-soc2** (opt-in overlay or mode) | | PHI in logs, audit-log coverage, encryption, BAA scope. |
 
@@ -116,7 +116,7 @@ All optional. Can be set on the caller workflow's `with:` block OR in
 | `overlays` | `senior-eye` | Comma-list of overlays |
 | `enforcement_mode` | `advisory` | `advisory` (success always) / `soft-fail` (neutral on findings) / `required` (failure on findings) |
 | `severity_threshold` | `medium` | Minimum severity to surface |
-| `fail_threshold` | `high` | Severities ≥ this flip check red (in `required` mode) |
+| `fail_threshold` | `high` | Severities >= this flip check red (in `required` mode) |
 | `max_inline_comments` | `20` | Cap inline comments to avoid spam |
 | `include_paths` | `""` | Newline-separated globs |
 | `exclude_paths` | `""` | Newline-separated globs |
@@ -148,7 +148,7 @@ be reviewed because secrets are blocked on `pull_request`.
 
 `pull_request_target` runs the workflow from the **base branch**, not
 the PR branch. That means changes to this workflow in a PR don't take
-effect until merge — a feature, not a bug. The reusable workflow itself
+effect until merge - a feature, not a bug. The reusable workflow itself
 lives in `sonarmd/workflows` and is invoked `@main`; consumers always
 get the merged version.
 
@@ -160,12 +160,12 @@ fetched via the GitHub API (`gh api repos/{}/{}/pulls/{}` with the
 manager runs against PR code. No build steps execute PR code.
 
 If a use case needs related-file context, set
-`allow_pr_head_checkout: true` — this enables a **read-only** checkout
+`allow_pr_head_checkout: true` - this enables a **read-only** checkout
 of PR head. No `npm install`, no `pip install`, no execution.
 
 ### LLM has no GitHub access
 
-The `review-agent` job declares `permissions: {}` — no GITHUB_TOKEN is
+The `review-agent` job declares `permissions: {}` - no GITHUB_TOKEN is
 provisioned. The container image deliberately has NO `gh` CLI. The agent
 gets the PR diff as a file and outputs to stdout/an artifact. It has no
 network path to GitHub.
@@ -190,7 +190,7 @@ will create labels missing from the repo (with bot-managed description)
 and remove stale ones from prior runs. It will NEVER touch a label
 outside `agent-review/*`.
 
-### Failure behavior — never blocks the org on a bad model day
+### Failure behavior - never blocks the org on a bad model day
 
 | Failure | Behavior |
 |---|---|
@@ -216,24 +216,24 @@ other version.
 
 ```
 sonarmd/workflows/
-├── .github/workflows/
-│   ├── agent-architecture-review.yml          ← reusable workflow (workflow_call)
-│   ├── agent-architecture-review-default.yml  ← top-level wrapper for required-workflow path
-│   └── build-agent-reviewer-image.yml         ← builds the container
-├── actions/
-│   ├── agent-arch-review-agent/               ← Stage 1: run agent
-│   ├── agent-arch-review-publish/             ← Stage 2: validate + post
-│   └── agent-arch-review-config/              ← merge per-repo config
-├── docker/agent-reviewer/
-│   ├── Dockerfile                              ← image source
-│   ├── entrypoint.sh                          ← Stage 1 binary
-│   ├── rubrics/                                ← architecture + overlays
-│   └── schemas/findings.v2.schema.json
-├── per-repo/_template/
-│   ├── .github/workflows/agent-architecture-review.yml   ← Path B caller template
-│   └── .github/agent-review.yml                          ← per-repo config template
-├── schemas/agent-review-findings.v2.schema.json          ← public schema
-└── scripts/bootstrap-agent-review.sh                     ← Path B opener
++-- .github/workflows/
+|   +-- agent-architecture-review.yml          <- reusable workflow (workflow_call)
+|   +-- agent-architecture-review-default.yml  <- top-level wrapper for required-workflow path
+|   +-- build-agent-reviewer-image.yml         <- builds the container
++-- actions/
+|   +-- agent-arch-review-agent/               <- Stage 1: run agent
+|   +-- agent-arch-review-publish/             <- Stage 2: validate + post
+|   +-- agent-arch-review-config/              <- merge per-repo config
++-- docker/agent-reviewer/
+|   +-- Dockerfile                              <- image source
+|   +-- entrypoint.sh                          <- Stage 1 binary
+|   +-- rubrics/                                <- architecture + overlays
+|   +-- schemas/findings.v2.schema.json
++-- per-repo/_template/
+|   +-- .github/workflows/agent-architecture-review.yml   <- Path B caller template
+|   +-- .github/agent-review.yml                          <- per-repo config template
++-- schemas/agent-review-findings.v2.schema.json          <- public schema
++-- scripts/bootstrap-agent-review.sh                     <- Path B opener
 ```
 
 ## Versioning the image
@@ -243,9 +243,9 @@ The container image is rebuilt by
 on every change to `docker/agent-reviewer/**` and on a weekly cron.
 
 Tags:
-- `:latest` — most recent main build (what the reusable workflow uses by default)
-- `:sha-<12hex>` — pinned by commit
-- `:weekly-YYYY-MM-DD` — only on cron, for audit
+- `:latest` - most recent main build (what the reusable workflow uses by default)
+- `:sha-<12hex>` - pinned by commit
+- `:weekly-YYYY-MM-DD` - only on cron, for audit
 
 Pin via the `image_tag` input if you want stability across image rebuilds:
 
@@ -263,6 +263,6 @@ editorial.
 
 ## See also
 
-- [`auto-safety-tag.yml`](../.github/workflows/auto-safety-tag.yml) — same caller pattern.
-- [`DECISIONS.md`](../DECISIONS.md) — why this lives outside the CI/CD core.
-- [`.claude/plans/agent-architecture-review.md`](../.claude/plans/agent-architecture-review.md) — design plan.
+- [`auto-safety-tag.yml`](../.github/workflows/auto-safety-tag.yml) - same caller pattern.
+- [`DECISIONS.md`](../DECISIONS.md) - why this lives outside the CI/CD core.
+- [`.claude/plans/agent-architecture-review.md`](../.claude/plans/agent-architecture-review.md) - design plan.

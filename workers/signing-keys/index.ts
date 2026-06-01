@@ -1,10 +1,10 @@
 /**
- * smd-signing-keys — CI artifact signing key trust store
+ * smd-signing-keys - CI artifact signing key trust store
  *
  * KV layout (namespace: SIGNING_KEYS):
- *   chain:head              → fingerprint of the most recently added key
- *   key:{fingerprint}       → JSON KeyRecord (see below)
- *   config:verify_enabled   → "true" | "false"  (default: true if absent)
+ *   chain:head              -> fingerprint of the most recently added key
+ *   key:{fingerprint}       -> JSON KeyRecord (see below)
+ *   config:verify_enabled   -> "true" | "false"  (default: true if absent)
  *
  * KeyRecord {
  *   fingerprint: string       GPG key fingerprint (40-char hex)
@@ -16,14 +16,14 @@
  * }
  *
  * Endpoints:
- *   GET /keys              — all public keys concatenated (for GPG import)
- *   GET /keys/{fp}         — single public key by fingerprint
- *   GET /chain             — full chain JSON (newest → genesis)
- *   GET /head              — current head fingerprint
- *   GET /verify-enabled    — "true" or "false" — kill switch for artifact-verify
- *   GET /healthz           — liveness + verify_enabled status
+ *   GET /keys              - all public keys concatenated (for GPG import)
+ *   GET /keys/{fp}         - single public key by fingerprint
+ *   GET /chain             - full chain JSON (newest -> genesis)
+ *   GET /head              - current head fingerprint
+ *   GET /verify-enabled    - "true" or "false" - kill switch for artifact-verify
+ *   GET /healthz           - liveness + verify_enabled status
  *
- * ── Kill switch (flip remotely, zero deploy) ──────────────────────────────
+ * -- Kill switch (flip remotely, zero deploy) ------------------------------
  *
  * Disable verification across all deploys immediately:
  *   curl -sf -X PUT \
@@ -82,31 +82,31 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/$/, '') || '/';
 
-    // ── GET /healthz ─────────────────────────────────────────────────────
+    // -- GET /healthz -----------------------------------------------------
     if (path === '/healthz') {
       const head = await env.SIGNING_KEYS.get('chain:head');
       const verifyRaw = await env.SIGNING_KEYS.get('config:verify_enabled');
       return json({ ok: true, head: head ?? null, verify_enabled: verifyRaw !== 'false' });
     }
 
-    // ── GET /verify-enabled ───────────────────────────────────────────────
+    // -- GET /verify-enabled -----------------------------------------------
     // Kill switch consumed by the artifact-verify Ansible role.
     // Returns "true" (default when key absent) or "false" (bypass active).
-    // Never cached — every Ansible run sees the live value.
+    // Never cached - every Ansible run sees the live value.
     if (path === '/verify-enabled') {
       const val = await env.SIGNING_KEYS.get('config:verify_enabled');
       const enabled = val !== 'false';
       return text(enabled ? 'true' : 'false', { 'Cache-Control': 'no-store' });
     }
 
-    // ── GET /head ─────────────────────────────────────────────────────────
+    // -- GET /head ---------------------------------------------------------
     if (path === '/head') {
       const head = await env.SIGNING_KEYS.get('chain:head');
       if (!head) return new Response('no keys registered\n', { status: 404, headers: CORS_HEADERS });
       return text(head + '\n');
     }
 
-    // ── GET /keys/{fingerprint} ───────────────────────────────────────────
+    // -- GET /keys/{fingerprint} -------------------------------------------
     const singleKeyMatch = path.match(/^\/keys\/([0-9A-Fa-f]{8,40})$/);
     if (singleKeyMatch) {
       const fp = singleKeyMatch[1].toUpperCase();
@@ -116,8 +116,8 @@ export default {
       return text(record.public_key + '\n');
     }
 
-    // ── GET /keys ─────────────────────────────────────────────────────────
-    // Walk chain head → genesis, return all public keys concatenated.
+    // -- GET /keys ---------------------------------------------------------
+    // Walk chain head -> genesis, return all public keys concatenated.
     // GPG imports a multi-key armored block in one shot.
     if (path === '/keys') {
       const head = await env.SIGNING_KEYS.get('chain:head');
@@ -139,8 +139,8 @@ export default {
       return text(keys.join('\n') + '\n');
     }
 
-    // ── GET /chain ────────────────────────────────────────────────────────
-    // Full chain as JSON (newest → genesis). public_key omitted for brevity.
+    // -- GET /chain --------------------------------------------------------
+    // Full chain as JSON (newest -> genesis). public_key omitted for brevity.
     if (path === '/chain') {
       const head = await env.SIGNING_KEYS.get('chain:head');
       if (!head) return json([]);

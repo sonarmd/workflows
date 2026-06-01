@@ -1,13 +1,13 @@
 name: Deploy
 
-# Single deploy workflow for all environments — frontend-patient-app (React Native / Expo).
+# Single deploy workflow for all environments - frontend-patient-app (React Native / Expo).
 # Environment and EAS build profile are derived from the tag prefix.
 #
 # Tag format:
-#   stg-mobile-<version>   →  EAS preview build (staging, no auto-submit)
-#   prd-mobile-<version>   →  EAS production build + auto-submit to app stores
+#   stg-mobile-<version>   ->  EAS preview build (staging, no auto-submit)
+#   prd-mobile-<version>   ->  EAS production build + auto-submit to app stores
 #
-# No dev environment for mobile — preview builds serve as the dev/test artifact.
+# No dev environment for mobile - preview builds serve as the dev/test artifact.
 
 on:
   push:
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Parses tag prefix → all env-specific values in one place.
+  # Parses tag prefix -> all env-specific values in one place.
   setup:
     timeout-minutes: 10
     name: Resolve environment
@@ -34,7 +34,7 @@ jobs:
       auto-submit: ${{ steps.parse.outputs.auto-submit }}
     steps:
       - id: parse
-        name: Parse tag → environment
+        name: Parse tag -> environment
         run: |
           set -euo pipefail
           TAG="${{ github.ref_name }}"
@@ -56,7 +56,7 @@ jobs:
           esac
           echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
 
-  # Deploy gate — EAS handles both build and deployment, so build-gate is skipped.
+  # Deploy gate - EAS handles both build and deployment, so build-gate is skipped.
   # CI gates already passed on the commit this tag points to.
   deploy-gate:
     timeout-minutes: 10

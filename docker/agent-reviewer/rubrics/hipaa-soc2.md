@@ -1,4 +1,4 @@
-# Overlay — HIPAA / SOC2
+# Overlay - HIPAA / SOC2
 
 SonarMD handles Protected Health Information. This overlay flags
 HIPAA-relevant and SOC2-relevant gaps in the diff.
@@ -64,14 +64,14 @@ HIPAA-relevant and SOC2-relevant gaps in the diff.
 
 ## Severity calibration for this overlay
 
-- `critical` — confirmed PHI exposure to a non-BAA-covered destination
+- `critical` - confirmed PHI exposure to a non-BAA-covered destination
   (LLM, analytics provider, log shipper) or destruction without backup.
-- `high` — likely PHI exposure (PHI in a log that ships off-system,
+- `high` - likely PHI exposure (PHI in a log that ships off-system,
   missing tenant filter on a query, encryption disabled), or missing
   audit-log entry for a PHI access.
-- `medium` — control weakness (over-permissive role, missing alarm on a
+- `medium` - control weakness (over-permissive role, missing alarm on a
   PHI-bearing resource).
-- `low` — documentation / evidence gap.
+- `low` - documentation / evidence gap.
 
 ## Output discipline
 

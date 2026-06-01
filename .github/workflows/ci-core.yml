@@ -1,6 +1,6 @@
 name: CI
 
-# ── Caller example ───────────────────────────────────────────────────────
+# -- Caller example -------------------------------------------------------
 #
 #   jobs:
 #     ci:
@@ -53,7 +53,7 @@ on:
           Falls back to github.token when not provided.
         required: false
 
-# No `permissions:` block — the caller's grant flows through unchanged.
+# No `permissions:` block - the caller's grant flows through unchanged.
 # This reusable workflow runs steps that need (at minimum): contents:read for
 # the checkout, id-token:write + attestations:write for the signing/attestation
 # actions, actions:read for the artifact-store probe, and packages:write for
@@ -128,9 +128,9 @@ jobs:
           github.ref_type == 'branch'
         uses: sonarmd/workflows/actions/artifact-store-push@main
 
-      - name: Cache hit — artifact already published
+      - name: Cache hit - artifact already published
         if: steps.probe.outputs.present == 'true'
         shell: bash
         run: |
-          echo "ci-core: artifact already exists for this SHA in the store — skipped rebuild."
+          echo "ci-core: artifact already exists for this SHA in the store - skipped rebuild."
           echo "ci-core: reference: ${{ steps.probe.outputs.reference }}"

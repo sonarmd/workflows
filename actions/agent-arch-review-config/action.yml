@@ -58,7 +58,7 @@ runs:
   steps:
     - name: Ensure mikefarah/yq is available
       # The prior grep fallback could not parse YAML block scalars, nested
-      # keys, or inline comments — silently producing wrong config. We now
+      # keys, or inline comments - silently producing wrong config. We now
       # require mikefarah/yq (v4). Specifically need to distinguish from
       # kislyuk/yq (pip-installed Python jq-wrapper with incompatible CLI)
       # which `command -v yq` would also match.
@@ -77,13 +77,13 @@ runs:
         fi
 
         if command -v yq >/dev/null 2>&1; then
-          echo "::warning::wrong yq on PATH ($(yq --version 2>&1 | head -1)) — installing mikefarah/yq alongside"
+          echo "::warning::wrong yq on PATH ($(yq --version 2>&1 | head -1)) - installing mikefarah/yq alongside"
         else
           echo "::notice::yq not found; installing mikefarah/yq"
         fi
 
         # OS + arch detection. Supports Linux x86_64/aarch64 and macOS
-        # x86_64/arm64 — covers the GH-hosted runners and the most common
+        # x86_64/arm64 - covers the GH-hosted runners and the most common
         # self-hosted shapes.
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
         case "$OS" in
@@ -147,7 +147,7 @@ runs:
         set -euo pipefail
 
         # Per-repo file > workflow input. yq parses YAML correctly
-        # (block scalars, nested keys, comments — all the things the
+        # (block scalars, nested keys, comments - all the things the
         # prior grep fallback got wrong).
         read_yaml() {
           local key="$1"

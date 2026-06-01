@@ -2,7 +2,7 @@ name: Artifact Store Probe
 description: |
   Checks whether a release artifact for the given SHA exists in the
   durable artifact store (GHCR via ORAS). Sets `present` output to
-  `true` or `false`. Never fails when the artifact is absent — that's
+  `true` or `false`. Never fails when the artifact is absent - that's
   a normal cache miss, not an error.
 
   Used by ci-core at the top of the build flow to short-circuit
@@ -58,9 +58,9 @@ runs:
           -u "$GH_ACTOR" --password-stdin >/dev/null 2>&1
 
         if oras manifest fetch "$REF" >/dev/null 2>&1; then
-          echo "artifact-store-probe: HIT — $REF"
+          echo "artifact-store-probe: HIT - $REF"
           echo "present=true" >> "$GITHUB_OUTPUT"
         else
-          echo "artifact-store-probe: MISS — $REF"
+          echo "artifact-store-probe: MISS - $REF"
           echo "present=false" >> "$GITHUB_OUTPUT"
         fi

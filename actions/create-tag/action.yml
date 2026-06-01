@@ -1,5 +1,5 @@
 name: Create Tag
-description: Creates a git tag on the current commit. Idempotent — no-ops if the tag already exists.
+description: Creates a git tag on the current commit. Idempotent - no-ops if the tag already exists.
 
 inputs:
   tag:

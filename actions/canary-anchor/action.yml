@@ -2,13 +2,13 @@ name: 'canary-anchor'
 description: >
   Anchor the HEAD of each push to main with a single immutable
   `anchor/<short-sha>-<reason>` tag. Git commit SHAs are content-addressed
-  Merkle roots — pinning the HEAD SHA transitively covers every ancestor
+  Merkle roots - pinning the HEAD SHA transitively covers every ancestor
   commit's content, parents, and metadata. A force-push that rewrites any
   commit in the chain changes the descendants' SHAs, orphaning the anchor.
 
   Reason suffix encodes notable properties of the anchored commit (merge /
   subject-marker / critical-path / large-diff / tagged) or defaults to
-  `commit`. One tag per push to main — manageable tag count, full
+  `commit`. One tag per push to main - manageable tag count, full
   chain-of-custody coverage via Merkle properties of the commit graph.
 
   Requires the caller's merge strategy to be rebase merge (not squash) so
@@ -81,7 +81,7 @@ runs:
 
         sha="$AFTER"
 
-        # Slug the branch name for inclusion in the tag — replace / with -
+        # Slug the branch name for inclusion in the tag - replace / with -
         # so the anchor/* namespace stays flat and rulesettable. Each branch
         # gets its own independent chain of custody.
         # Examples:
@@ -94,7 +94,7 @@ runs:
 
         # Already anchored for THIS branch slug? No-op.
         if git tag --points-at "$sha" --list "${PREFIX}${slug}-*" 2>/dev/null | grep -q .; then
-          echo "::notice::HEAD ($sha) on $slug is already anchored — skipping."
+          echo "::notice::HEAD ($sha) on $slug is already anchored - skipping."
           echo "created=0" >> "$GITHUB_OUTPUT"
           exit 0
         fi
@@ -110,7 +110,7 @@ runs:
 
         new_tags=()
 
-        # One pass — anchor HEAD only. The HEAD SHA is a Merkle root over
+        # One pass - anchor HEAD only. The HEAD SHA is a Merkle root over
         # all ancestor commits, so anchoring it transitively covers them.
 
         do_one=1
@@ -162,7 +162,7 @@ runs:
             fi
           fi
 
-          # Default reason for ordinary commits → full coverage, no gaps.
+          # Default reason for ordinary commits -> full coverage, no gaps.
           if [ -z "$reason" ]; then
             reason="commit"
           fi
@@ -170,7 +170,7 @@ runs:
           short="${sha:0:7}"
           tag="${PREFIX}${slug}-${short}-${reason}"
 
-          # Race-safety: collision (extremely unlikely) → suffix with timestamp.
+          # Race-safety: collision (extremely unlikely) -> suffix with timestamp.
           if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
             tag="${PREFIX}${slug}-${short}-${reason}-$(date -u +%s)"
           fi
@@ -178,7 +178,7 @@ runs:
           # Create lightweight tag locally; pushed below.
           git tag "$tag" "$sha"
           new_tags+=("$tag")
-          echo "anchor staged: $tag → $sha (${reason})"
+          echo "anchor staged: $tag -> $sha (${reason})"
         fi
 
         echo "created=${#new_tags[@]}" >> "$GITHUB_OUTPUT"
@@ -193,4 +193,4 @@ runs:
         echo "pushing anchor: ${new_tags[0]}"
         git push origin "refs/tags/${new_tags[0]}:refs/tags/${new_tags[0]}"
 
-        echo "::notice::Created anchor ${new_tags[0]} → $sha"
+        echo "::notice::Created anchor ${new_tags[0]} -> $sha"

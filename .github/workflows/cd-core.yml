@@ -1,10 +1,10 @@
 name: CD
 
-# ── Caller example dumb af claudes stop touching my shit ────────────────────────────────────────────────────────
+# -- Caller example dumb af claudes stop touching my shit --------------------------------------------------------
 #
 # In practice this is invoked by cicd-orchestrator.yml, not directly. If you
 # do invoke it directly, the caller is the single source of truth for
-# GITHUB_TOKEN scopes — declare them on the caller's `permissions:` block;
+# GITHUB_TOKEN scopes - declare them on the caller's `permissions:` block;
 # this workflow declares none of its own.
 #
 #   name: CD
@@ -34,7 +34,7 @@ on:
       OP_SERVICE_ACCOUNT_TOKEN:
         required: true
 
-# No `permissions:` block — the caller's grant flows through unchanged.
+# No `permissions:` block - the caller's grant flows through unchanged.
 # This workflow needs contents:write (create tags + GitHub releases),
 # actions:read (discover prior workflow runs), and packages:read (pull
 # release tarball from the GHCR-backed store). The caller must offer
@@ -50,7 +50,7 @@ jobs:
       # github-script, 1password/load-secrets) run on node24.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
       # Slack webhook URL is a direct value, not an op:// reference, so it
-      # must be set at job scope rather than routed through Load secrets —
+      # must be set at job scope rather than routed through Load secrets -
       # 1password/load-secrets-action only exports op:// refs to $GITHUB_ENV.
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
@@ -77,24 +77,24 @@ jobs:
           script: |
             const identifier = process.env.IDENTIFIER_VAR;
             if (!identifier) {
-              core.setFailed('cd-core: repo variable DEPLOY_IDENTIFIER is not set (repo Settings → Variables → Actions)');
+              core.setFailed('cd-core: repo variable DEPLOY_IDENTIFIER is not set (repo Settings -> Variables -> Actions)');
               return;
             }
             const { owner, repo } = context.repo;
             const ref = context.ref.replace('refs/heads/', '');
 
-            // ── release/vX.Y.Z → new prerelease on stg ──────────────────
+            // -- release/vX.Y.Z -> new prerelease on stg ------------------
             const releaseMatch = ref.match(/^release\/v(\d+\.\d+\.\d+)$/);
             if (releaseMatch) {
               const version = releaseMatch[1];
-              core.notice(`cd-core: release/** → creating prerelease stg ${identifier} v${version}`);
+              core.notice(`cd-core: release/** -> creating prerelease stg ${identifier} v${version}`);
               core.setOutput('env',        'stg');
               core.setOutput('identifier', identifier);
               core.setOutput('version',    version);
               return;
             }
 
-            // ── master / main → promote existing prerelease to prd ──────
+            // -- master / main -> promote existing prerelease to prd ------
             if (ref === 'master' || ref === 'main') {
               // Look at HEAD and HEAD's parents (merge-commit's second parent
               // is the release-branch tip when master gets a release merge).
@@ -158,7 +158,7 @@ jobs:
                   return;
                 }
                 const version = m[1];
-                core.notice(`cd-core: master/main → promoting ${matched.tag_name} → prd ${identifier} v${version}`);
+                core.notice(`cd-core: master/main -> promoting ${matched.tag_name} -> prd ${identifier} v${version}`);
                 core.setOutput('env',            'prd');
                 core.setOutput('identifier',     identifier);
                 core.setOutput('version',        version);
@@ -167,17 +167,17 @@ jobs:
               }
 
               // No stg prerelease on HEAD's ancestry. The workflow does NOT
-              // enforce the release/vX.Y.Z → master flow — direct pushes to
+              // enforce the release/vX.Y.Z -> master flow - direct pushes to
               // master deploy. Fall through to YOLO prd: emit a v404 prd
               // release ("unknown version"). No setFailed, no guard.
-              core.notice(`cd-core: master/main, no prerelease in ancestry → YOLO prd ${identifier} v404`);
+              core.notice(`cd-core: master/main, no prerelease in ancestry -> YOLO prd ${identifier} v404`);
               core.setOutput('env',        'prd');
               core.setOutput('identifier', identifier);
               core.setOutput('version',    '404');
               return;
             }
 
-            // ── release/* without parseable semver → YOLO stg prerelease ──
+            // -- release/* without parseable semver -> YOLO stg prerelease --
             // CD does not gatekeep on branch naming. If the ref is under
             // release/ but does not match release/vX.Y.Z, emit a v404 stg
             // prerelease ("unknown version"). The v404 marker is deliberately
@@ -185,14 +185,14 @@ jobs:
             // lookup cannot lift it into prd. YOLO stays on stg.
             if (ref.startsWith('release/')) {
               const version = '404';
-              core.notice(`cd-core: release/** no version — YOLO prerelease stg ${identifier} v${version}`);
+              core.notice(`cd-core: release/** no version - YOLO prerelease stg ${identifier} v${version}`);
               core.setOutput('env',        'stg');
               core.setOutput('identifier', identifier);
               core.setOutput('version',    version);
               return;
             }
 
-            core.setFailed(`cd-core: unexpected ref '${ref}' — cd should only run on release/*, master, or main`);
+            core.setFailed(`cd-core: unexpected ref '${ref}' - cd should only run on release/*, master, or main`);
 
       - name: Derive build number
         id: build

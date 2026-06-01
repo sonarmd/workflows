@@ -1,15 +1,15 @@
 name: Deploy
 
 # Single deploy workflow for all environments.
-# Environment is derived from the tag prefix — no separate files per env.
+# Environment is derived from the tag prefix - no separate files per env.
 #
 # Tag format:
-#   dev-api-<version>   →  deploy to dev
-#   stg-api-<version>   →  deploy to staging
-#   prd-api-<version>   →  deploy to production (requires GitHub Environment approval)
+#   dev-api-<version>   ->  deploy to dev
+#   stg-api-<version>   ->  deploy to staging
+#   prd-api-<version>   ->  deploy to production (requires GitHub Environment approval)
 #
 # The same build, config generation, and deployment steps run for every
-# environment. Only the values differ — resolved in the setup job below.
+# environment. Only the values differ - resolved in the setup job below.
 
 on:
   push:
@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   # Parses the tag prefix and emits environment-specific values as outputs.
-  # Every downstream job consumes these — no env logic lives anywhere else.
+  # Every downstream job consumes these - no env logic lives anywhere else.
   setup:
     timeout-minutes: 10
     name: Resolve environment
@@ -40,7 +40,7 @@ jobs:
       collect-metrics: ${{ steps.parse.outputs.collect-metrics }}
     steps:
       - id: parse
-        name: Parse tag → environment
+        name: Parse tag -> environment
         run: |
           set -euo pipefail
           TAG="${{ github.ref_name }}"
@@ -77,7 +77,7 @@ jobs:
     timeout-minutes: 10
     needs: setup
     runs-on: ubuntu-latest
-    environment: ${{ needs.setup.outputs.env }}  # GitHub Environment — gates production with approval
+    environment: ${{ needs.setup.outputs.env }}  # GitHub Environment - gates production with approval
     permissions:
       id-token: write
       contents: read
@@ -107,7 +107,7 @@ jobs:
           aws s3 cp api.tar.gz \
             "s3://sonarmd-deploy-artifacts/${{ needs.setup.outputs.s3-prefix }}/${{ github.ref_name }}/api.tar.gz"
 
-  # Build gate — validates the build succeeded before proceeding.
+  # Build gate - validates the build succeeded before proceeding.
   build-gate:
     timeout-minutes: 10
     needs: build
@@ -116,14 +116,14 @@ jobs:
     with:
       build_result: ${{ needs.build.result }}
 
-  # Deploy gate — validates all prerequisites before deployment.
+  # Deploy gate - validates all prerequisites before deployment.
   deploy-gate:
     timeout-minutes: 10
     needs: build-gate
     if: always()
     uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
     with:
-      # Deploy workflows are tag-triggered — CI gates already passed on the commit.
+      # Deploy workflows are tag-triggered - CI gates already passed on the commit.
       static_analysis_gate_result: success
       test_gate_result:            success
       build_gate_result:           ${{ needs.build-gate.outputs.gate_result }}

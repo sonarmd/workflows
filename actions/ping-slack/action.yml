@@ -15,7 +15,7 @@ inputs:
     description: Application or repo name
     required: true
   details:
-    description: Optional failure context — shown in the Slack message on failure
+    description: Optional failure context - shown in the Slack message on failure
     required: false
     default: ''
   channel:
@@ -71,7 +71,7 @@ runs:
 
         PAYLOAD=$(jq -n \
           --arg channel "$INPUT_CHANNEL" \
-          --arg title   "$EMOJI $TITLE — $INPUT_APP" \
+          --arg title   "$EMOJI $TITLE - $INPUT_APP" \
           --arg color   "$COLOR" \
           --argjson fields "$FIELDS" \
           --arg run_url "$RUN_URL" \

@@ -4,7 +4,7 @@ description: >
   branch by cherry-picking each orphan commit back on top of the current
   (broken) HEAD, pushes the branch, and opens a draft PR for human review.
   Cherry-pick conflicts are committed with markers intact and noted in the PR
-  body — the human resolves them in the PR.
+  body - the human resolves them in the PR.
 
   This action never bypasses review: CD stays blocked, the P0 issue stays
   open, and you (the CODEOWNER / tag-ruleset bypass actor) are still the
@@ -13,7 +13,7 @@ description: >
 
 inputs:
   missing:
-    description: 'Newline-separated lines from canary-verify outputting "<tag> → <sha> ...".'
+    description: 'Newline-separated lines from canary-verify outputting "<tag> -> <sha> ...".'
     required: true
   recovery-branch-prefix:
     description: 'Prefix for the auto-created recovery branch.'
@@ -48,7 +48,7 @@ runs:
   steps:
     # App token mints a credential with the perms needed for contents:write
     # (push the recovery branch) and pull-requests:write (open the PR).
-    # Caller workflow's GITHUB_TOKEN doesn't need those — the App provides
+    # Caller workflow's GITHUB_TOKEN doesn't need those - the App provides
     # them out-of-band. continue-on-error: false here because reconcile
     # cannot meaningfully run without it.
     - name: Mint App token (smd-ci-agora)
@@ -72,12 +72,12 @@ runs:
         MISSING: ${{ inputs.missing }}
       run: |
         set -euo pipefail
-        # Lines look like: "anchor/abc1234-merge → a1b2c3d4...  subject  [NOT an ancestor...]"
+        # Lines look like: "anchor/abc1234-merge -> a1b2c3d4...  subject  [NOT an ancestor...]"
         # Extract the SHA after the arrow.
-        shas=$(printf '%s\n' "$MISSING" | awk -F'→' 'NF>=2 {print $2}' | awk '{print $1}' | tr -d ' ' | sort -u)
+        shas=$(printf '%s\n' "$MISSING" | awk -F'->' 'NF>=2 {print $2}' | awk '{print $1}' | tr -d ' ' | sort -u)
 
         if [ -z "$shas" ]; then
-          echo "::warning::No SHAs could be extracted from verify output — skipping reconcile."
+          echo "::warning::No SHAs could be extracted from verify output - skipping reconcile."
           echo "have_shas=0" >> "$GITHUB_OUTPUT"
           exit 0
         fi
@@ -135,7 +135,7 @@ runs:
             # Conflict. Commit the conflicted state intact so the human can resolve in the PR.
             git add -A
             short="${sha:0:7}"
-            git commit --no-verify -m "RECOVERY: ${short} (CONFLICT — resolve in PR)" -m "Original commit: ${sha}" || true
+            git commit --no-verify -m "RECOVERY: ${short} (CONFLICT - resolve in PR)" -m "Original commit: ${sha}" || true
             git cherry-pick --abort 2>/dev/null || true
             conflicts+=("$sha")
           fi
@@ -194,7 +194,7 @@ runs:
             `**Cleanly applied:** ${ac}  `,
             `**Conflicts (need manual resolution in this PR):** ${cc}  `,
             ``,
-            cc !== '0' ? `> ⚠️ Conflict commits are committed with markers intact. Check out the branch, resolve conflicts, push, then mark this PR ready.` : `> ✅ All commits applied cleanly. Review the diff, mark ready, merge.`,
+            cc !== '0' ? `> [WARN] Conflict commits are committed with markers intact. Check out the branch, resolve conflicts, push, then mark this PR ready.` : `> [OK] All commits applied cleanly. Review the diff, mark ready, merge.`,
             ``,
             `### Applied`,
             applied ? '```\n' + applied + '\n```' : '_(none)_',
@@ -234,7 +234,7 @@ runs:
               owner, repo, issue_number: dup.number,
               body: `Another canary regression fired on \`${base}\` while this recovery PR is still open. New recovery branch (superseding): \`${branch}\`. Run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
             });
-            core.notice(`Existing recovery PR #${dup.number} — commented instead of opening duplicate.`);
+            core.notice(`Existing recovery PR #${dup.number} - commented instead of opening duplicate.`);
             return;
           }
 

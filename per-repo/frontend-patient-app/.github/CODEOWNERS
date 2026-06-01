@@ -1,4 +1,4 @@
-# CODEOWNERS — frontend-patient-app
+# CODEOWNERS - frontend-patient-app
 #
 # CI workflow files require @sonarmd/platform-eng review.
 # Teams own what their CI does (commands, services, tooling).

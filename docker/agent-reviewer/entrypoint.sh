@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# agent-review — Stage 1 entrypoint for ghcr.io/sonarmd/agent-reviewer
+# agent-review - Stage 1 entrypoint for ghcr.io/sonarmd/agent-reviewer
 #
 # Reads the PR diff + metadata that the prepare job wrote to:
 #   /work/diff.patch
@@ -11,8 +11,8 @@
 # writes findings.json (schema v2) to a path the publisher will read.
 #
 # Required env (one of):
-#   CLAUDE_CODE_OAUTH_TOKEN  — subscription auth (preferred, subscription billing)
-#   ANTHROPIC_API_KEY        — fallback (per-token API billing)
+#   CLAUDE_CODE_OAUTH_TOKEN  - subscription auth (preferred, subscription billing)
+#   ANTHROPIC_API_KEY        - fallback (per-token API billing)
 #
 # Other env:
 #   AGENT_REVIEWER_INPUT_DIR    (default /work)
@@ -25,8 +25,8 @@
 #   MAX_DIFF_BYTES         (default 200000)
 #
 # Exit codes:
-#   0  — success (findings.json written; may be empty)
-#   2  — usage error
+#   0  - success (findings.json written; may be empty)
+#   2  - usage error
 #
 # On claude failure or malformed output: writes a findings.json with
 # parser_status=malformed and exits 0. The publisher handles this case
@@ -47,7 +47,7 @@ MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-200000}"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'EOF'
-agent-review — Stage 1 of agent-architecture-review.
+agent-review - Stage 1 of agent-architecture-review.
 
 Reads PR diff + metadata from $AGENT_REVIEWER_INPUT_DIR.
 Emits findings.json conforming to /opt/schemas/findings.v2.schema.json
@@ -67,7 +67,7 @@ require_env() {
 }
 
 if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  echo "::error::no claude auth — set CLAUDE_CODE_OAUTH_TOKEN (preferred) or ANTHROPIC_API_KEY" >&2
+  echo "::error::no claude auth - set CLAUDE_CODE_OAUTH_TOKEN (preferred) or ANTHROPIC_API_KEY" >&2
   exit 2
 fi
 if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
@@ -105,7 +105,7 @@ if [[ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]]; then
   #   0 = nothing dropped (shouldn't happen here since we already know
   #       we exceed cap, but kept consistent with awk's `exit 0` default)
   #   1 = at least one file dropped (intentional truncation)
-  #   * = awk crashed — caller must NOT proceed with this output
+  #   * = awk crashed - caller must NOT proceed with this output
   set +e
   awk -v cap="$MAX_DIFF_BYTES" '
     BEGIN { bytes=0; block=""; output=""; truncated=0 }
@@ -134,7 +134,7 @@ if [[ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]]; then
     0)  DIFF_TRUNCATED=false ;;
     1)  DIFF_TRUNCATED=true  ;;
     *)
-      echo "::error::truncation awk exited with code ${AWK_EXIT} — possible crash"
+      echo "::error::truncation awk exited with code ${AWK_EXIT} - possible crash"
       emit_malformed "diff truncation step crashed (awk exit ${AWK_EXIT})"
       exit 0
       ;;
@@ -160,7 +160,7 @@ if [[ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]]; then
   fi
   DIFF_FILE="$TRUNCATED_FILE"
   if [[ "$DIFF_TRUNCATED" == "true" ]]; then
-    echo "::warning::diff truncated — review will be partial"
+    echo "::warning::diff truncated - review will be partial"
   fi
 fi
 
@@ -286,35 +286,35 @@ EOF
 
   case "$REVIEW_MODE" in
     architecture|architecture+senior|custom)
-      echo "## Default rubric — ARCHITECTURE"; echo
+      echo "## Default rubric - ARCHITECTURE"; echo
       cat "${AGENT_REVIEWER_RUBRICS_DIR}/architecture.md"; echo ;;
     security)
-      echo "## Default rubric — SECURITY"; echo
+      echo "## Default rubric - SECURITY"; echo
       cat "${AGENT_REVIEWER_RUBRICS_DIR}/security.md"; echo ;;
     compliance)
-      echo "## Default rubric — COMPLIANCE (HIPAA/SOC2)"; echo
+      echo "## Default rubric - COMPLIANCE (HIPAA/SOC2)"; echo
       cat "${AGENT_REVIEWER_RUBRICS_DIR}/hipaa-soc2.md"; echo ;;
   esac
 
   for overlay in "${SELECTED_OVERLAYS[@]}"; do
     case "$overlay" in
       senior-eye)
-        echo "## Overlay — SENIOR EYE"; echo
+        echo "## Overlay - SENIOR EYE"; echo
         cat "${AGENT_REVIEWER_RUBRICS_DIR}/senior-eye.md"; echo ;;
       security)
         if [[ "$REVIEW_MODE" != "security" ]]; then
-          echo "## Overlay — SECURITY"; echo
+          echo "## Overlay - SECURITY"; echo
           cat "${AGENT_REVIEWER_RUBRICS_DIR}/security.md"; echo
         fi ;;
       hipaa-soc2)
         if [[ "$REVIEW_MODE" != "compliance" ]]; then
-          echo "## Overlay — HIPAA/SOC2"; echo
+          echo "## Overlay - HIPAA/SOC2"; echo
           cat "${AGENT_REVIEWER_RUBRICS_DIR}/hipaa-soc2.md"; echo
         fi ;;
     esac
   done
 
-  # Reference cards — one-page primers the agent can cite. Only included
+  # Reference cards - one-page primers the agent can cite. Only included
   # for the architecture-flavored modes since security/compliance lean on
   # different references.
   case "$REVIEW_MODE" in
@@ -322,7 +322,7 @@ EOF
       if [[ -d /opt/references ]]; then
         for card in /opt/references/*.md; do
           [[ -f "$card" ]] || continue
-          echo "## Reference — $(basename "$card" .md | tr 'a-z-' 'A-Z ')"
+          echo "## Reference - $(basename "$card" .md | tr 'a-z-' 'A-Z ')"
           echo
           cat "$card"; echo
         done
@@ -331,7 +331,7 @@ EOF
 
   # Pre-computed analysis from the analyze action. Lives at /work/analysis.md
   # when the prepare job ran the analyzers; absent otherwise (e.g. legacy
-  # caller, or analyzer step failed — graceful skip in both cases).
+  # caller, or analyzer step failed - graceful skip in both cases).
   ANALYSIS_FILE="${INPUT_DIR}/analysis.md"
   if [[ -f "$ANALYSIS_FILE" && -s "$ANALYSIS_FILE" ]]; then
     echo "## Pre-computed analysis (grounding data)"
@@ -393,19 +393,19 @@ EOF
 RAW_OUTPUT=$(mktemp)
 trap 'rm -f "$FILTERED_DIFF" "$PROMPT_FILE" "$RAW_OUTPUT"' EXIT
 
-# SECURITY: lock claude down to JUST the LLM call — no tool access at all.
+# SECURITY: lock claude down to JUST the LLM call - no tool access at all.
 #
 # We use THREE layers of defense, because a blocklist of built-in tools
 # alone is fragile (new Claude Code releases can add tools that bypass it,
 # and MCP tools are not covered by --disallowed-tools at all):
 #
-#   1. --disallowed-tools — exhaustive blocklist of every built-in tool
+#   1. --disallowed-tools - exhaustive blocklist of every built-in tool
 #      family known at time of writing. Includes Skill, TodoWrite,
 #      AskUserQuestion, ToolSearch, ExitPlanMode etc. that the prior
 #      revision missed. Pinned CLAUDE_CODE_VERSION in the Dockerfile is
 #      what makes this list deterministic.
 #
-#   2. --strict-mcp-config + an empty --mcp-config file — disables MCP
+#   2. --strict-mcp-config + an empty --mcp-config file - disables MCP
 #      auto-discovery and forces zero MCP servers. Without this, any
 #      .mcp.json that lands in the workspace (or a future feature that
 #      defaults to discovery) would let MCP tools bypass the blocklist.

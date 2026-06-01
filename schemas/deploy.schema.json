@@ -49,7 +49,7 @@
           },
           "hosts": {
             "type": "object",
-            "description": "Label → Ansible inventory match key. Values are opaque identifiers resolved by the deployment system. Only ${env} template variable allowed.",
+            "description": "Label -> Ansible inventory match key. Values are opaque identifiers resolved by the deployment system. Only ${env} template variable allowed.",
             "minProperties": 1,
             "additionalProperties": {
               "type": "string",

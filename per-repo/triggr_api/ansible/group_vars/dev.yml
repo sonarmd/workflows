@@ -1,25 +1,25 @@
 ---
-# ECS provisioning vars — DEV
+# ECS provisioning vars - DEV
 # Source: triggr_misc/Ansible/group_vars/tag_Group_Development/vars.yml
 
 deploy_env: dev
 environment_name: Development
 
-# ── Networking ──
+# -- Networking --
 aws_vpc_id: vpc-064fea1a6a271a076
 ecs_subnets:
   - subnet-0f373cc11013ff26f
 
-# ── ALB ──
+# -- ALB --
 # Listener ARN is dynamic (created by aws_elb role). If the ALB already
 # exists, grab it: aws elbv2 describe-listeners --load-balancer-arn <LB_ARN>
 # LB name: LB-API-DEV, target group: API-DEV
 ecs_alb_listener_arn: ""
 ecs_alb_certificate_arn: "arn:aws:acm:us-east-1:754176877665:certificate/b9fcba77-6a6f-4c60-8b10-4c1a7bb31346"
 
-# ── DNS ──
+# -- DNS --
 api_url: api.dev.sonarmd.com
 
-# ── S3 buckets the task role needs ──
+# -- S3 buckets the task role needs --
 images_s3_bucket: images.dev.sonarmd.com
 reports_s3_bucket_name: doc-storage-reports-staging

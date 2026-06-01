@@ -7,7 +7,7 @@ description: |
     2. Computes SHA-256 for every file in the archive.
     3. Writes submodule-checksums.txt (format: "sha256  relative/path").
     4. Imports the CI signing key, signs submodule-checksums.txt with a
-       GPG detached ASCII-armor signature → submodule-checksums.txt.sig.
+       GPG detached ASCII-armor signature -> submodule-checksums.txt.sig.
     5. Repacks release.tar.gz with both files included.
     6. Cleans up the key and the temp GPG homedir.
 
@@ -51,7 +51,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # ── Validate artifact ────────────────────────────────────────────────
+        # -- Validate artifact ------------------------------------------------
         if [ ! -f "$ARTIFACT_PATH" ]; then
           echo "::error::sign-release: artifact not found at '$ARTIFACT_PATH'"
           exit 1
@@ -70,11 +70,11 @@ runs:
         }
         trap cleanup EXIT
 
-        # ── Extract artifact ─────────────────────────────────────────────────
+        # -- Extract artifact -------------------------------------------------
         echo "sign-release: extracting $ARTIFACT_PATH"
         tar xzf "$ARTIFACT_PATH" -C "$STAGING"
 
-        # ── Generate submodule-checksums.txt ─────────────────────────────────
+        # -- Generate submodule-checksums.txt ---------------------------------
         # SHA-256 of every file, paths relative to STAGING root.
         # Sorted for determinism. Blank lines and # comments are tolerated
         # by artifact-verify; we emit a clean file.
@@ -86,7 +86,7 @@ runs:
         CHECKSUM_COUNT=$(wc -l < "$STAGING/submodule-checksums.txt" | tr -d ' ')
         echo "sign-release: $CHECKSUM_COUNT files checksummed"
 
-        # ── Import signing key ───────────────────────────────────────────────
+        # -- Import signing key -----------------------------------------------
         echo "$SIGNING_KEY_B64" | base64 -d | \
           gpg --batch --homedir "$GNUPGHOME" --import
 
@@ -105,7 +105,7 @@ runs:
         echo "${FINGERPRINT}:6:" | \
           gpg --batch --homedir "$GNUPGHOME" --import-ownertrust
 
-        # ── Sign submodule-checksums.txt ─────────────────────────────────────
+        # -- Sign submodule-checksums.txt -------------------------------------
         gpg --batch --yes \
           --homedir "$GNUPGHOME" \
           --pinentry-mode loopback \
@@ -116,7 +116,7 @@ runs:
 
         echo "sign-release: signature written"
 
-        # ── Verify our own signature before repacking ────────────────────────
+        # -- Verify our own signature before repacking ------------------------
         gpg --batch \
           --homedir "$GNUPGHOME" \
           --verify \
@@ -124,13 +124,13 @@ runs:
           "$STAGING/submodule-checksums.txt"
         echo "sign-release: self-verify passed"
 
-        # ── Repack release.tar.gz ────────────────────────────────────────────
+        # -- Repack release.tar.gz --------------------------------------------
         ORIG_ABS="$(realpath "$ARTIFACT_PATH")"
         tar czf "$ORIG_ABS" -C "$STAGING" .
         RELEASE_SIZE=$(ls -lh "$ORIG_ABS" | awk '{print $5}')
         echo "sign-release: repacked $ARTIFACT_PATH ($RELEASE_SIZE)"
 
-        # ── Outputs ──────────────────────────────────────────────────────────
+        # -- Outputs ----------------------------------------------------------
         echo "fingerprint=$FINGERPRINT"   >> "$GITHUB_OUTPUT"
         echo "checksum_count=$CHECKSUM_COUNT" >> "$GITHUB_OUTPUT"
 

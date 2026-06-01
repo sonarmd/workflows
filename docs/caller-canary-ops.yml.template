@@ -1,6 +1,6 @@
 # Drop this file at `<caller-repo>/.github/workflows/canary-ops.yml`.
 # It is a workflow_dispatch-only operations entrypoint for the canary
-# anchor system. Does NOT run on push/PR/merge_group — never adds latency
+# anchor system. Does NOT run on push/PR/merge_group - never adds latency
 # to CI/CD. Compliant with the cicd directive: it does not duplicate any
 # ci-core / cd-core / cicd-orchestrator responsibilities. It exists solely
 # to invoke the canary composite actions for one-time/operational events.
@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  # No write perms at the caller level — canary-seed and canary-purge-orphans
+  # No write perms at the caller level - canary-seed and canary-purge-orphans
   # both mint their own App tokens from smd-ci-agora for tag operations.
   contents: read
 

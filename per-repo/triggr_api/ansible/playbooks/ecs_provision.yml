@@ -21,7 +21,7 @@
 #   ansible-playbook playbooks/ecs_provision.yml -e env=stg
 #   ansible-playbook playbooks/ecs_provision.yml -e env=prd --vault-password-file ~/triggr-vault-password.txt
 #
-# The playbook runs from localhost — no SSH to remote hosts needed.
+# The playbook runs from localhost - no SSH to remote hosts needed.
 
 - name: Provision ECS infrastructure for triggr_api
   hosts: localhost

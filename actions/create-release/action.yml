@@ -1,5 +1,5 @@
 name: Create Release
-description: Creates a draft GitHub Release for the given tag. Idempotent — no-ops if release already exists. Auto-generates release notes if not provided.
+description: Creates a draft GitHub Release for the given tag. Idempotent - no-ops if release already exists. Auto-generates release notes if not provided.
 
 inputs:
   tag:
@@ -54,7 +54,7 @@ runs:
             if (e.status !== 404) throw e;
           }
 
-          // Pre-generate notes synchronously — generate_release_notes:true on
+          // Pre-generate notes synchronously - generate_release_notes:true on
           // createRelease triggers async processing that briefly locks the release
           // and causes 422 on subsequent asset uploads.
           let body = process.env.RELEASE_NOTES || '';
@@ -63,7 +63,7 @@ runs:
               const notes = await github.rest.repos.generateReleaseNotes({ owner, repo, tag_name: tag });
               body = notes.data.body;
             } catch (e) {
-              core.warning(`create-release: could not generate release notes — ${e.message}`);
+              core.warning(`create-release: could not generate release notes - ${e.message}`);
             }
           }
 

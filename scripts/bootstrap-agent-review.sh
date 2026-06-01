@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# bootstrap-agent-review.sh — opens a DRAFT PR in each named repo that
+# bootstrap-agent-review.sh - opens a DRAFT PR in each named repo that
 # adds `per-repo/_template/.github/workflows/agent-architecture-review.yml`
 # to that repo's `.github/workflows/`. Path B (fallback) adoption.
 #
@@ -34,12 +34,12 @@ behavior is controlled centrally. To tune for this repo, add a
 
 - Runs an agent-based reviewer on every PR (opened/synchronize/reopened)
 - Posts a summary comment + inline comments + a check run + labels
-- Advisory by default — never blocks merge
+- Advisory by default - never blocks merge
 - LLM has no GitHub write access; deterministic publisher posts findings
 
 ## What this needs
 
-- `CLAUDE_CODE_OAUTH_TOKEN` secret (preferred — subscription billing).
+- `CLAUDE_CODE_OAUTH_TOKEN` secret (preferred - subscription billing).
   Get with `claude setup-token` locally.
 - _Or_ `ANTHROPIC_API_KEY` (per-token billing fallback).
 - Org-level secret works for either.
@@ -49,7 +49,7 @@ behavior is controlled centrally. To tune for this repo, add a
 - New file: `.github/workflows/agent-architecture-review.yml` (25 lines)
 - Nothing else.
 
-🤖 Opened by bootstrap-agent-review.sh
+Opened by bootstrap-agent-review.sh
 EOF
 
 if [[ ! -f "$TEMPLATE_PATH" ]]; then
@@ -97,7 +97,7 @@ for repo in "${REPOS[@]}"; do
   fi
 
   # Skip if there's already an open PR with this title. Do NOT redirect
-  # stderr into stdout — gh's release-notice warnings on stdout would
+  # stderr into stdout - gh's release-notice warnings on stdout would
   # otherwise look like PR numbers and trick the heuristic into skipping
   # the repo. Validate the result is digit-only before treating it as a
   # PR number list.
@@ -118,7 +118,7 @@ for repo in "${REPOS[@]}"; do
 
   # Capture stderr via a tempfile, NOT process substitution. Bash's
   # `2> >(VAR=$(cat); export VAR)` runs the assignment in a subshell that
-  # cannot mutate the parent — STAGE_ERR would always be empty. Using a
+  # cannot mutate the parent - STAGE_ERR would always be empty. Using a
   # tempfile sidesteps the subshell entirely.
   STAGE_ERR_FILE=$(mktemp)
   if ! ( cd "$WORKDIR" && {
@@ -152,7 +152,7 @@ for repo in "${REPOS[@]}"; do
   SUCCEEDED+=("$repo")
 done
 
-# Summary table — operator needs visibility on bulk runs.
+# Summary table - operator needs visibility on bulk runs.
 echo
 echo "=========================================="
 echo "  Bootstrap summary"
@@ -178,7 +178,7 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
     printf "    x %-40s [%s] %s\n" "$repo" "$stage" "$reason"
   done
   echo
-  echo "exiting non-zero — ${#FAILED[@]} repo(s) need attention."
+  echo "exiting non-zero - ${#FAILED[@]} repo(s) need attention."
   exit 1
 fi
 

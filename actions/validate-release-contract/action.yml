@@ -4,8 +4,8 @@ description: |
   build output structure alignment with bundle declarations.
 
   Two validation phases:
-  1. Schema validation — deploy.json structure and field rules
-  2. Build structure validation — declared bundles vs actual directories
+  1. Schema validation - deploy.json structure and field rules
+  2. Build structure validation - declared bundles vs actual directories
 
 outputs:
   valid:
@@ -35,7 +35,7 @@ runs:
 
         MANIFEST="deploy.json"
 
-        # ── File must exist at repo root ─────────────────────────
+        # -- File must exist at repo root -------------------------
         if [ ! -f "$MANIFEST" ]; then
           echo "::error::validate-release-contract: deploy.json not found at repo root."
           echo "::error::  Every repository MUST have a deploy.json. See docs/platform-spec.md."
@@ -43,14 +43,14 @@ runs:
           exit 1
         fi
 
-        # ── Must be valid JSON ───────────────────────────────────
+        # -- Must be valid JSON -----------------------------------
         if ! python3 -c "import json; json.load(open('$MANIFEST'))" 2>/dev/null; then
           echo "::error::validate-release-contract: deploy.json is not valid JSON."
           echo "valid=false" >> "$GITHUB_OUTPUT"
           exit 1
         fi
 
-        # ── Schema + build structure validation ──────────────────
+        # -- Schema + build structure validation ------------------
         python3 <<'PYEOF'
         import json, sys, re, os
 
@@ -62,7 +62,7 @@ runs:
         IDENT_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
         NAME_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,63}$')
 
-        # ── Top-level fields ─────────────────────────────────────
+        # -- Top-level fields -------------------------------------
         valid_keys = {"app", "identifier", "bundles", "build_root"}
         for key in manifest:
             if key not in valid_keys:
@@ -127,7 +127,7 @@ runs:
                 if "hosts" not in bundle:
                     errors.append(f"{pfx}: missing required field 'hosts'")
                 elif not isinstance(bundle["hosts"], dict):
-                    errors.append(f"{pfx}.hosts: must be an object (label → match_key), not {type(bundle['hosts']).__name__}")
+                    errors.append(f"{pfx}.hosts: must be an object (label -> match_key), not {type(bundle['hosts']).__name__}")
                 elif len(bundle["hosts"]) == 0:
                     errors.append(f"{pfx}.hosts: must not be empty")
                 else:
@@ -146,7 +146,7 @@ runs:
                             if var != "env":
                                 errors.append(f"{pfx}.hosts.{label}: only ${{env}} template variable allowed, found ${{{var}}}")
 
-        # ── Build structure validation ───────────────────────────
+        # -- Build structure validation ---------------------------
         if os.path.isdir(build_dir) and not errors:
             bundles = manifest.get("bundles", [])
 
@@ -190,11 +190,11 @@ runs:
         elif not os.path.isdir(build_dir):
             mode = "unknown"
             # Build dir may not exist yet during schema-only validation
-            print(f"::notice::validate-release-contract: build directory '{build_dir}' not found — skipping structure validation", file=sys.stderr)
+            print(f"::notice::validate-release-contract: build directory '{build_dir}' not found - skipping structure validation", file=sys.stderr)
         else:
             mode = "unknown"
 
-        # ── Output ───────────────────────────────────────────────
+        # -- Output -----------------------------------------------
         identifier = manifest.get("identifier", "")
         app = manifest.get("app", "")
         bundle_count = len(manifest.get("bundles", []))
@@ -232,8 +232,8 @@ runs:
         echo "bundle_mode=$BUNDLE_MODE" >> "$GITHUB_OUTPUT"
 
         if [ "$VALID" = "true" ]; then
-          echo "validate-release-contract: PASSED — $APP ($IDENTIFIER), $BUNDLE_COUNT bundles ($BUNDLE_MODE mode)"
+          echo "validate-release-contract: PASSED - $APP ($IDENTIFIER), $BUNDLE_COUNT bundles ($BUNDLE_MODE mode)"
         else
-          echo "validate-release-contract: FAILED — $ERROR_COUNT error(s)"
+          echo "validate-release-contract: FAILED - $ERROR_COUNT error(s)"
           exit 1
         fi

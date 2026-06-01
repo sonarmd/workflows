@@ -1,15 +1,15 @@
 name: 'Release Lifecycle (release++)'
 description: |
   Manages branch lifecycle for the release flow:
-    feature/SONMD-123 ──ff──► release/v1.0.1 ──ff──► main
+    feature/SONMD-123 --ff--> release/v1.0.1 --ff--> main
 
-  Phase 1 — merge to release/*:
-    feature/SONMD-123  →  feature/SONMD-123__rc  (parked as release candidate)
+  Phase 1 - merge to release/*:
+    feature/SONMD-123  ->  feature/SONMD-123__rc  (parked as release candidate)
 
-  Phase 2 — merge to main/master:
-    feature/SONMD-123__rc  →  __a__feature/SONMD-123  (archived)
-    release/v1.0.1         →  __a__release/v1.0.1     (archived)
-    (new) release/v1.0.2   ←  main HEAD               (next release branch)
+  Phase 2 - merge to main/master:
+    feature/SONMD-123__rc  ->  __a__feature/SONMD-123  (archived)
+    release/v1.0.1         ->  __a__release/v1.0.1     (archived)
+    (new) release/v1.0.2   <-  main HEAD               (next release branch)
 
 inputs:
   token:
@@ -36,7 +36,7 @@ runs:
         PR_JSON=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[0] // empty' 2>/dev/null || true)
 
         if [ -z "$PR_JSON" ]; then
-          echo "::warning::No merged PR found for commit $SHA — skipping release lifecycle"
+          echo "::warning::No merged PR found for commit $SHA - skipping release lifecycle"
           echo "phase=skip" >> "$GITHUB_OUTPUT"
           exit 0
         fi
@@ -49,21 +49,21 @@ runs:
         # Determine phase
         if [[ "$TARGET_BRANCH" =~ ^release/ ]]; then
           echo "phase=rc" >> "$GITHUB_OUTPUT"
-          echo "Phase 1: feature → release (mark as RC)"
+          echo "Phase 1: feature -> release (mark as RC)"
         elif [[ "$TARGET_BRANCH" == "main" || "$TARGET_BRANCH" == "master" ]]; then
           if [[ "$SOURCE_BRANCH" =~ ^release/ ]]; then
             echo "phase=archive" >> "$GITHUB_OUTPUT"
-            echo "Phase 2: release → main (archive + increment)"
+            echo "Phase 2: release -> main (archive + increment)"
           else
-            echo "::notice::Merge to main from non-release branch ($SOURCE_BRANCH) — skipping"
+            echo "::notice::Merge to main from non-release branch ($SOURCE_BRANCH) - skipping"
             echo "phase=skip" >> "$GITHUB_OUTPUT"
           fi
         else
           echo "phase=skip" >> "$GITHUB_OUTPUT"
         fi
 
-    # ── Phase 1: Mark feature branch as release candidate ──────────────────
-    - name: 'Phase 1: Rename feature → __rc'
+    # -- Phase 1: Mark feature branch as release candidate ------------------
+    - name: 'Phase 1: Rename feature -> __rc'
       if: steps.detect.outputs.phase == 'rc'
       shell: bash
       env:
@@ -75,7 +75,7 @@ runs:
 
         # Only rename feature branches, not hotfix/bugfix/etc merging into release
         if [[ ! "$SOURCE" =~ ^feature/ ]]; then
-          echo "::notice::Source branch '$SOURCE' is not a feature branch — skipping RC rename"
+          echo "::notice::Source branch '$SOURCE' is not a feature branch - skipping RC rename"
           exit 0
         fi
 
@@ -84,7 +84,7 @@ runs:
         # Get the SHA of the source branch tip
         SOURCE_SHA=$(gh api "repos/$REPO/git/ref/heads/$SOURCE" --jq '.object.sha' 2>/dev/null || true)
         if [ -z "$SOURCE_SHA" ]; then
-          echo "::warning::Source branch '$SOURCE' already deleted — skipping RC rename"
+          echo "::warning::Source branch '$SOURCE' already deleted - skipping RC rename"
           exit 0
         fi
 
@@ -97,9 +97,9 @@ runs:
         # Delete the original feature branch
         gh api "repos/$REPO/git/refs/heads/$SOURCE" -X DELETE --silent
 
-        echo "✓ $SOURCE → $RC_NAME"
+        echo "[OK] $SOURCE -> $RC_NAME"
 
-    # ── Phase 2: Archive branches + create next release ────────────────────
+    # -- Phase 2: Archive branches + create next release --------------------
     - name: 'Phase 2: Archive RC branches'
       if: steps.detect.outputs.phase == 'archive'
       shell: bash
@@ -121,7 +121,7 @@ runs:
 
         for REF in $RC_BRANCHES; do
           BRANCH="${REF#refs/heads/}"
-          # feature/SONMD-123__rc → __a__feature/SONMD-123
+          # feature/SONMD-123__rc -> __a__feature/SONMD-123
           ARCHIVE_NAME="__a__${BRANCH%__rc}"
 
           BRANCH_SHA=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq '.object.sha')
@@ -135,7 +135,7 @@ runs:
           # Delete __rc branch
           gh api "repos/$REPO/git/refs/heads/$BRANCH" -X DELETE --silent
 
-          echo "✓ $BRANCH → $ARCHIVE_NAME"
+          echo "[OK] $BRANCH -> $ARCHIVE_NAME"
         done
 
     - name: 'Phase 2: Archive release branch + create next'
@@ -149,7 +149,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # Archive the release branch: release/v1.0.1 → __a__release/v1.0.1
+        # Archive the release branch: release/v1.0.1 -> __a__release/v1.0.1
         ARCHIVE_NAME="__a__${RELEASE_BRANCH}"
 
         RELEASE_SHA=$(gh api "repos/$REPO/git/ref/heads/$RELEASE_BRANCH" --jq '.object.sha' 2>/dev/null || true)
@@ -161,12 +161,12 @@ runs:
 
           gh api "repos/$REPO/git/refs/heads/$RELEASE_BRANCH" -X DELETE --silent
 
-          echo "✓ $RELEASE_BRANCH → $ARCHIVE_NAME"
+          echo "[OK] $RELEASE_BRANCH -> $ARCHIVE_NAME"
         else
           echo "::warning::Release branch '$RELEASE_BRANCH' already deleted"
         fi
 
-        # Parse version and increment: release/v1.0.1 → release/v1.0.2
+        # Parse version and increment: release/v1.0.1 -> release/v1.0.2
         VERSION_PART="${RELEASE_BRANCH#release/}"
 
         # Strip leading 'v' if present for parsing
@@ -187,7 +187,7 @@ runs:
             NEXT_BRANCH="release/${MAJOR}.${MINOR}.${NEXT_PATCH}${SUFFIX}"
           fi
         else
-          # Non-semver release branch — just append .1
+          # Non-semver release branch - just append .1
           NEXT_BRANCH="${RELEASE_BRANCH}.1"
         fi
 
@@ -197,8 +197,8 @@ runs:
           -f "sha=$MAIN_SHA" \
           --silent
 
-        echo "✓ Created $NEXT_BRANCH from main ($MAIN_SHA)"
+        echo "[OK] Created $NEXT_BRANCH from main ($MAIN_SHA)"
         echo ""
         echo "Release lifecycle complete:"
-        echo "  archived: $RELEASE_BRANCH → $ARCHIVE_NAME"
+        echo "  archived: $RELEASE_BRANCH -> $ARCHIVE_NAME"
         echo "  created:  $NEXT_BRANCH (from main)"

@@ -8,9 +8,9 @@ name: Build Agent Reviewer Image
 #   - workflow_dispatch for ad-hoc rebuilds
 #
 # Tags:
-#   :latest                    — most recent main build
-#   :sha-<12hex>               — pinned by commit
-#   :weekly-YYYY-MM-DD         — only on cron (audit trail)
+#   :latest                    - most recent main build
+#   :sha-<12hex>               - pinned by commit
+#   :weekly-YYYY-MM-DD         - only on cron (audit trail)
 #
 # The image is PUBLIC. No secrets are ever baked in.
 

@@ -1,20 +1,20 @@
 # Contract Gates
 
-Central quality gates that validate CI/CD outputs with independently verified evidence. Gates define **contracts** — they never run project commands. Each repo does its own work and calls the gates at stage boundaries.
+Central quality gates that validate CI/CD outputs with independently verified evidence. Gates define **contracts** - they never run project commands. Each repo does its own work and calls the gates at stage boundaries.
 
 ## Trust Model
 
 The gates are unfakeable because of five interlocking guarantees:
 
-1. **SHA identity** — `github.sha` uniquely identifies the code. Same SHA = same code. The gate runs at the same SHA as the CI that produced the evidence.
+1. **SHA identity** - `github.sha` uniquely identifies the code. Same SHA = same code. The gate runs at the same SHA as the CI that produced the evidence.
 
-2. **Artifact scoping** — `actions/upload-artifact` ties files to the workflow run. `actions/download-artifact` in the gate only downloads from the same run. Artifacts cannot be injected from another run.
+2. **Artifact scoping** - `actions/upload-artifact` ties files to the workflow run. `actions/download-artifact` in the gate only downloads from the same run. Artifacts cannot be injected from another run.
 
-3. **Independent parsing** — The test gate downloads the JUnit XML artifact itself and counts `<testcase>` elements. It does not trust caller-provided counts. A repo that passes `test_result: success` but uploads an empty XML (or no artifact) is blocked.
+3. **Independent parsing** - The test gate downloads the JUnit XML artifact itself and counts `<testcase>` elements. It does not trust caller-provided counts. A repo that passes `test_result: success` but uploads an empty XML (or no artifact) is blocked.
 
-4. **CODEOWNERS protection** — `.github/workflows/` is protected in each repo. Developers cannot remove gate calls or modify evidence collection steps without platform-eng approval.
+4. **CODEOWNERS protection** - `.github/workflows/` is protected in each repo. Developers cannot remove gate calls or modify evidence collection steps without platform-eng approval.
 
-5. **Branch protection** — Required status checks include the gate jobs. Merging is blocked until all gates pass.
+5. **Branch protection** - Required status checks include the gate jobs. Merging is blocked until all gates pass.
 
 ## Gate Interfaces
 
@@ -36,7 +36,7 @@ with:
 | `lint_file_count` | number | yes | Must be > 0. Prevents lint from running on zero files. |
 | `typecheck_result` | string | no | `success` or `skipped` are fine. `failure` blocks. Default: `skipped`. |
 
-**Output:** `gate_result` — `success` or `failure`
+**Output:** `gate_result` - `success` or `failure`
 
 ### test-gate.yml
 
@@ -54,7 +54,7 @@ with:
 | `test_result` | string | yes | Must be `success`. Cannot be skipped. |
 | `report_artifact` | string | no | Name prefix for artifact(s). Default: `test-report`. Gate matches `test-report*`. |
 
-**Output:** `gate_result` — `success` or `failure`
+**Output:** `gate_result` - `success` or `failure`
 
 **Evidence requirements:**
 - Upload JUnit XML as an artifact whose name starts with the `report_artifact` prefix
@@ -78,7 +78,7 @@ with:
 | `commit_sha` | string | no | Phase 2: for artifact signature verification. |
 | `artifact_name` | string | no | Phase 2: for artifact validation. |
 
-**Output:** `gate_result` — `success` or `failure`
+**Output:** `gate_result` - `success` or `failure`
 
 ### deploy-gate.yml
 
@@ -98,11 +98,11 @@ with:
 | `test_gate_result` | string | yes | Must be `success`. |
 | `build_gate_result` | string | yes | `success` or `skipped` passes. |
 
-**Output:** `gate_result` — `success` or `failure`
+**Output:** `gate_result` - `success` or `failure`
 
 ## JUnit XML Format
 
-The test gate parses JUnit XML — a universal format supported by every major test framework. It counts `<testcase>` elements using `grep -c '<testcase'`.
+The test gate parses JUnit XML - a universal format supported by every major test framework. It counts `<testcase>` elements using `grep -c '<testcase'`.
 
 ### Producing JUnit XML
 
@@ -125,7 +125,7 @@ The test gate parses JUnit XML — a universal format supported by every major t
     if-no-files-found: warn
 ```
 
-Use `if: always()` so the report uploads even on test failure — the gate checks `test_result` for pass/fail, the artifact provides evidence of what actually ran.
+Use `if: always()` so the report uploads even on test failure - the gate checks `test_result` for pass/fail, the artifact provides evidence of what actually ran.
 
 ### Matrix / Sharded Jobs
 
@@ -259,25 +259,25 @@ Protect `.github/workflows/` in every repo to prevent unauthorized removal of ga
 Every gate prints a formatted summary to the workflow log:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+---------------------------------------------
   Test Gate
   repo:   sonarmd/triggr_api
   sha:    abc123f
   run:    12345678
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+---------------------------------------------
 
-  ✓  test-status      passed
-  ✓  test-report      artifact downloaded
-  ✓  test-evidence    847 tests verified from report
+  [OK]  test-status      passed
+  [OK]  test-report      artifact downloaded
+  [OK]  test-evidence    847 tests verified from report
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Test gate passed — 847 tests independently verified
+---------------------------------------------
+  Test gate passed - 847 tests independently verified
 ```
 
 When a gate blocks:
 
 ```
-  ✗  test-evidence    BLOCKED — zero <testcase> elements in report
+  [FAIL]  test-evidence    BLOCKED - zero <testcase> elements in report
 ```
 
 ## Phase 2 (Future)

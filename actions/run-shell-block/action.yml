@@ -59,7 +59,7 @@ runs:
         STDERR_LOG="/tmp/.rsb-stderr-${RSB_NAME}.log"
         SCRIPT_FILE="/tmp/.rsb-script-${RSB_NAME}.sh"
 
-        # ── Write the script with error trapping ─────────────────
+        # -- Write the script with error trapping -----------------
         cat > "$SCRIPT_FILE" <<'SCRIPT_HEADER'
         #!/usr/bin/env bash
         set -euo pipefail
@@ -112,7 +112,7 @@ runs:
         " 2>/dev/null || true
 
           # Emit GHA error annotation
-          echo "::error::run-shell-block($RSB_NAME): command failed at line $line — $cmd (exit $code)"
+          echo "::error::run-shell-block($RSB_NAME): command failed at line $line - $cmd (exit $code)"
           echo "::error::classification: $classification"
 
           exit "$code"
@@ -125,14 +125,14 @@ runs:
         echo "$RSB_SCRIPT" >> "$SCRIPT_FILE"
         chmod +x "$SCRIPT_FILE"
 
-        # ── Set up environment for the trap ──────────────────────
+        # -- Set up environment for the trap ----------------------
         export RSB_STDERR_LOG="$STDERR_LOG"
         export RSB_DIAG_FILE="$DIAG_FILE"
         export RSB_NAME
 
         echo "::group::run-shell-block ($RSB_NAME)"
 
-        # ── Execute with stderr capture ──────────────────────────
+        # -- Execute with stderr capture --------------------------
         cd "$RSB_WORKDIR"
         if bash "$SCRIPT_FILE" 2> >(tee "$STDERR_LOG" >&2); then
           echo "::endgroup::"

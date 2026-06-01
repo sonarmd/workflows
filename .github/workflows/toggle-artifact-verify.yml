@@ -2,7 +2,7 @@ name: Toggle Artifact Verification
 
 # Kill switch for the artifact-verify Ansible role.
 # Flips config:verify_enabled in the CF KV store.
-# Takes effect on the NEXT deploy — no restart, no SSH, no code change.
+# Takes effect on the NEXT deploy - no restart, no SSH, no code change.
 #
 # Use this when:
 #   - Signing key infrastructure is broken and deploys are blocked
@@ -13,8 +13,8 @@ name: Toggle Artifact Verification
 # Every toggle is logged in the job summary with actor + timestamp.
 #
 # Prerequisites:
-#   CF_API_TOKEN   — CF API token with Workers KV Storage Edit permission
-#   KV_NAMESPACE_ID — repo variable
+#   CF_API_TOKEN   - CF API token with Workers KV Storage Edit permission
+#   KV_NAMESPACE_ID - repo variable
 
 on:
   workflow_dispatch:
@@ -64,7 +64,7 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/config%3Averify_enabled")
 
           if [ "$HTTP" != "200" ]; then
-            echo "::error::KV write failed — HTTP $HTTP"
+            echo "::error::KV write failed - HTTP $HTTP"
             exit 1
           fi
 
@@ -122,9 +122,9 @@ jobs:
         run: |
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           if [ "$STATE" = "disabled" ]; then
-            BANNER="## ⚠️ Artifact Verification DISABLED"
+            BANNER="## [WARN] Artifact Verification DISABLED"
           else
-            BANNER="## ✅ Artifact Verification Enabled"
+            BANNER="## [OK] Artifact Verification Enabled"
           fi
 
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY

@@ -1,24 +1,24 @@
 ---
-# ECS provisioning vars — PRD
+# ECS provisioning vars - PRD
 # Source: triggr_misc/Ansible/group_vars/tag_Group_Production/vars.yml
 
 deploy_env: prd
 environment_name: Production
 
-# ── Networking ──
+# -- Networking --
 aws_vpc_id: vpc-fc63a597
 ecs_subnets:
   - subnet-305d7a4a
   - subnet-c0bb52ab
 
-# ── ALB ──
+# -- ALB --
 # LB name: LB-API-PRD, target group: API-PRD
 ecs_alb_listener_arn: ""
 ecs_alb_certificate_arn: "arn:aws:acm:us-east-2:041100127139:certificate/fc8c9887-102e-4ee2-9928-a385f440abe1"
 
-# ── DNS ──
+# -- DNS --
 api_url: api.sonarmd.com
 
-# ── S3 buckets the task role needs ──
+# -- S3 buckets the task role needs --
 images_s3_bucket: images.sonarmd.com
 reports_s3_bucket_name: doc-storage-reports-prod

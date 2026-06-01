@@ -42,7 +42,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # Deterministic correlation ID (not random — enables log correlation)
+        # Deterministic correlation ID (not random - enables log correlation)
         CORRELATION_ID="ci-${REPO_SHORT}-${RUN_ID}-${RUN_ATTEMPT}"
         START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         START_EPOCH=$(date +%s)
@@ -57,7 +57,7 @@ runs:
         # Output
         echo "correlation_id=$CORRELATION_ID" >> "$GITHUB_OUTPUT"
 
-        # ── Lifecycle start record ───────────────────────────────
+        # -- Lifecycle start record -------------------------------
         cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
         ### Run Started
 
@@ -74,7 +74,7 @@ runs:
         | Started | $START_TIME |
         SUMMARY
 
-        echo "start-monitoring: $CORRELATION_ID — $REPO@${SHA:0:12} by $ACTOR"
+        echo "start-monitoring: $CORRELATION_ID - $REPO@${SHA:0:12} by $ACTOR"
 
     - name: Notify Slack (started)
       if: inputs.slack_webhook_url != ''

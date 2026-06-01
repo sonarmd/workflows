@@ -1,24 +1,24 @@
 ---
-# ECS provisioning vars — STG
+# ECS provisioning vars - STG
 # Source: triggr_misc/Ansible/group_vars/tag_Group_Staging/vars.yml
 
 deploy_env: stg
 environment_name: Staging
 
-# ── Networking ──
+# -- Networking --
 aws_vpc_id: vpc-0e0c1ebbe560d6c03
 ecs_subnets:
   - subnet-305d7a4a
   - subnet-c0bb52ab
 
-# ── ALB ──
+# -- ALB --
 # LB name: LB-API-STG, target group: API-STG
 ecs_alb_listener_arn: ""
 ecs_alb_certificate_arn: "arn:aws:acm:us-east-2:041100127139:certificate/7f5c98d1-f3ff-482e-be38-831a33f5c98e"
 
-# ── DNS ──
+# -- DNS --
 api_url: api.stg.sonarmd.com
 
-# ── S3 buckets the task role needs ──
+# -- S3 buckets the task role needs --
 images_s3_bucket: images.stg.sonarmd.com
 reports_s3_bucket_name: doc-storage-reports-staging

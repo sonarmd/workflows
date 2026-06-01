@@ -1,4 +1,4 @@
-# CODEOWNERS — frontend
+# CODEOWNERS - frontend
 #
 # CI workflow files require @sonarmd/platform-eng review.
 # Teams own what their CI does (commands, services, tooling).

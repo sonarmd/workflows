@@ -29,7 +29,7 @@ fail_threshold: high
 # Max inline comments to post (caps spam on large diffs).
 max_inline_comments: 20
 
-# Glob filters — newline-separated. Empty = include all / exclude none.
+# Glob filters - newline-separated. Empty = include all / exclude none.
 include_paths: ""
 exclude_paths: |
   **/node_modules/**

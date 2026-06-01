@@ -2,7 +2,7 @@ name: Artifact Store Pull
 description: |
   Pulls a release artifact for the given SHA from the durable artifact
   store into a local directory. Fails if no artifact exists for the
-  SHA — callers should probe first if a miss is acceptable.
+  SHA - callers should probe first if a miss is acceptable.
 
   Tag scheme: ghcr.io/<owner>/<repo>-release:sha-<SHA>
 

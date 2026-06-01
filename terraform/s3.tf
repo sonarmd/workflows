@@ -148,7 +148,7 @@ resource "aws_s3_bucket_policy" "deploy_metrics_tls" {
   })
 }
 
-# ── Outputs ──
+# -- Outputs --
 
 output "deploy_artifacts_bucket" {
   description = "Name of the deploy artifacts S3 bucket"

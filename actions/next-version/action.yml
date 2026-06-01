@@ -3,15 +3,15 @@ description: |
   Computes the next semver version by applying a bump.
 
   Version source (priority order):
-    1. `previous_version` input — if set, skip the tag scan and bump from there.
-    2. Tag scan — list all tags and find the highest semver matching the scope.
+    1. `previous_version` input - if set, skip the tag scan and bump from there.
+    2. Tag scan - list all tags and find the highest semver matching the scope.
 
   Bump inference:
-    hotfix/**  → patch   (X.Y.Z → X.Y.Z+1)
-    anything   → minor   (X.Y.Z → X.Y+1.0)
+    hotfix/**  -> patch   (X.Y.Z -> X.Y.Z+1)
+    anything   -> minor   (X.Y.Z -> X.Y+1.0)
 
   Major bumps are EXPLICIT ONLY. Pass `bump: major`. There is no branch-name or
-  commit-message heuristic — major is too consequential for inference.
+  commit-message heuristic - major is too consequential for inference.
 
   Tag scan scope:
     - With `identifier`:  scans `^(?:stg|prd)-<identifier>-v(X)\.(Y)\.(Z)`
@@ -32,7 +32,7 @@ inputs:
     description: |
       Branch name to use for bump inference. Pass explicitly when the event
       context isn't a branch push (e.g. pull_request, tag push, workflow_dispatch).
-      When empty, falls back to github.ref_name (caller-owned default) — only
+      When empty, falls back to github.ref_name (caller-owned default) - only
       reliable on `push` events to a branch.
     required: false
     default: ''
@@ -49,7 +49,7 @@ outputs:
     description: "The computed next version (e.g. '1.8.0', no 'v' prefix)."
     value: ${{ steps.compute.outputs.version }}
   previous_version:
-    description: "The version used as the bump source — the input override if provided, otherwise the highest tag found, otherwise '0.0.0'."
+    description: "The version used as the bump source - the input override if provided, otherwise the highest tag found, otherwise '0.0.0'."
     value: ${{ steps.compute.outputs.previous_version }}
   bump:
     description: "The bump type actually applied (after inference)."
@@ -73,24 +73,24 @@ runs:
         script: |
           const { owner, repo } = context.repo;
 
-          // ── Escape regex metacharacters in user input ───────────────
+          // -- Escape regex metacharacters in user input ---------------
           const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-          // ── Resolve branch for inference ────────────────────────────
+          // -- Resolve branch for inference ----------------------------
           const branch = process.env.BASE_BRANCH_INPUT
             || (context.ref || '').replace(/^refs\/heads\//, '');
 
-          // ── Resolve bump ────────────────────────────────────────────
+          // -- Resolve bump --------------------------------------------
           let bump = (process.env.BUMP_INPUT || '').trim().toLowerCase();
           if (!bump) {
             bump = branch.startsWith('hotfix/') ? 'patch' : 'minor';
           }
           if (!['major', 'minor', 'patch'].includes(bump)) {
-            core.setFailed(`next-version: invalid bump '${bump}' — must be major, minor, or patch`);
+            core.setFailed(`next-version: invalid bump '${bump}' - must be major, minor, or patch`);
             return;
           }
 
-          // ── Resolve previous version ────────────────────────────────
+          // -- Resolve previous version --------------------------------
           let highest = [0, 0, 0];
           const prevInput = (process.env.PREV_INPUT || '').trim();
 
@@ -107,7 +107,7 @@ runs:
               ? new RegExp(`^(?:stg|prd)-${reEscape(identifier)}-v(\\d+)\\.(\\d+)\\.(\\d+)`)
               : /v(\d+)\.(\d+)\.(\d+)/;
 
-            // Unlimited pagination — repos with >1000 tags should still find
+            // Unlimited pagination - repos with >1000 tags should still find
             // the highest semver.
             let page = 1;
             while (true) {
@@ -134,7 +134,7 @@ runs:
 
           const previous = `${highest[0]}.${highest[1]}.${highest[2]}`;
 
-          // ── Apply bump ──────────────────────────────────────────────
+          // -- Apply bump ----------------------------------------------
           let [maj, min, pat] = highest;
           if (bump === 'major')       { maj += 1; min = 0; pat = 0; }
           else if (bump === 'minor')  { min += 1; pat = 0; }
@@ -143,7 +143,7 @@ runs:
           const next = `${maj}.${min}.${pat}`;
           const releaseBranch = `release/v${next}`;
 
-          core.notice(`next-version: ${previous} → ${next} (bump=${bump}, branch='${branch}')`);
+          core.notice(`next-version: ${previous} -> ${next} (bump=${bump}, branch='${branch}')`);
           core.setOutput('version',           next);
           core.setOutput('previous_version',  previous);
           core.setOutput('bump',              bump);

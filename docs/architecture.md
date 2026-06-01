@@ -2,14 +2,14 @@
 
 ## Overview
 
-SonarMD CI/CD uses a **contract-based gate** model. Central workflows define quality contracts — they validate results with independently verified evidence but never execute project commands. Each repository owns its own CI implementation and calls the gates at stage boundaries.
+SonarMD CI/CD uses a **contract-based gate** model. Central workflows define quality contracts - they validate results with independently verified evidence but never execute project commands. Each repository owns its own CI implementation and calls the gates at stage boundaries.
 
 ```
 Repo (owns implementation)          Central (owns contracts)
-──────────────────────────          ────────────────────────
-lint, typecheck                 ──> static-analysis-gate
-test + JUnit XML artifact       ──> test-gate (downloads + parses XML)
-build                           ──> build-gate
+--------------------------          ------------------------
+lint, typecheck                 --> static-analysis-gate
+test + JUnit XML artifact       --> test-gate (downloads + parses XML)
+build                           --> build-gate
                                     deploy-gate (requires all 3)
 ```
 
@@ -17,7 +17,7 @@ build                           ──> build-gate
 
 | Repository | Purpose | CI | Deploy | Gate Integration |
 |-----------|---------|-----|--------|-----------------|
-| `sonarmd/workflows` | Central gates, actions, utilities | — | — | Defines the contracts |
+| `sonarmd/workflows` | Central gates, actions, utilities | - | - | Defines the contracts |
 | `sonarmd/frontend` | React monorepo (4 apps + shared) | Path-filtered per-app testing | S3 sync per app | Per-app JUnit XML artifacts |
 | `sonarmd/triggr_api` | Express.js API | 4-shard parallel + MongoDB | OIDC + ECS | Mocha JSON -> JUnit XML per shard |
 | `sonarmd/frontend-patient-app` | React Native mobile | Jest + jest-junit | EAS Build (tag-triggered) | Single JUnit XML artifact |
@@ -27,25 +27,25 @@ build                           ──> build-gate
 ### CI (every push + PR)
 
 ```
-┌─────────────┐    ┌──────────────────────┐    ┌─────────────┐
-│   lint       │───>│ static-analysis-gate │    │             │
-│   typecheck  │───>│ (lint_file_count>0)  │    │   merge     │
-└─────────────┘    └──────────────────────┘    │   blocked   │
-                                                │   until     │
-┌─────────────┐    ┌──────────────────────┐    │   both      │
-│   test       │───>│    test-gate         │    │   gates     │
-│ + JUnit XML  │───>│ (downloads XML,      │───>│   pass      │
-│   artifact   │    │  counts <testcase>)  │    │             │
-└─────────────┘    └──────────────────────┘    └─────────────┘
++-------------+    +----------------------+    +-------------+
+|   lint       |--->| static-analysis-gate |    |             |
+|   typecheck  |--->| (lint_file_count>0)  |    |   merge     |
++-------------+    +----------------------+    |   blocked   |
+                                                |   until     |
++-------------+    +----------------------+    |   both      |
+|   test       |--->|    test-gate         |    |   gates     |
+| + JUnit XML  |--->| (downloads XML,      |--->|   pass      |
+|   artifact   |    |  counts <testcase>)  |    |             |
++-------------+    +----------------------+    +-------------+
 ```
 
 ### Deploy (tag-triggered)
 
 ```
-┌─────────────┐    ┌──────────────────────┐    ┌──────────────────────┐    ┌──────────┐
-│   build      │───>│    build-gate        │───>│    deploy-gate       │───>│  deploy   │
-│   (per repo) │    │ (status check)       │    │ (SA + test + build)  │    │  (S3/ECS) │
-└─────────────┘    └──────────────────────┘    └──────────────────────┘    └──────────┘
++-------------+    +----------------------+    +----------------------+    +----------+
+|   build      |--->|    build-gate        |--->|    deploy-gate       |--->|  deploy   |
+|   (per repo) |    | (status check)       |    | (SA + test + build)  |    |  (S3/ECS) |
++-------------+    +----------------------+    +----------------------+    +----------+
 ```
 
 CI gates (`static-analysis-gate`, `test-gate`) already passed on the commit. Deploy workflows pass `success` for those and validate the build gate from the deploy build.

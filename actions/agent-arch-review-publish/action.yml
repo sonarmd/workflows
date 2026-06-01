@@ -11,7 +11,7 @@ description: |
   this stage.
 
   Idempotent: re-runs replace prior comments via marker dedupe.
-  Never blocks the workflow on agent failure: malformed findings →
+  Never blocks the workflow on agent failure: malformed findings ->
   neutral check + "review unavailable" summary + exit 0.
 
 inputs:
@@ -26,7 +26,7 @@ inputs:
       Trusted PR head SHA from the prepare job (NOT from findings.json).
       Used as the commit_id for review/check-run posts. The publisher
       asserts that findings.json's head_sha matches this value before
-      acting on any field — defense-in-depth against findings.json tamper.
+      acting on any field - defense-in-depth against findings.json tamper.
     required: true
   enforcement_mode:
     description: 'advisory | soft-fail | required'
@@ -125,11 +125,11 @@ runs:
         fi
 
         # Resolve the bot identity once. Used to filter "our" prior
-        # comments from those of human users — prevents external commenters
+        # comments from those of human users - prevents external commenters
         # from weaponizing the bot via the public marker string.
         BOT_LOGIN=$(gh api user --jq '.login' 2>/dev/null || echo "")
         # Guard against the API returning empty / literal "null", which
-        # would make every author filter match nothing → bot would POST
+        # would make every author filter match nothing -> bot would POST
         # new summary comments on every push instead of editing the prior.
         if [[ -z "$BOT_LOGIN" || "$BOT_LOGIN" == "null" ]]; then
           BOT_LOGIN="github-actions[bot]"
@@ -148,12 +148,12 @@ runs:
         fi
 
         # Per-finding TYPE-aware validation. The prior version used has()
-        # which accepts null-valued fields — null values then crashed jq
+        # which accepts null-valued fields - null values then crashed jq
         # downstream (e.g. `null | ascii_upcase`). We now validate the
         # field is the expected JSON type AND, for enums, that the value
         # is in the allowed set.
         #
-        # line_end is intentionally OMITTED — the inline-comments pipeline
+        # line_end is intentionally OMITTED - the inline-comments pipeline
         # defaults `.line_end := .line_start` so missing line_end is OK.
         if [[ "$SCHEMA_OK" == "true" ]]; then
           if ! jq -e '
@@ -182,7 +182,7 @@ runs:
         HEAD_SHA="$TRUSTED_HEAD_SHA"
         if [[ -n "$CLAIMED_HEAD_SHA" && "$CLAIMED_HEAD_SHA" != "$HEAD_SHA" ]]; then
           echo "::warning::findings.json head_sha (${CLAIMED_HEAD_SHA}) != trusted prepare head_sha (${HEAD_SHA}); marking malformed."
-          SCHEMA_OK=false; SCHEMA_REASON="head_sha mismatch — findings.json may be tampered"
+          SCHEMA_OK=false; SCHEMA_REASON="head_sha mismatch - findings.json may be tampered"
         fi
         BASE_SHA=$(jq -r '.base_sha // empty' "$FINDINGS_PATH")
 
@@ -330,7 +330,7 @@ runs:
           if [[ "$PARSER_STATUS" != "ok" ]]; then
             SUMMARY_BODY=$(cat <<EOF
         <!-- ${BOT_MARKER}:summary -->
-        ## Agent Architecture Review — unavailable
+        ## Agent Architecture Review - unavailable
 
         $(jq -r '.summary_markdown' "$FINDINGS_PATH")
 
@@ -342,7 +342,7 @@ runs:
         )
           else
             SUMMARY_TEXT=$(jq -r '.summary_markdown // "No summary."' "$FINDINGS_PATH")
-            # Use `-n` (null input) — feeding /dev/null gave jq zero inputs,
+            # Use `-n` (null input) - feeding /dev/null gave jq zero inputs,
             # so the filter was never invoked and BREAKDOWN was always "".
             BREAKDOWN=$(jq -rn --argjson f "$(cat "$FILTERED")" '
               ($f | group_by(.severity)
@@ -355,7 +355,7 @@ runs:
 
         ${SUMMARY_TEXT}
 
-        **Findings posted:** ${FINAL_COUNT}${BREAKDOWN:+ — ${BREAKDOWN}}
+        **Findings posted:** ${FINAL_COUNT}${BREAKDOWN:+ - ${BREAKDOWN}}
         **Head:** \`${HEAD_SHA}\`
 
         $(if [[ "$DROPPED_UNMAP" -gt 0 ]]; then echo "_${DROPPED_UNMAP} finding(s) dropped: file:line did not map to the PR diff._"; fi)
@@ -384,7 +384,7 @@ runs:
         fi
 
         # -------- Step 6: post inline review comments ----------
-        # SECURITY: skip inline comments when the diff fetch failed —
+        # SECURITY: skip inline comments when the diff fetch failed -
         # we cannot validate positions and must not post unvalidated
         # findings as if they were anchored to the diff.
         POSTED_INLINE=0
@@ -402,7 +402,7 @@ runs:
           # Cap at max_inline_comments. Also: default line_end := line_start
           # when missing/null (a single bad finding with no line_end would
           # otherwise produce a comment with no `line:` field, which the GH
-          # reviews API rejects for the WHOLE batch — one poison-pill kills
+          # reviews API rejects for the WHOLE batch - one poison-pill kills
           # every other valid finding in the same payload).
           CAPPED=$(jq --argjson n "$MAX_INLINE" '
             .[0:$n]
@@ -422,7 +422,7 @@ runs:
               side: "RIGHT",
               body: (
                 "<!-- " + $marker + ":inline -->\n" +
-                "**" + (.severity | ascii_upcase) + " · " + .category + " · " + .overlay + "** — " + .title + "\n" +
+                "**" + (.severity | ascii_upcase) + " . " + .category + " . " + .overlay + "** - " + .title + "\n" +
                 "_confidence: " + .confidence + "_\n\n" +
                 .rationale +
                 (if .suggested_remediation and .suggested_remediation != "" and .suggested_remediation != null
@@ -450,7 +450,7 @@ runs:
           DESIRED=$(jq -r '.labels // [] | .[] | select(startswith("'"$LABEL_PREFIX"'"))' "$FINDINGS_PATH" | sort -u || true)
 
           # Ensure each desired label exists; create if missing.
-          # URL-encode the label name in the GET path — labels like
+          # URL-encode the label name in the GET path - labels like
           # `agent-review/architecture-concern` contain `/` and without
           # encoding the GET always 404s, the POST then runs, the POST
           # succeeds first time, but the SECOND run POSTs again and gets
@@ -495,8 +495,8 @@ runs:
         fi
 
         # -------- Step 8: check run conclusion ----------
-        # Decide conclusion based on enforcement_mode × severities present.
-        # SECURITY: if validation was skipped, force neutral — we are
+        # Decide conclusion based on enforcement_mode x severities present.
+        # SECURITY: if validation was skipped, force neutral - we are
         # not allowed to fail (or pass) a check based on unvalidated
         # LLM-controlled findings.
         CONCLUSION="success"
@@ -547,7 +547,7 @@ runs:
         if [[ -n "$PRIOR_CHECK" ]]; then
           jq -n \
             --arg conclusion "$CONCLUSION" \
-            --arg title "${CHECK_NAME} — ${FINAL_COUNT} finding(s)" \
+            --arg title "${CHECK_NAME} - ${FINAL_COUNT} finding(s)" \
             --arg summary "$SUMMARY_FOR_CHECK" \
             --arg text "$DETAILS_TABLE" \
             '{status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary, text: $text}}' \
@@ -557,7 +557,7 @@ runs:
             --arg name "$CHECK_NAME" \
             --arg head "$HEAD_SHA" \
             --arg conclusion "$CONCLUSION" \
-            --arg title "${CHECK_NAME} — ${FINAL_COUNT} finding(s)" \
+            --arg title "${CHECK_NAME} - ${FINAL_COUNT} finding(s)" \
             --arg summary "$SUMMARY_FOR_CHECK" \
             --arg text "$DETAILS_TABLE" \
             '{name: $name, head_sha: $head, status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary, text: $text}}' \

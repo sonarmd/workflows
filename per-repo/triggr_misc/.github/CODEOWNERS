@@ -1,4 +1,4 @@
-# CODEOWNERS — triggr_misc
+# CODEOWNERS - triggr_misc
 #
 # CI workflow files require @sonarmd/platform-eng review.
 # Teams own what their CI does (commands, services, tooling).

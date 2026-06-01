@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# test-coverage.sh — flag changed source files that have no corresponding
+# test-coverage.sh - flag changed source files that have no corresponding
 # test file change in the same PR. Coarse but useful: a "behavior change
 # without a test change" is the senior-eye lens's single most common
 # finding.
@@ -12,9 +12,9 @@
 #           OK  all changed source files have a matching test file in the diff
 #
 # Heuristics for what counts as "matching":
-#   src/foo.ts                → test/foo.test.ts, src/foo.test.ts, src/__tests__/foo.test.ts
-#   pkg/x/y.go                → pkg/x/y_test.go
-#   app/models/user.py        → tests/test_user.py, app/models/test_user.py
+#   src/foo.ts                -> test/foo.test.ts, src/foo.test.ts, src/__tests__/foo.test.ts
+#   pkg/x/y.go                -> pkg/x/y_test.go
+#   app/models/user.py        -> tests/test_user.py, app/models/test_user.py
 #
 # Files NOT considered source (skipped from the check entirely):
 #   - any test file (by the same heuristic)

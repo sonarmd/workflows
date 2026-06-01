@@ -3,7 +3,7 @@ description: |
   Finalizes run state and emits the terminal summary. On failure,
   produces a structured diagnostic report with failure classification,
   failing command, and remediation hints. On success, summarizes
-  evidence and timing. Always runs — even if earlier steps failed.
+  evidence and timing. Always runs - even if earlier steps failed.
 
 inputs:
   status:
@@ -72,7 +72,7 @@ runs:
 
         echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
 
-        # ── Check for timeout-adjacent failure ───────────────────
+        # -- Check for timeout-adjacent failure -------------------
         TIMEOUT_ADJACENT=false
         if [ -n "$WORKFLOW_DEADLINE_EPOCH" ] && [ "$STATUS" != "success" ]; then
           REMAINING=$((WORKFLOW_DEADLINE_EPOCH - END_EPOCH))
@@ -81,7 +81,7 @@ runs:
           fi
         fi
 
-        # ── Determine classification ─────────────────────────────
+        # -- Determine classification -----------------------------
         CLASSIFICATION=""
         FAILING_CMD=""
         FAILING_LINE=""
@@ -117,11 +117,11 @@ runs:
 
         echo "classification=${CLASSIFICATION:-}" >> "$GITHUB_OUTPUT"
 
-        # ── Write summary ────────────────────────────────────────
+        # -- Write summary ----------------------------------------
         echo "" >> "$GITHUB_STEP_SUMMARY"
 
         if [ "$STATUS" = "success" ]; then
-          # ── Success summary ──────────────────────────────────
+          # -- Success summary ----------------------------------
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
         ---
         ### CI Result: PASSED
@@ -150,7 +150,7 @@ runs:
           fi
 
         else
-          # ── Failure summary ──────────────────────────────────
+          # -- Failure summary ----------------------------------
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
         ---
         ### CI Result: FAILED
@@ -181,7 +181,7 @@ runs:
         SUMMARY
           fi
 
-          # ── Remediation hints ────────────────────────────────
+          # -- Remediation hints --------------------------------
           case "$CLASSIFICATION" in
             dependency-resolution)
               echo "**Remediation**: Check lockfile sync (\`yarn install\` locally + commit lockfile), registry access, and Node/Python version compatibility." >> "$GITHUB_STEP_SUMMARY" ;;
@@ -202,7 +202,7 @@ runs:
           esac
         fi
 
-        # ── Lifecycle end record ─────────────────────────────────
+        # -- Lifecycle end record ---------------------------------
         cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
 
         ---

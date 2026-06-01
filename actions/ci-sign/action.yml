@@ -19,7 +19,7 @@ inputs:
   test_report_path:
     description: |
       Path to JUnit XML test report. The gate independently counts
-      <testcase> elements — no test cases = gate blocks.
+      <testcase> elements - no test cases = gate blocks.
       If your runner doesn't produce JUnit XML, add a reporter.
     required: false
     default: 'junit.xml'
@@ -43,7 +43,7 @@ runs:
         set -euo pipefail
         mkdir -p /tmp/ci-evidence
 
-        # ── Test evidence ─────────────────────────────────
+        # -- Test evidence ---------------------------------
         if [ -f "$TEST_REPORT" ]; then
           cp "$TEST_REPORT" /tmp/ci-evidence/test-report.xml
           TEST_COUNT=$(python3 -c "
@@ -69,7 +69,7 @@ runs:
 
         echo "TEST_COUNT=$TEST_COUNT" >> "$GITHUB_ENV"
 
-        # ── Build evidence ────────────────────────────────
+        # -- Build evidence --------------------------------
         if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR" ]; then
           FILE_COUNT=$(find "$BUILD_DIR" -type f | wc -l | tr -d ' ')
           if [ "$FILE_COUNT" -eq 0 ]; then
@@ -78,7 +78,7 @@ runs:
           fi
           find "$BUILD_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/ci-evidence/build-checksums.txt
           BUILD_DIGEST=$(sha256sum /tmp/ci-evidence/build-checksums.txt | cut -d' ' -f1)
-          echo "ci-sign: build — $FILE_COUNT files, digest ${BUILD_DIGEST:0:16}..."
+          echo "ci-sign: build - $FILE_COUNT files, digest ${BUILD_DIGEST:0:16}..."
         else
           FILE_COUNT=0
           BUILD_DIGEST=""
@@ -95,9 +95,9 @@ runs:
           echo "ci-sign: generating CycloneDX SBOM..."
           if npx --yes @cyclonedx/cyclonedx-npm --output-file /tmp/ci-evidence/bom.json 2>/dev/null; then
             DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
-            echo "ci-sign: SBOM — $DEP_COUNT components"
+            echo "ci-sign: SBOM - $DEP_COUNT components"
           else
-            echo "::warning::ci-sign: CycloneDX generation failed — continuing without SBOM"
+            echo "::warning::ci-sign: CycloneDX generation failed - continuing without SBOM"
             DEP_COUNT=0
           fi
 
@@ -106,14 +106,14 @@ runs:
           echo "ci-sign: generating CycloneDX SBOM (Python)..."
           if pip install --quiet cyclonedx-bom 2>/dev/null && cyclonedx-py environment --output /tmp/ci-evidence/bom.json --format json 2>/dev/null; then
             DEP_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/ci-evidence/bom.json')).get('components', [])))" 2>/dev/null || echo "0")
-            echo "ci-sign: SBOM — $DEP_COUNT components"
+            echo "ci-sign: SBOM - $DEP_COUNT components"
           else
-            echo "::warning::ci-sign: CycloneDX generation failed — continuing without SBOM"
+            echo "::warning::ci-sign: CycloneDX generation failed - continuing without SBOM"
             DEP_COUNT=0
           fi
 
         else
-          echo "ci-sign: no package manager detected — skipping SBOM"
+          echo "ci-sign: no package manager detected - skipping SBOM"
           DEP_COUNT=0
         fi
 
@@ -154,21 +154,21 @@ runs:
         if [ -n "$BUILD_DIGEST" ]; then
           BUILD_LINE="| Build | $BUILD_FILE_COUNT files | \`${BUILD_DIGEST:0:24}...\` |"
         else
-          BUILD_LINE="| Build | — | no artifact |"
+          BUILD_LINE="| Build | - | no artifact |"
         fi
 
         if [ -f /tmp/ci-evidence/bom.json ]; then
           SBOM_LINE="| SBOM | $DEP_COUNT components | CycloneDX |"
         else
-          SBOM_LINE="| SBOM | — | not generated |"
+          SBOM_LINE="| SBOM | - | not generated |"
         fi
 
         cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
-        ### CI Evidence — Signed
+        ### CI Evidence - Signed
 
         | | Detail | Info |
         |--|--------|------|
-        | Commit | \`${COMMIT:0:12}\` | — |
+        | Commit | \`${COMMIT:0:12}\` | - |
         | Tests | $TEST_COUNT test cases | JUnit XML |
         $BUILD_LINE
         $SBOM_LINE

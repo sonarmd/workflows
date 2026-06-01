@@ -45,7 +45,7 @@ runs:
         rm -rf "$RELEASE_DIR"
         mkdir -p "$RELEASE_DIR"
 
-        # ── Read deploy.json ─────────────────────────────────────
+        # -- Read deploy.json -------------------------------------
         if [ ! -f deploy.json ]; then
           echo "::error::bundle-pipeline: deploy.json not found"
           exit 1
@@ -59,7 +59,7 @@ runs:
         VALID_TARGETS="s3 ec2 eas cdk lambda fargate"
         PROCESSED=0
 
-        # ── Per-bundle loop ──────────────────────────────────────
+        # -- Per-bundle loop --------------------------------------
         python3 -c "
         import json
         bundles = json.load(open('deploy.json'))['bundles']
@@ -68,7 +68,7 @@ runs:
         " | while IFS='|' read -r NAME BPATH TARGET HOSTS_JSON; do
 
           echo ""
-          echo "━━━ Bundle: $NAME ━━━"
+          echo "--- Bundle: $NAME ---"
 
           # 1. Resolve + validate the bundle directory. The bundle `path` is
           # relative to `build_root` (matching validate-release-contract); fall
@@ -184,22 +184,22 @@ runs:
           PROCESSED=$((PROCESSED + 1))
         done
 
-        # ── Assert all bundles processed ─────────────────────────
+        # -- Assert all bundles processed -------------------------
         ACTUAL_TARBALLS=$(find "$RELEASE_DIR" -name '*.tar.gz' | wc -l | tr -d ' ')
         if [ "$ACTUAL_TARBALLS" -ne "$BUNDLE_COUNT" ]; then
           echo "::error::bundle-pipeline: expected $BUNDLE_COUNT bundles, processed $ACTUAL_TARBALLS"
           exit 1
         fi
 
-        # ── Copy test report if exists ───────────────────────────
+        # -- Copy test report if exists ---------------------------
         if [ -f "$TEST_REPORT" ]; then
           cp "$TEST_REPORT" "${RELEASE_DIR}/test-report.xml"
         fi
 
-        # ── Copy deploy.json into release ────────────────────────
+        # -- Copy deploy.json into release ------------------------
         cp deploy.json "${RELEASE_DIR}/deploy.json"
 
-        # ── Create outer release manifest ────────────────────────
+        # -- Create outer release manifest ------------------------
         python3 -c "
         import json, os
         data = json.load(open('deploy.json'))
@@ -222,12 +222,12 @@ runs:
         "
 
         echo ""
-        echo "━━━ Packaging outer release ━━━"
+        echo "--- Packaging outer release ---"
 
-        # ── Tar the entire release directory ─────────────────────
+        # -- Tar the entire release directory ---------------------
         tar czf release.tar.gz -C "$RELEASE_DIR" .
 
-        # ── Outer SHA-512 + checksum ─────────────────────────────
+        # -- Outer SHA-512 + checksum -----------------------------
         sha512sum release.tar.gz > release.tar.gz.sha512
         sha512sum release.tar.gz | cut -d' ' -f1 > release.tar.gz.checksum
 
@@ -238,15 +238,15 @@ runs:
         echo "  digest: ${OUTER_DIGEST:0:24}..."
         echo "  bundles: $BUNDLE_COUNT"
 
-        # ── Outputs ──────────────────────────────────────────────
+        # -- Outputs ----------------------------------------------
         echo "artifact_path=$(pwd)/release.tar.gz" >> "$GITHUB_OUTPUT"
         echo "artifact_size=$RELEASE_SIZE" >> "$GITHUB_OUTPUT"
         echo "bundle_count=$BUNDLE_COUNT" >> "$GITHUB_OUTPUT"
 
         echo ""
-        echo "bundle-pipeline: complete — $BUNDLE_COUNT bundles, $RELEASE_SIZE"
+        echo "bundle-pipeline: complete - $BUNDLE_COUNT bundles, $RELEASE_SIZE"
 
-    # ── Upload release artifact (in-run, for downstream jobs) ──
+    # -- Upload release artifact (in-run, for downstream jobs) --
     - name: Upload release artifact
       uses: actions/upload-artifact@v4
       with:

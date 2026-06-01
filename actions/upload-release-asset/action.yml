@@ -1,5 +1,5 @@
 name: Upload Release Asset
-description: Uploads an artifact to a draft GitHub Release and publishes it. Idempotent — skips upload if asset already exists.
+description: Uploads an artifact to a draft GitHub Release and publishes it. Idempotent - skips upload if asset already exists.
 
 inputs:
   tag:

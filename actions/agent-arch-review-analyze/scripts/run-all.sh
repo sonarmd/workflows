@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run-all.sh — orchestrator. Runs every analyzer over the changed files
+# run-all.sh - orchestrator. Runs every analyzer over the changed files
 # in a PR and produces a single markdown report at the output path.
 #
 # Usage:
@@ -57,12 +57,12 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
 {
   echo "# Pre-Computed Architecture Analysis"
   echo
-  echo "Computed by the architecture-analyzer toolset before the agent was invoked. Use these as grounding evidence — not as findings to repeat verbatim, but as facts the reviewer can cite."
+  echo "Computed by the architecture-analyzer toolset before the agent was invoked. Use these as grounding evidence - not as findings to repeat verbatim, but as facts the reviewer can cite."
   echo
   echo "**Changed files:** ${CHANGED_COUNT}  |  **Net-new files:** ${NEW_COUNT}"
   echo
 
-  # ── byte-scan runs FIRST so it lands in analysis.md even if a later
+  # -- byte-scan runs FIRST so it lands in analysis.md even if a later
   # analyzer crashes (run-all.sh uses set -euo pipefail). Treat this as
   # the equivalent of `npm audit` running on every install: unconditional.
   echo "## Suspicious byte scan"
@@ -109,12 +109,12 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
       | awk -F'\t' '{ printf "| `%s` | %s |\n", $1, $2 }'
   done <<< "$CHANGED"
   echo
-  echo "_Files classified \`unknown\` may be miscategorized — confirm against the actual content before flagging boundary concerns._"
+  echo "_Files classified \`unknown\` may be miscategorized - confirm against the actual content before flagging boundary concerns._"
   echo
 
   echo "## Dependency-direction violations"
   echo
-  echo "Imports that point OUTWARD (an inner layer pulling on an outer one) — canonical leaky-boundary smell."
+  echo "Imports that point OUTWARD (an inner layer pulling on an outer one) - canonical leaky-boundary smell."
   echo
   VIOL_COUNT=0
   while IFS= read -r f; do
@@ -124,7 +124,7 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
       while IFS= read -r line; do
         if [[ "$line" == VIOLATION* ]]; then
           VIOL_COUNT=$((VIOL_COUNT+1))
-          echo "- $line" | sed 's/^- VIOLATION\t/- **VIOLATION** /; s/\timports\t/ imports /; s/\t/ — /g'
+          echo "- $line" | sed 's/^- VIOLATION\t/- **VIOLATION** /; s/\timports\t/ imports /; s/\t/ - /g'
         fi
       done < <("${SCRIPT_DIR}/dependency-direction.sh" "$target" "$REPO" 2>/dev/null || true)
     fi
@@ -157,19 +157,19 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
 
   echo "## Test coverage signal"
   echo
-  echo "Changed source files that have no matching test file change in the same PR. Heuristic — confirm the source change actually warrants a test before flagging."
+  echo "Changed source files that have no matching test file change in the same PR. Heuristic - confirm the source change actually warrants a test before flagging."
   echo
   TC_OUT=$("${SCRIPT_DIR}/test-coverage.sh" "$DIFF" 2>/dev/null || true)
   if [[ "$TC_OUT" == OK* ]]; then
     echo "_All changed source files have a matching test file in the diff._"
   else
-    echo "$TC_OUT" | awk -F'\t' '$1 == "UNTESTED" { printf "- `%s` — %s\n", $2, $3 }'
+    echo "$TC_OUT" | awk -F'\t' '$1 == "UNTESTED" { printf "- `%s` - %s\n", $2, $3 }'
   fi
   echo
 
   echo "## Dependency additions"
   echo
-  echo "New entries detected in package manifests (npm, PyPI, crates, Go, RubyGems). Each is a long-term commitment — see the dependency-review reference for the questions to ask."
+  echo "New entries detected in package manifests (npm, PyPI, crates, Go, RubyGems). Each is a long-term commitment - see the dependency-review reference for the questions to ask."
   echo
   DD_OUT=$("${SCRIPT_DIR}/dependency-delta.sh" "$DIFF" 2>/dev/null || true)
   if [[ "$DD_OUT" == OK* ]]; then
@@ -185,7 +185,7 @@ NEW_COUNT=$(echo "$NET_NEW" | grep -c . || echo 0)
   echo
   echo "- Tie qualitative findings to specific rows above. A finding that says \"this function is too long\" should cite the row showing the actual line count."
   echo "- If a row contradicts a finding you were about to make, drop the finding."
-  echo "- Treat layer classifications as suggestions — verify against file content for the few cases where the path heuristic might mislead."
+  echo "- Treat layer classifications as suggestions - verify against file content for the few cases where the path heuristic might mislead."
 } > "$OUT"
 
 echo "wrote analysis to $OUT ($(wc -l < "$OUT") lines)"

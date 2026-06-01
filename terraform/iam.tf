@@ -18,7 +18,7 @@ variable "allowed_repos" {
 
 resource "aws_iam_role" "github_actions_deploy" {
   name                 = "github-actions-deploy"
-  max_session_duration = 3600 # 1 hour max — deploys should never take longer
+  max_session_duration = 3600 # 1 hour max - deploys should never take longer
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -31,7 +31,7 @@ resource "aws_iam_role" "github_actions_deploy" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringLike = {
-            # Restricted to specific repos — not org-wide wildcard
+            # Restricted to specific repos - not org-wide wildcard
             "token.actions.githubusercontent.com:sub" = var.allowed_repos
           }
           StringEquals = {
@@ -47,7 +47,7 @@ resource "aws_iam_role" "github_actions_deploy" {
   }
 }
 
-# ── S3 Frontend Deploy Policy ──
+# -- S3 Frontend Deploy Policy --
 # Scoped to specific frontend bucket ARNs only
 
 resource "aws_iam_role_policy" "s3_frontend_deploy" {
@@ -99,7 +99,7 @@ locals {
   ]
 }
 
-# ── CloudFront Invalidation Policy ──
+# -- CloudFront Invalidation Policy --
 # Scoped to specific distributions would be ideal, but IDs are dynamic.
 # Account-scoped is the practical minimum.
 
@@ -123,7 +123,7 @@ resource "aws_iam_role_policy" "cloudfront_invalidation" {
   })
 }
 
-# ── S3 Deploy Artifacts Policy ──
+# -- S3 Deploy Artifacts Policy --
 # Write artifacts + read them back for SSM deploys
 
 resource "aws_iam_role_policy" "s3_deploy_artifacts" {
@@ -154,7 +154,7 @@ resource "aws_iam_role_policy" "s3_deploy_artifacts" {
   })
 }
 
-# ── S3 Deploy Metrics Policy ──
+# -- S3 Deploy Metrics Policy --
 # Write-only for metrics collection, read for weekly reports
 
 resource "aws_iam_role_policy" "s3_deploy_metrics" {
@@ -185,8 +185,8 @@ resource "aws_iam_role_policy" "s3_deploy_metrics" {
   })
 }
 
-# ── SSM Run Command Policy ──
-# Restricted to the specific deploy document — cannot run arbitrary SSM commands
+# -- SSM Run Command Policy --
+# Restricted to the specific deploy document - cannot run arbitrary SSM commands
 
 resource "aws_iam_role_policy" "ssm_deploy" {
   name = "ssm-deploy"
@@ -223,7 +223,7 @@ resource "aws_iam_role_policy" "ssm_deploy" {
   })
 }
 
-# ── EC2 Describe Policy ──
+# -- EC2 Describe Policy --
 # Read-only, needed to discover deploy targets by tag
 
 resource "aws_iam_role_policy" "ec2_describe" {
@@ -245,7 +245,7 @@ resource "aws_iam_role_policy" "ec2_describe" {
   })
 }
 
-# ── Deny Dangerous Actions ──
+# -- Deny Dangerous Actions --
 # Explicit deny to prevent accidental privilege escalation
 
 resource "aws_iam_role_policy" "deny_dangerous" {
@@ -280,7 +280,7 @@ resource "aws_iam_role_policy" "deny_dangerous" {
   })
 }
 
-# ── Output ──
+# -- Output --
 
 output "deploy_role_arn" {
   description = "ARN of the GitHub Actions deploy role"

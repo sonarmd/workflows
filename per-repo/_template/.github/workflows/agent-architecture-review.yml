@@ -1,15 +1,15 @@
 # Drop this file into ANY repo's `.github/workflows/` as
 # `agent-architecture-review.yml`. ONLY needed if your repo is NOT
-# covered by the org-level required-workflow rollout (Path A) — in that
+# covered by the org-level required-workflow rollout (Path A) - in that
 # case this file is the entire opt-in.
 #
 # Required repo setup (one time):
-#   1. Settings → Secrets → Actions → add `CLAUDE_CODE_OAUTH_TOKEN`
-#      (preferred — subscription billing). Get it by running
+#   1. Settings -> Secrets -> Actions -> add `CLAUDE_CODE_OAUTH_TOKEN`
+#      (preferred - subscription billing). Get it by running
 #      `claude setup-token` locally.
 #      (Or `ANTHROPIC_API_KEY` for per-token billing.)
 #      Use the org-level secret if available.
-#   2. (Optional) Settings → Branch protection → require the
+#   2. (Optional) Settings -> Branch protection -> require the
 #      "Agent Architecture Review" check to merge.
 #
 # Per-repo tuning (optional): drop a `.github/agent-review.yml` in the
@@ -31,7 +31,7 @@ permissions:
 jobs:
   review:
     uses: sonarmd/workflows/.github/workflows/agent-architecture-review.yml@main
-    # All `with:` keys are optional — defaults are sensible.
+    # All `with:` keys are optional - defaults are sensible.
     # with:
     #   review_mode: architecture
     #   overlays: senior-eye

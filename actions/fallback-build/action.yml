@@ -1,7 +1,7 @@
 name: Fallback Build
 description: |
   Full build + bundle when no CI artifact exists for this commit.
-  Mirrors the CI pipeline exactly: checkout → setup-node (+ install) → build → bundle-release.
+  Mirrors the CI pipeline exactly: checkout -> setup-node (+ install) -> build -> bundle-release.
   Stages output to artifact/release.tar.gz to match download-ci-artifact's output path.
 
 outputs:
@@ -39,4 +39,4 @@ runs:
         cp "$ARTIFACT_PATH"             "$GITHUB_WORKSPACE/artifact/release.tar.gz"
         [ -f "${ARTIFACT_PATH}.sha512"   ] && cp "${ARTIFACT_PATH}.sha512"   "$GITHUB_WORKSPACE/artifact/"
         [ -f "${ARTIFACT_PATH}.checksum" ] && cp "${ARTIFACT_PATH}.checksum" "$GITHUB_WORKSPACE/artifact/"
-        echo "fallback-build: staged $(du -sh "$GITHUB_WORKSPACE/artifact/release.tar.gz" | cut -f1) → artifact/release.tar.gz"
+        echo "fallback-build: staged $(du -sh "$GITHUB_WORKSPACE/artifact/release.tar.gz" | cut -f1) -> artifact/release.tar.gz"

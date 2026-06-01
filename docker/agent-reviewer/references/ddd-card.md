@@ -10,9 +10,9 @@ One page. Refer to this when judging domain modeling.
 
 ## Entities vs value objects
 
-- **Entity** — identity matters. `User { id, name, … }`. Two users with the same name are different.
-- **Value object** — defined by its values. `Money { amount, currency }`. Two `Money(5, USD)` are interchangeable. Immutable.
-- Flag: domain concepts modeled as raw primitives (`amount: number` instead of `Money`) — primitive obsession.
+- **Entity** - identity matters. `User { id, name, ... }`. Two users with the same name are different.
+- **Value object** - defined by its values. `Money { amount, currency }`. Two `Money(5, USD)` are interchangeable. Immutable.
+- Flag: domain concepts modeled as raw primitives (`amount: number` instead of `Money`) - primitive obsession.
 
 ## Aggregates
 

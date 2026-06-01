@@ -129,7 +129,7 @@ runs:
         # Collision guard: re-fetch to catch races
         git fetch --tags --force --quiet
         if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-          echo "::error::resolve-build-tag: tag '$TAG' already exists — probable race condition"
+          echo "::error::resolve-build-tag: tag '$TAG' already exists - probable race condition"
           echo "::error::  Re-run this workflow to get the next build number."
           exit 1
         fi
