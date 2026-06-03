@@ -253,10 +253,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag=$(gh release list --repo "$GH_REPO" \
-                  --json tagName,targetCommitish --limit 200 \
+          tag=$(gh api -X GET "repos/$GH_REPO/releases" --paginate \
                 | jq -r --arg sha "$SHA" \
-                    '.[] | select(.targetCommitish == $sha) | .tagName' \
+                    '.[] | select(.target_commitish == $sha) | .tag_name' \
                 | head -n1)
           if [ -n "$tag" ] && gh release view "$tag" --repo "$GH_REPO" --json assets \
               | jq -e '.assets[] | select(.name == "release.tar.gz")' >/dev/null; then
