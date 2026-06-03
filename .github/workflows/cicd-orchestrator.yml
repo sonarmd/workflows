@@ -70,6 +70,11 @@ on:
         required: false
         type: string
         default: '.'
+      runs_on:
+        description: 'Runner label for the build job. Defaults to ubuntu-24.04-arm; override to ubuntu-24.04 for repos whose toolchain ships x86_64-only binaries (e.g. react-native hermesc).'
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
 
 # No `permissions:` block — the caller is the single source of truth for
 # GITHUB_TOKEN scopes. Every job below inherits the caller's grant. See the
@@ -149,6 +154,7 @@ jobs:
       test_report_path: ${{ inputs.test_report_path }}
       timeout:          ${{ inputs.timeout }}
       working_directory: ${{ inputs.working_directory }}
+      runs_on:          ${{ inputs.runs_on }}
     secrets: inherit
 
   # ── Canary verify: history-integrity tripwire ───────────────────────────

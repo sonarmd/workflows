@@ -40,6 +40,11 @@ on:
         required: false
         type: string
         default: '.'
+      runs_on:
+        description: 'Runner label for the build job. Defaults to ubuntu-24.04-arm; override to ubuntu-24.04 for repos whose toolchain ships x86_64-only binaries (e.g. react-native hermesc).'
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
     secrets:
       CI_SIGNING_KEY:
         description: |
@@ -67,7 +72,7 @@ jobs:
   # is the leaf's action ("run repo-specific install / test / build").
   run:
     name: run
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout }}
     env:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
@@ -86,13 +91,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Cache check: if an artifact already exists for this SHA in the
-      # durable store, skip bundle-release. lint/test/scans still run.
-      - name: Probe artifact store
-        id: probe
-        if: hashFiles('deploy.json') != ''
-        uses: sonarmd/workflows/actions/artifact-store-probe@main
-
       - name: Setup Node.js
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
         uses: sonarmd/workflows/actions/setup-node@main
@@ -108,6 +106,34 @@ jobs:
         shell: bash
         run: ${{ inputs.steps }}
 
+      # Cache check: if a GitHub Release already has release.tar.gz attached
+      # for this SHA (target_commitish), skip bundle/sign/stage. CD will pull
+      # straight from the existing release asset.
+      - name: Probe release for SHA
+        id: probe
+        if: hashFiles('deploy.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(gh release list --repo "$GH_REPO" \
+                  --json tagName,targetCommitish --limit 200 \
+                | jq -r --arg sha "$SHA" \
+                    '.[] | select(.targetCommitish == $sha) | .tagName' \
+                | head -n1)
+          if [ -n "$tag" ] && gh release view "$tag" --repo "$GH_REPO" --json assets \
+              | jq -e '.assets[] | select(.name == "release.tar.gz")' >/dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag"     >> "$GITHUB_OUTPUT"
+            echo "release-probe: HIT - $tag"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "release-probe: MISS"
+          fi
+
       - name: Bundle release
         if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true'
         uses: sonarmd/workflows/actions/bundle-release@main
@@ -121,20 +147,24 @@ jobs:
           artifact_path: release.tar.gz
           signing_key: ${{ secrets.CI_SIGNING_KEY }}
 
-#      # Push the SIGNED tarball to the durable store. Gated to push events
-#      # so PRs / merge_group / fork runs never write to GHCR (no permission,
-#      # and would inflate storage with non-deployable builds).
-#      - name: Push to artifact store
-#        if: |
-#          hashFiles('deploy.json') != '' &&
-#          steps.probe.outputs.present != 'true' &&
-#          github.event_name == 'push' &&
-#          github.ref_type == 'branch'
-#        uses: sonarmd/workflows/actions/artifact-store-push@main
+      # Stage the signed tarball for the CD job in the same workflow run.
+      # Name is keyed by SHA so CD's download-artifact picks the right one.
+      # Skipped on cache hit -- CD pulls from the existing release instead.
+      - name: Stage release artifact
+        if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            release.tar.gz
+            release.tar.gz.sha512
+            release.tar.gz.checksum
+            release.tar.gz.sig
+          if-no-files-found: error
+          retention-days: 90
 
-      - name: Cache hit — artifact already published
+      - name: Cache hit - artifact reused from release
         if: steps.probe.outputs.present == 'true'
         shell: bash
         run: |
-          echo "ci-core: artifact already exists for this SHA in the store — skipped rebuild."
-          echo "ci-core: reference: ${{ steps.probe.outputs.reference }}"
+          echo "ci-core: release ${{ steps.probe.outputs.tag }} already has release.tar.gz for ${{ github.sha }} -- skipped rebuild."

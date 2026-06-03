@@ -241,9 +241,52 @@ jobs:
             core.info(`cd-core: ${tag}`);
             core.setOutput('tag', tag);
 
-      - name: Pull artifact from store
-        id: download
-        uses: sonarmd/workflows/actions/artifact-store-pull@main
+      # Cache check: prefer an existing release asset for this SHA over the
+      # staged Actions artifact from the same workflow run. On cache hit the
+      # CI job skipped bundle/sign/stage; pull straight from the release.
+      - name: Probe release for SHA
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(gh release list --repo "$GH_REPO" \
+                  --json tagName,targetCommitish --limit 200 \
+                | jq -r --arg sha "$SHA" \
+                    '.[] | select(.targetCommitish == $sha) | .tagName' \
+                | head -n1)
+          if [ -n "$tag" ] && gh release view "$tag" --repo "$GH_REPO" --json assets \
+              | jq -e '.assets[] | select(.name == "release.tar.gz")' >/dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag"     >> "$GITHUB_OUTPUT"
+            echo "release-probe: HIT - $tag"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "release-probe: MISS"
+          fi
+
+      - name: Pull release asset (cache hit)
+        if: steps.probe.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.probe.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          gh release download "$TAG" --repo "$GH_REPO" \
+            --pattern 'release.tar.gz*' --dir artifact
+
+      - name: Pull staged artifact (cache miss)
+        if: steps.probe.outputs.present != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: artifact
 
       - name: Create tag
         uses: sonarmd/workflows/actions/create-tag@main
