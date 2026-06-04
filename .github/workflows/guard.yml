@@ -1,0 +1,74 @@
+name: Guard
+
+# Reusable workflow that runs history-integrity checks. Two modes:
+#   verify: canary-verify only. Called by check (PR/merge_group) and by deploy.
+#   full:   canary-verify + canary-anchor on success. Called by deploy on push.
+# canary-reconcile fires automatically when verify reports orphaned anchors.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'verify | full'
+        required: false
+        type: string
+        default: 'verify'
+      before_sha:
+        description: 'Used only in full mode for canary-anchor (typically github.event.before).'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+      CANARY_APP_PRIVATE_KEY:
+        required: true
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 3
+    outputs:
+      failed:        ${{ steps.vrfy.outputs.failed }}
+      missing:       ${{ steps.vrfy.outputs.missing }}
+      missing_count: ${{ steps.vrfy.outputs.missing_count }}
+      total:         ${{ steps.vrfy.outputs.total }}
+    steps:
+      - id: vrfy
+        uses: sonarmd/workflows/actions/canary-verify@main
+        with:
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          app-id: ${{ vars.CANARY_APP_ID }}
+          app-private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+
+  reconcile:
+    name: reconcile
+    needs: verify
+    if: |
+      always() &&
+      needs.verify.result == 'failure' &&
+      needs.verify.outputs.failed == '1'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - uses: sonarmd/workflows/actions/canary-reconcile@main
+        with:
+          missing: ${{ needs.verify.outputs.missing }}
+          app-id: ${{ vars.CANARY_APP_ID }}
+          app-private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+
+  anchor:
+    name: anchor
+    needs: verify
+    if: |
+      always() &&
+      inputs.mode == 'full' &&
+      needs.verify.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 3
+    steps:
+      - uses: sonarmd/workflows/actions/canary-anchor@main
+        with:
+          before-sha: ${{ inputs.before_sha }}
+          after-sha:  ${{ github.sha }}
