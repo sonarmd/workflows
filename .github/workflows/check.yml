@@ -1,0 +1,157 @@
+name: Check
+
+# Per-step labels in the checks UI. Empty inputs produce zero checks for that
+# step (matrix dynamically includes only non-empty entries) so the noise floor
+# stays at: prepare + N steps + Build, where N is the count of non-empty
+# verify inputs the caller provided.
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: 'Runner label. Default ubuntu-24.04-arm. Override to ubuntu-24.04 for repos with x86_64-only toolchains (e.g. react-native hermesc).'
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
+      setup:
+        description: 'Optional shell run before each verify step. System deps, etc.'
+        required: false
+        type: string
+        default: ''
+      lint:
+        description: 'Lint command. Empty -> Lint check is omitted entirely.'
+        required: false
+        type: string
+        default: ''
+      typecheck:
+        description: 'Typecheck command. Empty -> Typecheck check is omitted entirely.'
+        required: false
+        type: string
+        default: ''
+      test:
+        description: 'Test command. Empty -> Test check is omitted entirely.'
+        required: false
+        type: string
+        default: ''
+      build:
+        description: 'Build command. Empty -> Build check is omitted.'
+        required: false
+        type: string
+        default: ''
+      timeout:
+        description: 'Per-job timeout minutes.'
+        required: false
+        type: number
+        default: 15
+      working_directory:
+        required: false
+        type: string
+        default: '.'
+    secrets:
+      GH_TOKEN:
+        required: false
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 2
+    outputs:
+      include:   ${{ steps.matrix.outputs.include }}
+      has_build: ${{ steps.matrix.outputs.has_build }}
+    steps:
+      - id: matrix
+        shell: bash
+        env:
+          LINT:      ${{ inputs.lint }}
+          TYPECHECK: ${{ inputs.typecheck }}
+          TEST:      ${{ inputs.test }}
+          BUILD:     ${{ inputs.build }}
+        run: |
+          set -euo pipefail
+          INCLUDE=$(jq -n \
+            --arg lint "$LINT" --arg tc "$TYPECHECK" --arg test "$TEST" \
+            '[
+              if $lint != "" then {label:"Lint",cmd:$lint} else empty end,
+              if $tc   != "" then {label:"Typecheck",cmd:$tc} else empty end,
+              if $test != "" then {label:"Test",cmd:$test} else empty end
+            ]')
+          echo "include=$(jq -c . <<< "$INCLUDE")" >> "$GITHUB_OUTPUT"
+          if [ -n "$BUILD" ]; then
+            echo "has_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_build=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "check.prepare: include=$(jq -c . <<< "$INCLUDE") has_build=${BUILD:+true}${BUILD:-false}"
+
+  verify:
+    needs: prepare
+    if: needs.prepare.outputs.include != '[]'
+    name: ${{ matrix.label }}
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.include) }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
+      - name: Setup
+        if: inputs.setup != ''
+        shell: bash
+        run: ${{ inputs.setup }}
+      - name: ${{ matrix.label }}
+        shell: bash
+        run: ${{ matrix.cmd }}
+
+  Build:
+    name: Build
+    needs: [prepare, verify]
+    if: |
+      always() &&
+      needs.prepare.outputs.has_build == 'true' &&
+      !cancelled() &&
+      !contains(needs.verify.result, 'failure')
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
+      - name: Setup
+        if: inputs.setup != ''
+        shell: bash
+        run: ${{ inputs.setup }}
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+      - name: Upload dist
+        if: hashFiles(format('{0}/dist/**', inputs.working_directory)) != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: ${{ inputs.working_directory }}/dist
+          if-no-files-found: ignore
+          retention-days: 7

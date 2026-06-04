@@ -1,0 +1,85 @@
+name: Pack
+
+# Reusable workflow that wraps bundle-release. Called by deploy.yml when no
+# pre-existing release asset is found for the SHA. Produces release.tar.gz +
+# checksums + signature and stages them as Actions artifact "release-<sha>"
+# for the deploy job to consume in the same workflow run.
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
+      working_directory:
+        required: false
+        type: string
+        default: '.'
+      timeout:
+        required: false
+        type: number
+        default: 15
+    secrets:
+      CI_SIGNING_KEY:
+        required: false
+      GH_TOKEN:
+        required: false
+    outputs:
+      artifact_name:
+        description: 'Name of the staged Actions artifact (release-<sha>).'
+        value: ${{ jobs.pack.outputs.artifact_name }}
+
+jobs:
+  pack:
+    name: pack
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      HAS_SIGNING_KEY: ${{ secrets.CI_SIGNING_KEY != '' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    outputs:
+      artifact_name: ${{ steps.name.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        uses: sonarmd/workflows/actions/setup-node@main
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
+      - name: Download dist (built by Check)
+        if: hashFiles(format('{0}/deploy.json', inputs.working_directory)) != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: ${{ inputs.working_directory }}/dist
+        continue-on-error: true
+      - name: Bundle release
+        if: hashFiles(format('{0}/deploy.json', inputs.working_directory)) != ''
+        uses: sonarmd/workflows/actions/bundle-release@main
+      - name: Sign release
+        if: hashFiles(format('{0}/deploy.json', inputs.working_directory)) != '' && env.HAS_SIGNING_KEY == 'true'
+        uses: sonarmd/workflows/actions/sign-release@main
+        with:
+          artifact_path: release.tar.gz
+          signing_key: ${{ secrets.CI_SIGNING_KEY }}
+      - id: name
+        shell: bash
+        run: echo "artifact_name=release-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+      - name: Stage release artifact
+        if: hashFiles(format('{0}/deploy.json', inputs.working_directory)) != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            release.tar.gz
+            release.tar.gz.sha512
+            release.tar.gz.checksum
+            release.tar.gz.sig
+          if-no-files-found: error
+          retention-days: 90

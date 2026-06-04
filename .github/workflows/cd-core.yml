@@ -54,10 +54,15 @@ jobs:
       # to node24 now so actions that haven't republished (download-artifact,
       # github-script, 1password/load-secrets) run on node24.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-      # Slack webhook URL is a direct value, not an op:// reference, so it
-      # must be set at job scope rather than routed through Load secrets —
-      # 1password/load-secrets-action only exports op:// refs to $GITHUB_ENV.
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # All secrets that the visibility surfaces and the existing failure
+      # notifier need are GitHub repo/org secrets. Lift them to job-level env
+      # vars here; downstream steps read them as env.X to match the existing
+      # SLACK_WEBHOOK_URL precedent. 1password/load-secrets-action only
+      # exports op:// refs, so direct GH secrets must come through this block.
+      SLACK_WEBHOOK_URL:   ${{ secrets.SLACK_WEBHOOK_URL }}
+      SLACK_BOT_TOKEN:     ${{ secrets.SLACK_BOT_TOKEN }}
+      CONFLUENCE_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
+      CONFLUENCE_TOKEN:    ${{ secrets.CONFLUENCE_TOKEN }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -307,14 +312,51 @@ jobs:
           artifact_path: artifact/release.tar.gz
           release_id: ${{ steps.release.outputs.release_id }}
 
-      - name: Signal deployment
-        uses: sonarmd/workflows/actions/signal-deployment@main
+      # Visibility surfaces (open-deployment + slack-deploy-message + confluence)
+      # replace the old single signal-deployment step. The Slack message keeps
+      # the existing trigger text format ("deploy ENV APP TAG ARTIFACT_URL") in
+      # its text fallback so the Ansible parser is unchanged. New: a GitHub
+      # Deployment object lights up the repo Environments tab and the Jira
+      # Deployments panel (via the Atlassian for GitHub app). A Confluence row
+      # records the SHA forever in an append-only log.
+
+      - name: Open GitHub Deployment
+        id: deployment
+        uses: sonarmd/workflows/actions/open-deployment@main
         with:
-          webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
-          app_name: ${{ steps.ctx.outputs.identifier }}
           environment: ${{ steps.ctx.outputs.env }}
-          tag: ${{ steps.build.outputs.tag }}
-          artifact_url: ${{ steps.artifact.outputs.artifact_url }}
+          ref: ${{ github.sha }}
+          description: "Deploying ${{ steps.ctx.outputs.identifier }} to ${{ steps.ctx.outputs.env }} (${{ steps.build.outputs.tag }})"
+          production: ${{ steps.ctx.outputs.env == 'prd' && 'true' || 'false' }}
+
+      - name: Slack deploy message
+        id: slack
+        uses: sonarmd/workflows/actions/slack-deploy-message@main
+        with:
+          bot_token:     ${{ secrets.SLACK_BOT_TOKEN }}
+          webhook_url:   ${{ env.SLACK_WEBHOOK_URL }}
+          channel:       ${{ vars.SLACK_DEPLOY_CHANNEL }}
+          app:           ${{ steps.ctx.outputs.identifier }}
+          env:           ${{ steps.ctx.outputs.env }}
+          tag:           ${{ steps.build.outputs.tag }}
+          sha:           ${{ github.sha }}
+          artifact_url:  ${{ steps.artifact.outputs.artifact_url }}
+          deployment_id: ${{ steps.deployment.outputs.deployment_id }}
+
+      - name: Confluence Deploy Log append
+        id: confluence
+        if: env.CONFLUENCE_BASE_URL != '' && vars.CONFLUENCE_DEPLOY_LOG_PAGE_ID != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/confluence-deploy-log-append@main
+        with:
+          base_url:    ${{ env.CONFLUENCE_BASE_URL }}
+          api_token:   ${{ env.CONFLUENCE_TOKEN }}
+          page_id:     ${{ vars.CONFLUENCE_DEPLOY_LOG_PAGE_ID }}
+          app:         ${{ steps.ctx.outputs.identifier }}
+          env:         ${{ steps.ctx.outputs.env }}
+          tag:         ${{ steps.build.outputs.tag }}
+          sha:         ${{ github.sha }}
+          deployer:    ${{ github.actor }}
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'
