@@ -1,0 +1,161 @@
+name: Slack deploy message
+description: |
+  Post a Slack message that serves two purposes at once:
+  - the Ansible runner trigger (text fallback contains the existing
+    "deploy ENV APP TAG ARTIFACT_URL" payload format, unchanged so the existing
+    parser keeps working)
+  - the persistent human status surface (Block Kit with status emoji, fields,
+    elapsed counter, links)
+
+  Prefers a Slack bot token via chat.postMessage. Returns ts so Ansible can
+  chat.update the same message later with elapsed time and final state.
+  Falls back to incoming webhook when no bot token is configured; in that mode
+  Ansible posts thread replies instead of editing in place.
+
+inputs:
+  bot_token:
+    description: 'Slack bot token (xoxb-). When set, chat.postMessage is used and ts is returned.'
+    required: false
+    default: ''
+  webhook_url:
+    description: 'Slack Incoming Webhook URL. Fallback when bot_token is empty.'
+    required: false
+    default: ''
+  channel:
+    description: 'Slack channel id (e.g. C123ABC). Required when bot_token is used.'
+    required: false
+    default: ''
+  app:
+    description: 'App identifier (e.g. mobile, api, fe).'
+    required: true
+  env:
+    description: 'Target environment (stg, prd).'
+    required: true
+  tag:
+    description: 'Release tag (e.g. stg-mobile-v1.6.0-b7).'
+    required: true
+  sha:
+    description: 'Full commit SHA.'
+    required: true
+  artifact_url:
+    description: 'URL where the artifact can be pulled.'
+    required: true
+  github_run_url:
+    description: 'URL to the GitHub Actions run.'
+    required: false
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  deployment_id:
+    description: 'GitHub Deployment id; Ansible uses this for status callback.'
+    required: true
+  started_at:
+    description: 'ISO 8601 UTC start timestamp. Defaults to now.'
+    required: false
+    default: ''
+
+outputs:
+  ts:
+    description: 'Slack message timestamp. Empty when posted via webhook fallback.'
+    value: ${{ steps.post.outputs.ts }}
+  channel:
+    description: 'Slack channel id of the posted message. Empty in webhook mode.'
+    value: ${{ steps.post.outputs.channel }}
+
+runs:
+  using: composite
+  steps:
+    - name: Post deploy message
+      id: post
+      shell: bash
+      env:
+        BOT_TOKEN: ${{ inputs.bot_token }}
+        WEBHOOK_URL: ${{ inputs.webhook_url }}
+        CHANNEL: ${{ inputs.channel }}
+        APP: ${{ inputs.app }}
+        ENV_NAME: ${{ inputs.env }}
+        TAG: ${{ inputs.tag }}
+        SHA: ${{ inputs.sha }}
+        ARTIFACT_URL: ${{ inputs.artifact_url }}
+        GH_RUN_URL: ${{ inputs.github_run_url }}
+        DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+        STARTED_AT: ${{ inputs.started_at }}
+      run: |
+        set -euo pipefail
+        SHORT_SHA="${SHA:0:7}"
+        STARTED="${STARTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+        TRIGGER_TEXT="deploy $ENV_NAME $APP $TAG $ARTIFACT_URL"
+
+        blocks=$(jq -n \
+          --arg app "$APP" \
+          --arg env "$ENV_NAME" \
+          --arg tag "$TAG" \
+          --arg sha "$SHORT_SHA" \
+          --arg started "$STARTED" \
+          --arg gh "$GH_RUN_URL" \
+          --arg art "$ARTIFACT_URL" \
+          --arg did "$DEPLOYMENT_ID" \
+          --arg trigger "$TRIGGER_TEXT" \
+          '[
+            { type: "header",
+              text: { type: "plain_text", text: (":white_circle: Deploying " + $app + " to " + $env), emoji: true } },
+            { type: "section",
+              fields: [
+                { type: "mrkdwn", text: ("*App*\n" + $app) },
+                { type: "mrkdwn", text: ("*Env*\n" + $env) },
+                { type: "mrkdwn", text: ("*Tag*\n`" + $tag + "`") },
+                { type: "mrkdwn", text: ("*SHA*\n`" + $sha + "`") },
+                { type: "mrkdwn", text: ("*Started*\n" + $started) },
+                { type: "mrkdwn", text: ("*Elapsed*\n0s") }
+              ] },
+            { type: "context",
+              elements: [
+                { type: "mrkdwn", text: ("<" + $gh + "|GitHub run> | <" + $art + "|Artifact> | deployment_id: " + $did) }
+              ] },
+            { type: "divider" },
+            { type: "section",
+              text: { type: "mrkdwn", text: ("`" + $trigger + "`") } }
+          ]')
+
+        if [ -n "$BOT_TOKEN" ]; then
+          if [ -z "$CHANNEL" ]; then
+            echo "::error::slack-deploy-message: bot_token provided but channel is empty"
+            exit 1
+          fi
+          payload=$(jq -n \
+            --arg ch "$CHANNEL" \
+            --arg text "$TRIGGER_TEXT" \
+            --argjson blocks "$blocks" \
+            '{ channel: $ch, text: $text, blocks: $blocks }')
+          resp=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $BOT_TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$payload")
+          ok=$(jq -r '.ok' <<< "$resp")
+          if [ "$ok" != "true" ]; then
+            echo "::error::slack-deploy-message: chat.postMessage failed: $(jq -r '.error // "unknown"' <<< "$resp")"
+            exit 1
+          fi
+          ts=$(jq -r '.ts' <<< "$resp")
+          ch_out=$(jq -r '.channel' <<< "$resp")
+          echo "ts=$ts" >> "$GITHUB_OUTPUT"
+          echo "channel=$ch_out" >> "$GITHUB_OUTPUT"
+          echo "slack-deploy-message: posted via bot, ts=$ts channel=$ch_out"
+        elif [ -n "$WEBHOOK_URL" ]; then
+          payload=$(jq -n \
+            --arg text "$TRIGGER_TEXT" \
+            --argjson blocks "$blocks" \
+            '{ text: $text, blocks: $blocks }')
+          http=$(curl -sS -o /tmp/slack.out -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$payload" "$WEBHOOK_URL" || echo "000")
+          if [ "$http" != "200" ]; then
+            echo "::error::slack-deploy-message: webhook POST returned $http"
+            cat /tmp/slack.out || true
+            exit 1
+          fi
+          echo "ts=" >> "$GITHUB_OUTPUT"
+          echo "channel=" >> "$GITHUB_OUTPUT"
+          echo "slack-deploy-message: posted via webhook (no ts; Ansible posts thread replies)"
+        else
+          echo "::error::slack-deploy-message: neither bot_token nor webhook_url provided"
+          exit 1
+        fi

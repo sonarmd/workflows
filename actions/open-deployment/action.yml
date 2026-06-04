@@ -1,0 +1,83 @@
+name: Open GitHub Deployment
+description: |
+  Create a Deployment object for a SHA, set initial in_progress status, return
+  the numeric id. The Atlassian "GitHub for Jira" app reads GitHub Deployments
+  and populates each ticket's Deployments panel automatically when commits up
+  to the SHA reference Jira issue keys.
+
+inputs:
+  environment:
+    description: 'Target environment name (e.g. stg, prd).'
+    required: true
+  ref:
+    description: 'Git ref or SHA the deployment targets. Defaults to github.sha.'
+    required: false
+    default: ${{ github.sha }}
+  description:
+    description: 'Human-readable description. Appears in the Environments UI and on the Jira deployment row.'
+    required: false
+    default: ''
+  log_url:
+    description: 'URL to the running workflow run; shown on the deployment status.'
+    required: false
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  production:
+    description: 'Whether to mark this as production_environment. Set true for prd. Default false.'
+    required: false
+    default: 'false'
+
+outputs:
+  deployment_id:
+    description: 'Numeric GitHub Deployment id.'
+    value: ${{ steps.create.outputs.id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create GitHub Deployment + in_progress status
+      id: create
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        REF: ${{ inputs.ref }}
+        DESC: ${{ inputs.description }}
+        LOG_URL: ${{ inputs.log_url }}
+        PROD: ${{ inputs.production }}
+      run: |
+        set -euo pipefail
+        body=$(jq -n \
+          --arg ref         "$REF" \
+          --arg environment "$ENVIRONMENT" \
+          --arg description "$DESC" \
+          --argjson prod    "$PROD" \
+          '{
+            ref: $ref,
+            environment: $environment,
+            description: $description,
+            auto_merge: false,
+            required_contexts: [],
+            production_environment: $prod,
+            transient_environment: false
+          }')
+
+        resp=$(gh api -X POST "repos/$REPO/deployments" --input - <<< "$body")
+        id=$(jq -r '.id' <<< "$resp")
+        if [ -z "$id" ] || [ "$id" = "null" ]; then
+          echo "::error::open-deployment: GitHub did not return a deployment id"
+          echo "$resp"
+          exit 1
+        fi
+
+        status_body=$(jq -n \
+          --arg log_url "$LOG_URL" \
+          '{
+            state: "in_progress",
+            log_url: $log_url,
+            description: "Deployment emitted by GitHub Actions. Ansible runner picks up next."
+          }')
+        gh api -X POST "repos/$REPO/deployments/$id/statuses" --input - <<< "$status_body" > /dev/null
+
+        echo "id=$id" >> "$GITHUB_OUTPUT"
+        echo "open-deployment: created deployment id=$id env=$ENVIRONMENT ref=$REF"

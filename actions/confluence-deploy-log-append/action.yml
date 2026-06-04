@@ -1,0 +1,189 @@
+name: Confluence Deploy Log append
+description: |
+  Append one row to the Confluence Deploy Log page. The page is treated as
+  append-only: rows are never deleted or reordered. The Ansible runner finalizes
+  this row's State and Duration columns at deploy completion via the
+  confluence-deploy-log-finalize.sh helper, identifying the row by the row_id
+  returned here. The page contains a sentinel HTML comment marker:
+    <!-- DEPLOY-LOG-ROWS -->
+  immediately after the header row. Insertions happen just before this marker.
+
+inputs:
+  base_url:
+    description: 'Confluence Cloud base URL (e.g. https://sonarmd.atlassian.net).'
+    required: true
+  api_token:
+    description: 'Scoped Atlassian API token used as Bearer. Issue under a service account (not a personal account) so the integration is not tied to an individual.'
+    required: true
+  page_id:
+    description: 'Numeric id of the Deploy Log page.'
+    required: true
+  app:
+    description: 'App identifier.'
+    required: true
+  env:
+    description: 'Target environment (stg, prd).'
+    required: true
+  tag:
+    description: 'Release tag.'
+    required: true
+  sha:
+    description: 'Full commit SHA.'
+    required: true
+  deployer:
+    description: 'Actor that triggered the deploy.'
+    required: false
+    default: ${{ github.actor }}
+  jira_keys:
+    description: 'Comma-separated Jira issue keys associated with this deploy.'
+    required: false
+    default: ''
+  slack_message_url:
+    description: 'Permalink to the Slack deploy message. Empty if not available.'
+    required: false
+    default: ''
+  github_run_url:
+    description: 'URL to the GitHub Actions run.'
+    required: false
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+outputs:
+  row_id:
+    description: 'Unique id assigned to the appended row; passed to Ansible finalize helper.'
+    value: ${{ steps.append.outputs.row_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Append deploy row
+      id: append
+      shell: bash
+      env:
+        BASE_URL: ${{ inputs.base_url }}
+        TOKEN: ${{ inputs.api_token }}
+        PAGE_ID: ${{ inputs.page_id }}
+        APP: ${{ inputs.app }}
+        ENV_NAME: ${{ inputs.env }}
+        TAG: ${{ inputs.tag }}
+        SHA: ${{ inputs.sha }}
+        DEPLOYER: ${{ inputs.deployer }}
+        JIRA_KEYS: ${{ inputs.jira_keys }}
+        SLACK_URL: ${{ inputs.slack_message_url }}
+        GH_RUN_URL: ${{ inputs.github_run_url }}
+        GH_REPO: ${{ github.repository }}
+        GH_SERVER: ${{ github.server_url }}
+      run: |
+        set -euo pipefail
+
+        ROW_ID=$(uuidgen | tr 'A-Z' 'a-z' | tr -d '-' | cut -c1-12)
+        STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        SHORT_SHA="${SHA:0:7}"
+        COMMIT_URL="$GH_SERVER/$GH_REPO/commit/$SHA"
+
+        page_resp=$(curl -sS \
+          -H "Authorization: Bearer $TOKEN" \
+          -H 'Accept: application/json' \
+          "$BASE_URL/wiki/api/v2/pages/$PAGE_ID?body-format=storage")
+
+        title=$(jq -r '.title' <<< "$page_resp")
+        current_version=$(jq -r '.version.number' <<< "$page_resp")
+        current_body=$(jq -r '.body.storage.value' <<< "$page_resp")
+
+        if [ "$title" = "null" ] || [ -z "$title" ]; then
+          echo "::error::confluence-deploy-log-append: failed to fetch page $PAGE_ID"
+          echo "$page_resp"
+          exit 1
+        fi
+
+        next_version=$((current_version + 1))
+
+        new_body=$(ROW_ID="$ROW_ID" STARTED="$STARTED" APP="$APP" ENV_NAME="$ENV_NAME" \
+          TAG="$TAG" SHORT_SHA="$SHORT_SHA" COMMIT_URL="$COMMIT_URL" \
+          DEPLOYER="$DEPLOYER" JIRA_KEYS="$JIRA_KEYS" \
+          SLACK_URL="$SLACK_URL" GH_RUN_URL="$GH_RUN_URL" \
+          python3 - <<'PY'
+        import os, sys, html
+
+        body = sys.stdin.read()
+        marker = '<!-- DEPLOY-LOG-ROWS -->'
+        if marker not in body:
+            sys.stderr.write("confluence-deploy-log-append: page is missing sentinel marker '<!-- DEPLOY-LOG-ROWS -->'\n")
+            sys.exit(2)
+
+        def esc(s): return html.escape(s, quote=True)
+
+        row_id   = os.environ['ROW_ID']
+        started  = esc(os.environ['STARTED'])
+        app      = esc(os.environ['APP'])
+        env_name = esc(os.environ['ENV_NAME'])
+        tag      = esc(os.environ['TAG'])
+        sha      = esc(os.environ['SHORT_SHA'])
+        commit   = esc(os.environ['COMMIT_URL'])
+        deployer = esc(os.environ['DEPLOYER'])
+        keys_csv = os.environ['JIRA_KEYS'].strip()
+        slack    = esc(os.environ['SLACK_URL'])
+        gh_run   = esc(os.environ['GH_RUN_URL'])
+
+        keys_html = ''
+        if keys_csv:
+            keys = [k.strip() for k in keys_csv.split(',') if k.strip()]
+            keys_html = ', '.join(esc(k) for k in keys)
+        else:
+            keys_html = ''
+
+        slack_cell = f'<a href="{slack}">message</a>' if slack else ''
+        gh_cell    = f'<a href="{gh_run}">run</a>' if gh_run else ''
+        sha_cell   = f'<a href="{commit}">{sha}</a>'
+
+        row = (
+            f'<tr id="dlrow-{row_id}">'
+            f'<td>{started}</td>'
+            f'<td>{app}</td>'
+            f'<td>{env_name}</td>'
+            f'<td><code>{tag}</code></td>'
+            f'<td>{sha_cell}</td>'
+            f'<td>{deployer}</td>'
+            f'<td>{keys_html}</td>'
+            f'<td>{slack_cell}</td>'
+            f'<td>{gh_cell}</td>'
+            f'<td><span data-cell="state-{row_id}">in_progress</span></td>'
+            f'<td><span data-cell="duration-{row_id}"></span></td>'
+            f'</tr>'
+        )
+
+        out = body.replace(marker, row + marker, 1)
+        sys.stdout.write(out)
+        PY
+        <<< "$current_body")
+
+        update_payload=$(jq -n \
+          --arg id "$PAGE_ID" \
+          --arg title "$title" \
+          --arg body "$new_body" \
+          --argjson version "$next_version" \
+          --arg row_id "$ROW_ID" \
+          '{
+            id: $id,
+            status: "current",
+            title: $title,
+            body: { representation: "storage", value: $body },
+            version: { number: $version, message: ("deploy log append row " + $row_id) }
+          }')
+
+        put_resp=$(curl -sS \
+          -X PUT \
+          -H "Authorization: Bearer $TOKEN" \
+          -H 'Accept: application/json' \
+          -H 'Content-Type: application/json' \
+          --data "$update_payload" \
+          "$BASE_URL/wiki/api/v2/pages/$PAGE_ID")
+
+        new_version=$(jq -r '.version.number' <<< "$put_resp")
+        if [ "$new_version" = "null" ] || [ -z "$new_version" ]; then
+          echo "::error::confluence-deploy-log-append: PUT failed"
+          echo "$put_resp"
+          exit 1
+        fi
+
+        echo "row_id=$ROW_ID" >> "$GITHUB_OUTPUT"
+        echo "confluence-deploy-log-append: appended row_id=$ROW_ID version=$new_version"
