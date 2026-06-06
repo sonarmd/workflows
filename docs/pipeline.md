@@ -183,7 +183,7 @@ Defines every deployable unit in this repo. Ansible reads this from the release 
 
 | Action | What it does |
 |--------|-------------|
-| `setup-node` | Installs Node from `package.json` volta/engines, caches yarn deps |
+| `setup-node` | Installs Node from `.node-version` or `package.json` engines.node, caches yarn deps |
 | `ci-sign` | Verifies test report has real tests, generates CycloneDX SBOM, uploads evidence, attests with Sigstore |
 | `ping-slack` | CI-focused Slack notifier — fires on start, success, and failure with branch/commit/actor context |
 | `slack-notify` | Deploy-focused Slack notifier — fires with env/version/actor context |

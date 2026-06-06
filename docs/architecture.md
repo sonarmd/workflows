@@ -119,5 +119,5 @@ Tag push (stg-mobile-*, prd-mobile-*)
 
 | Action | Purpose |
 |--------|---------|
-| `setup-node` | Detects Node version (Volta or input), installs with yarn cache |
+| `setup-node` | Detects Node version (input, .node-version, or engines.node), installs with yarn cache |
 | `detect-changed-apps` | Path filtering for frontend monorepo (admin, patient, provider, seat, shared) |
