@@ -292,13 +292,18 @@ jobs:
           retention-days: 7
 
   # ─── STAGE 1: AGENT ───────────────────────────────────────────────────
-  # Container runner. ZERO GitHub permissions. ANTHROPIC_API_KEY only.
-  # No gh CLI in container. Emits findings.json artifact and exits.
+  # Container runner. Only packages:read so the runner can pull the
+  # agent-reviewer image from GHCR. No other GitHub scopes. The agent
+  # itself runs inside the container with ANTHROPIC_API_KEY only - no
+  # gh CLI, no GITHUB_TOKEN propagated to the container env.
+  # Empty `permissions: {}` previously stripped packages:read inherited
+  # from the workflow-level grant, breaking GHCR login.
   review-agent:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions: {}
+    permissions:
+      packages: read
     container:
       image: ${{ inputs.image_tag != '' && inputs.image_tag || 'ghcr.io/sonarmd/agent-reviewer:latest' }}
     steps:
