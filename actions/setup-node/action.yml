@@ -3,7 +3,7 @@ description: Install Node.js from package.json engines.node with yarn dependency
 
 inputs:
   node-version:
-    description: Node.js version to install (default reads from package.json volta config)
+    description: Node.js version to install (default resolves from .node-version or package.json engines.node)
     required: false
     default: ''
   working-directory:
