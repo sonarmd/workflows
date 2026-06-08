@@ -40,7 +40,8 @@ jobs:
           # this PR (separate cleanup PR).
           ./actionlint -color -shellcheck=shellcheck \
             .github/workflows/tests.yml \
-            .github/workflows/cicd-orchestrator.yml
+            .github/workflows/cicd-orchestrator.yml \
+            .github/workflows/break-glass-deploy.yml
 
       - name: yamllint (canary composite actions + docs)
         run: |
@@ -55,7 +56,88 @@ jobs:
             actions/canary-reconcile/action.yml \
             actions/canary-seed/action.yml \
             actions/canary-purge-orphans/action.yml \
-            docs/caller-canary-ops.yml.template
+            docs/caller-canary-ops.yml.template \
+            .github/workflows/break-glass-deploy.yml
+
+      - name: break-glass workflow contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path('.github/workflows/break-glass-deploy.yml').read_text()
+          active = '\n'.join(
+              line for line in text.splitlines()
+              if line.strip() and not line.lstrip().startswith('#')
+          )
+
+          forbidden = [
+              'needs:',
+              'ci-core.yml',
+              'cd-core.yml',
+              'canary-verify',
+              'canary-anchor',
+              'security-scan',
+              'quality-scan',
+              'validate-release-contract',
+              'download-artifact',
+              'artifact-store-probe',
+              'confluence-deploy-log-append',
+              'release-lifecycle',
+              'open-deployment',
+              'Setup Node.js',
+              'name: Setup',
+              'GH_TOKEN',
+              'SLACK_WEBHOOK_URL',
+              'webhook_url',
+              'notify-slack',
+              'failure()',
+          ]
+          found = [item for item in forbidden if item in active]
+          if found:
+              raise SystemExit(f'forbidden break-glass gate/cache/setup/webhook step found: {found}')
+
+          required = [
+              'name: Build',
+              'name: Bundle release',
+              'name: Sign release',
+              'name: Resolve tag',
+              'name: Create tag',
+              'name: Create release',
+              'name: Upload bundle',
+              'name: Notify Slack',
+          ]
+          cursor = -1
+          for item in required:
+              index = active.find(item)
+              if index == -1:
+                  raise SystemExit(f'missing required break-glass step: {item}')
+              if index <= cursor:
+                  raise SystemExit(f'break-glass step out of order: {item}')
+              cursor = index
+
+          step_count = active.count('\n      - name: ')
+          if step_count != len(required):
+              raise SystemExit(f'break-glass must contain exactly {len(required)} named deploy steps, found {step_count}')
+
+          if active.count('\n  deploy:') != 1:
+              raise SystemExit('break-glass must keep exactly one deploy job')
+
+          for secret in ('CI_SIGNING_KEY:', 'SLACK_BOT_TOKEN:'):
+              position = active.find(secret)
+              if position == -1:
+                  raise SystemExit(f'{secret} must be declared')
+              required_position = active.find('required: true', position)
+              if required_position == -1:
+                  raise SystemExit(f'{secret} must remain required')
+
+          if 'bot_token: ${{ secrets.SLACK_BOT_TOKEN }}' not in active:
+              raise SystemExit('Notify Slack must use Slack bot credentials')
+          if 'channel: ${{ vars.SLACK_DEPLOY_CHANNEL }}' not in active:
+              raise SystemExit('Notify Slack must target the Slack deploy channel variable')
+
+          print('break-glass workflow contract OK')
+          PY
 
   canary-integration:
     name: canary anchor → rewrite → verify (sandbox)

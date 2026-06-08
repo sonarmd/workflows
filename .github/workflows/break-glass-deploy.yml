@@ -1,0 +1,204 @@
+name: Break Glass Deploy
+
+# Acceptance criteria for this emergency workflow:
+# - One reusable workflow_call job runs the deploy path in a strict sequence.
+# - The active deploy path is checkout -> build -> bundle -> sign -> resolve tag
+#   -> create tag -> create GitHub release -> upload bundle -> Slack bot message.
+# - No CI/CD gates, checks, tests, scans, canaries, artifact-cache probes,
+#   Confluence logging, deployment lifecycle automation, or webhook notification
+#   fallbacks are allowed in this workflow.
+# - Slack must use bot credentials only. The caller must provide SLACK_BOT_TOKEN
+#   and vars.SLACK_DEPLOY_CHANNEL; incoming webhooks are intentionally unsupported.
+# - Emergency tags are generated from env + DEPLOY_IDENTIFIER + version + next
+#   build number so repeated emergency deploys do not collide.
+#
+# Caller example for an application repo:
+#
+#   name: Break Glass Deploy
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         environment:
+#           description: stg or prd
+#           required: true
+#           type: choice
+#           options: [stg, prd]
+#         version:
+#           description: Release version to stamp, without v prefix. Use 404 for unknown.
+#           required: true
+#           type: string
+#   concurrency:
+#     group: break-glass-${{ github.ref_name }}-${{ inputs.environment }}
+#     cancel-in-progress: false
+#   permissions:
+#     contents: write
+#   jobs:
+#     deploy:
+#       uses: sonarmd/workflows/.github/workflows/break-glass-deploy.yml@main
+#       with:
+#         environment: ${{ inputs.environment }}
+#         version: ${{ inputs.version }}
+#         build: yarn build
+#       secrets: inherit
+#
+# Required repo variable: DEPLOY_IDENTIFIER (e.g. api, fe, mobile).
+# Required Slack repo variable: SLACK_DEPLOY_CHANNEL.
+# Required secrets: CI_SIGNING_KEY and SLACK_BOT_TOKEN.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment target: stg or prd.'
+        required: true
+        type: string
+      version:
+        description: 'Release version stamped into the tag, without a leading v. Use 404 for unknown emergency deploys.'
+        required: true
+        type: string
+      build:
+        description: 'Repo-specific build shell. No lint, checks, or tests are run unless the caller puts them here.'
+        required: true
+        type: string
+      timeout:
+        description: 'Emergency deploy timeout in minutes.'
+        required: false
+        type: number
+        default: 15
+      working_directory:
+        description: 'Directory used for the build command. deploy.json is still expected at the repository root.'
+        required: false
+        type: string
+        default: '.'
+      runs_on:
+        description: 'Runner label.'
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
+    secrets:
+      CI_SIGNING_KEY:
+        description: 'Base64-encoded armored GPG private key used to sign release.tar.gz.'
+        required: true
+      SLACK_BOT_TOKEN:
+        description: 'Slack bot token used for chat.postMessage deploy notifications.'
+        required: true
+
+# No permissions block. The caller is the source of truth. This workflow needs
+# contents:write to push tags, create releases, and upload release assets.
+
+jobs:
+  deploy:
+    name: build, bundle, sign, release, notify
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    outputs:
+      tag: ${{ steps.build-tag.outputs.tag }}
+      release_url: ${{ steps.release.outputs.release_url }}
+      artifact_url: ${{ steps.artifact.outputs.artifact_url }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+
+      - name: Bundle release
+        uses: sonarmd/workflows/actions/bundle-release@main
+
+      - name: Sign release
+        uses: sonarmd/workflows/actions/sign-release@main
+        with:
+          artifact_path: release.tar.gz
+          signing_key: ${{ secrets.CI_SIGNING_KEY }}
+
+      - name: Resolve tag
+        id: build-tag
+        uses: actions/github-script@v8
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          IDENTIFIER_VAR: ${{ vars.DEPLOY_IDENTIFIER }}
+          VERSION: ${{ inputs.version }}
+        with:
+          script: |
+            const deployEnv = process.env.DEPLOY_ENV;
+            const identifier = process.env.IDENTIFIER_VAR;
+            const version = process.env.VERSION;
+            const { owner, repo } = context.repo;
+
+            if (!['stg', 'prd'].includes(deployEnv)) {
+              core.setFailed(`break-glass: environment must be 'stg' or 'prd', got '${deployEnv}'`);
+              return;
+            }
+            if (!identifier) {
+              core.setFailed('break-glass: repo variable DEPLOY_IDENTIFIER is not set (repo Settings → Variables → Actions)');
+              return;
+            }
+            if (!version || !/^(?:\d+\.\d+\.\d+|404)$/.test(version)) {
+              core.setFailed(`break-glass: version must be X.Y.Z or 404, got '${version}'`);
+              return;
+            }
+
+            const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const prefix = `${deployEnv}-${identifier}-v${version}-b`;
+            const pattern = new RegExp(`^${escapeRegExp(prefix)}(\\d+)$`);
+            let page = 1;
+            let lastBuild = 0;
+
+            while (true) {
+              const { data } = await github.rest.repos.listReleases({
+                owner, repo, per_page: 100, page,
+              });
+              if (!Array.isArray(data) || data.length === 0) break;
+              for (const release of data) {
+                const match = release.tag_name.match(pattern);
+                if (match) lastBuild = Math.max(lastBuild, Number.parseInt(match[1], 10));
+              }
+              if (data.length < 100) break;
+              page += 1;
+            }
+
+            const build = lastBuild + 1;
+            const tag = `${prefix}${build}`;
+            core.notice(`break-glass: ${tag}`);
+            core.setOutput('environment', deployEnv);
+            core.setOutput('identifier', identifier);
+            core.setOutput('version', version);
+            core.setOutput('build', String(build));
+            core.setOutput('tag', tag);
+
+      - name: Create tag
+        uses: sonarmd/workflows/actions/create-tag@main
+        with:
+          tag: ${{ steps.build-tag.outputs.tag }}
+
+      - name: Create release
+        id: release
+        uses: sonarmd/workflows/actions/create-release@main
+        with:
+          tag: ${{ steps.build-tag.outputs.tag }}
+          environment: ${{ steps.build-tag.outputs.environment }}
+
+      - name: Upload bundle
+        id: artifact
+        uses: sonarmd/workflows/actions/upload-release-asset@main
+        with:
+          tag: ${{ steps.build-tag.outputs.tag }}
+          artifact_path: release.tar.gz
+          release_id: ${{ steps.release.outputs.release_id }}
+
+      - name: Notify Slack
+        uses: sonarmd/workflows/actions/slack-deploy-message@main
+        with:
+          bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ vars.SLACK_DEPLOY_CHANNEL }}
+          app: ${{ steps.build-tag.outputs.identifier }}
+          env: ${{ steps.build-tag.outputs.environment }}
+          tag: ${{ steps.build-tag.outputs.tag }}
+          sha: ${{ github.sha }}
+          artifact_url: ${{ steps.artifact.outputs.artifact_url }}
+          deployment_id: '0'
