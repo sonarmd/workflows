@@ -45,7 +45,7 @@ jobs:
   # `cicd / cd / cd` segment in the check-run display. The middle `cd`
   # segment comes from the orchestrator's lane name; this inner segment
   # is the leaf's action ("run the deploy steps").
-  run:
+  cd-core:
     name: run
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
@@ -53,16 +53,16 @@ jobs:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
       # to node24 now so actions that haven't republished (download-artifact,
       # github-script, 1password/load-secrets) run on node24.
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       # All secrets that the visibility surfaces and the existing failure
       # notifier need are GitHub repo/org secrets. Lift them to job-level env
       # vars here; downstream steps read them as env.X to match the existing
       # SLACK_WEBHOOK_URL precedent. 1password/load-secrets-action only
       # exports op:// refs, so direct GH secrets must come through this block.
-      SLACK_WEBHOOK_URL:   ${{ secrets.SLACK_WEBHOOK_URL }}
-      SLACK_BOT_TOKEN:     ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       CONFLUENCE_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
-      CONFLUENCE_TOKEN:    ${{ secrets.CONFLUENCE_TOKEN }}
+      CONFLUENCE_TOKEN: ${{ secrets.CONFLUENCE_TOKEN }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -72,7 +72,7 @@ jobs:
           fetch-depth: 2
 
       - name: Load secrets
-        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0 # v2
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         with:
@@ -208,9 +208,9 @@ jobs:
         id: build
         uses: actions/github-script@v8
         env:
-          ENV:        ${{ steps.ctx.outputs.env }}
+          ENV: ${{ steps.ctx.outputs.env }}
           IDENTIFIER: ${{ steps.ctx.outputs.identifier }}
-          VERSION:    ${{ steps.ctx.outputs.version }}
+          VERSION: ${{ steps.ctx.outputs.version }}
         with:
           script: |
             const env        = process.env.ENV;
@@ -308,7 +308,7 @@ jobs:
         id: artifact
         uses: sonarmd/workflows/actions/upload-release-asset@main
         with:
-          tag:        ${{ steps.build.outputs.tag }}
+          tag: ${{ steps.build.outputs.tag }}
           artifact_path: artifact/release.tar.gz
           release_id: ${{ steps.release.outputs.release_id }}
 
@@ -333,14 +333,14 @@ jobs:
         id: slack
         uses: sonarmd/workflows/actions/slack-deploy-message@main
         with:
-          bot_token:     ${{ secrets.SLACK_BOT_TOKEN }}
-          webhook_url:   ${{ env.SLACK_WEBHOOK_URL }}
-          channel:       ${{ vars.SLACK_DEPLOY_CHANNEL }}
-          app:           ${{ steps.ctx.outputs.identifier }}
-          env:           ${{ steps.ctx.outputs.env }}
-          tag:           ${{ steps.build.outputs.tag }}
-          sha:           ${{ github.sha }}
-          artifact_url:  ${{ steps.artifact.outputs.artifact_url }}
+          bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+          channel: ${{ vars.SLACK_DEPLOY_CHANNEL }}
+          app: ${{ steps.ctx.outputs.identifier }}
+          env: ${{ steps.ctx.outputs.env }}
+          tag: ${{ steps.build.outputs.tag }}
+          sha: ${{ github.sha }}
+          artifact_url: ${{ steps.artifact.outputs.artifact_url }}
           deployment_id: ${{ steps.deployment.outputs.deployment_id }}
 
       - name: Confluence Deploy Log append
@@ -349,14 +349,14 @@ jobs:
         continue-on-error: true
         uses: sonarmd/workflows/actions/confluence-deploy-log-append@main
         with:
-          base_url:    ${{ env.CONFLUENCE_BASE_URL }}
-          api_token:   ${{ env.CONFLUENCE_TOKEN }}
-          page_id:     ${{ vars.CONFLUENCE_DEPLOY_LOG_PAGE_ID }}
-          app:         ${{ steps.ctx.outputs.identifier }}
-          env:         ${{ steps.ctx.outputs.env }}
-          tag:         ${{ steps.build.outputs.tag }}
-          sha:         ${{ github.sha }}
-          deployer:    ${{ github.actor }}
+          base_url: ${{ env.CONFLUENCE_BASE_URL }}
+          api_token: ${{ env.CONFLUENCE_TOKEN }}
+          page_id: ${{ vars.CONFLUENCE_DEPLOY_LOG_PAGE_ID }}
+          app: ${{ steps.ctx.outputs.identifier }}
+          env: ${{ steps.ctx.outputs.env }}
+          tag: ${{ steps.build.outputs.tag }}
+          sha: ${{ github.sha }}
+          deployer: ${{ github.actor }}
 
       - name: Release lifecycle
         if: steps.ctx.outputs.env == 'prd'

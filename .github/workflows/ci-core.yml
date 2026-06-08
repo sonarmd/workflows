@@ -18,33 +18,33 @@ on:
   workflow_call:
     inputs:
       setup:
-        description: 'Repo-specific setup shell (system deps, etc.)'
+        description: "Repo-specific setup shell (system deps, etc.)"
         required: false
         type: string
-        default: ''
+        default: ""
       steps:
-        description: 'Repo-specific lint/test/build shell.'
+        description: "Repo-specific lint/test/build shell."
         required: true
         type: string
       test_report_path:
-        description: 'JUnit XML path.'
+        description: "JUnit XML path."
         required: false
         type: string
-        default: 'junit.xml'
+        default: "junit.xml"
       timeout:
-        description: 'Job timeout in minutes.'
+        description: "Job timeout in minutes."
         required: false
         type: number
         default: 15
       working_directory:
         required: false
         type: string
-        default: '.'
+        default: "."
       runs_on:
-        description: 'Runner label for the build job. Defaults to ubuntu-24.04-arm; override to ubuntu-24.04 for repos whose toolchain ships x86_64-only binaries (e.g. react-native hermesc).'
+        description: "Runner label for the build job. Defaults to ubuntu-24.04-arm; override to ubuntu-24.04 for repos whose toolchain ships x86_64-only binaries (e.g. react-native hermesc)."
         required: false
         type: string
-        default: 'ubuntu-24.04-arm'
+        default: "ubuntu-24.04-arm"
     secrets:
       CI_SIGNING_KEY:
         description: |
@@ -70,7 +70,7 @@ jobs:
   # `cicd / ci / ci` segment in the check-run display. The middle `ci`
   # segment comes from the orchestrator's lane name; this inner segment
   # is the leaf's action ("run repo-specific install / test / build").
-  run:
+  ci-core:
     name: run
     runs-on: ${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout }}
@@ -78,7 +78,7 @@ jobs:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
       # to node24 now so actions that haven't republished (setup-node@v4,
       # cache@v4, upload-artifact@v4) run on node24 without breakage.
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       # secrets context is unavailable in step `if` expressions; capture
       # presence as a plain env bool so the Sign release step can gate on it.
       HAS_SIGNING_KEY: ${{ secrets.CI_SIGNING_KEY != '' }}
