@@ -220,7 +220,7 @@
   ansible.builtin.debug:
     msg: |
       ECS Infrastructure Provisioned for {{ deploy_env }}
-      ─────────────────────────────────────────────────
+      -------------------------------------------------
       ECR:       {{ ecr_repo.repository.repositoryUri }}
       Cluster:   {{ ecs_cluster_name }}
       Service:   {{ ecs_service_name }}

@@ -7,7 +7,7 @@ name: Agent Architecture Review
 # Triggered as `workflow_call`. Caller chooses the trigger event
 # (`pull_request_target` recommended for fork safety + secrets).
 #
-# ── Caller example ─────────────────────────────────────────────────────
+# -- Caller example -----------------------------------------------------
 #
 #   # .github/workflows/agent-architecture-review.yml
 #   name: Agent Architecture Review
@@ -100,7 +100,7 @@ on:
           Override the agent-reviewer image. Accepts a full image ref under
           `ghcr.io/sonarmd/agent-reviewer`, with an optional `:tag` or
           `@sha256:<digest>` suffix. Digest pinning is the safer choice for
-          supply-chain integrity. Empty (default) → `ghcr.io/sonarmd/agent-reviewer:latest`.
+          supply-chain integrity. Empty (default) -> `ghcr.io/sonarmd/agent-reviewer:latest`.
           Examples:
             ghcr.io/sonarmd/agent-reviewer:sha-abc123def456
             ghcr.io/sonarmd/agent-reviewer@sha256:0123...feed
@@ -140,7 +140,7 @@ env:
   AGENT_REVIEWER_IMAGE: ghcr.io/sonarmd/agent-reviewer
 
 jobs:
-  # ─── STAGE 0: PREPARE ─────────────────────────────────────────────────
+  # --- STAGE 0: PREPARE -------------------------------------------------
   # Plain runner. Read-only permissions. Fetches the PR diff + metadata
   # via the GitHub API and uploads them as an artifact. NEVER checks out
   # PR head as code (unless allow_pr_head_checkout is explicitly true).
@@ -175,7 +175,7 @@ jobs:
         # image and exfiltrate those secrets. We allow only:
         #   - the empty default (resolves to ghcr.io/sonarmd/agent-reviewer:latest)
         #   - any `:tag` under ghcr.io/sonarmd/agent-reviewer
-        #   - any `@sha256:<64-hex>` digest under the same name (preferred —
+        #   - any `@sha256:<64-hex>` digest under the same name (preferred -
         #     digest pinning is immutable and the strongest supply-chain
         #     posture).
         env:
@@ -262,12 +262,12 @@ jobs:
           echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
           echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
 
-          # Diff — Accept: application/vnd.github.v3.diff format
+          # Diff - Accept: application/vnd.github.v3.diff format
           gh api -H "Accept: application/vnd.github.v3.diff" \
             "repos/${REPO}/pulls/${PR_NUMBER}" > work/diff.patch
 
           BYTES=$(wc -c < work/diff.patch)
-          echo "::notice::PR #${PR_NUMBER} — head ${HEAD_SHA:0:12}, diff ${BYTES} bytes"
+          echo "::notice::PR #${PR_NUMBER} - head ${HEAD_SHA:0:12}, diff ${BYTES} bytes"
 
       - name: Pre-compute architecture analysis
         # Run the analyzer scripts against the BASE checkout + diff and
@@ -275,7 +275,7 @@ jobs:
         # agent QUANTITATIVE grounding (line counts, layer classifications,
         # dependency-direction violations, pattern-fit neighbors) without
         # ever exposing the LLM to tool execution.
-        # Failure here MUST NOT block the workflow — if the analyzers
+        # Failure here MUST NOT block the workflow - if the analyzers
         # crash, the agent still gets to do a text-only review.
         continue-on-error: true
         uses: ./.sonarmd-workflows/actions/agent-arch-review-analyze
@@ -291,7 +291,7 @@ jobs:
           path: work/
           retention-days: 7
 
-  # ─── STAGE 1: AGENT ───────────────────────────────────────────────────
+  # --- STAGE 1: AGENT ---------------------------------------------------
   # Container runner. Only packages:read so the runner can pull the
   # agent-reviewer image from GHCR. No other GitHub scopes. The agent
   # itself runs inside the container with ANTHROPIC_API_KEY only - no
@@ -345,7 +345,7 @@ jobs:
           path: /work/findings.json
           retention-days: 14
 
-  # ─── STAGE 2: PUBLISH ─────────────────────────────────────────────────
+  # --- STAGE 2: PUBLISH -------------------------------------------------
   # Plain runner. Scoped write permissions. NO LLM access.
   # Validates findings + diff positions, posts comments, labels, check.
   publish:
@@ -393,7 +393,7 @@ jobs:
         # etc.), fabricate a malformed-status one so the publisher still
         # posts a neutral check + "review unavailable" comment rather than
         # the whole publish job exploding. hashFiles() returns empty only
-        # when the file doesn't exist — we additionally check for empty
+        # when the file doesn't exist - we additionally check for empty
         # content via the run step's own `[[ -s ]]` test, which catches
         # the zero-byte case.
         env:
@@ -408,7 +408,7 @@ jobs:
             echo "::notice::findings.json present (size $(wc -c < work/findings.json) bytes); no synthesis needed"
             exit 0
           fi
-          # Preserve the audit trail — record what mode/overlays were
+          # Preserve the audit trail - record what mode/overlays were
           # requested even when degradation fires. Otherwise compliance
           # auditors looking at check-run history see every degraded run
           # as 'architecture / []' regardless of what the operator
@@ -430,12 +430,12 @@ jobs:
               review_mode: $mode,
               overlays_applied: $overlays,
               parser_status: "malformed",
-              summary_markdown: "Agent review was unavailable for this PR. The agent job did not complete successfully — see the workflow run logs for details.",
+              summary_markdown: "Agent review was unavailable for this PR. The agent job did not complete successfully - see the workflow run logs for details.",
               labels: [],
               categories_present: [],
               findings: []
             }' > work/findings.json
-          echo "::warning::synthesized fallback findings.json — review-agent job did not upload a usable one"
+          echo "::warning::synthesized fallback findings.json - review-agent job did not upload a usable one"
 
       - name: Publish (Stage 2)
         uses: ./.sonarmd-workflows/actions/agent-arch-review-publish

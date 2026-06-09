@@ -1,4 +1,4 @@
-# Overlay — SECURITY
+# Overlay - SECURITY
 
 Apply the security review lens. You are looking for exploitable bugs and
 policy violations, not theoretical hardening.
@@ -56,13 +56,13 @@ policy violations, not theoretical hardening.
 
 ## Severity calibration for this overlay
 
-- `critical` — active exploit possible from any caller (anonymous IDOR,
+- `critical` - active exploit possible from any caller (anonymous IDOR,
   command injection on a public endpoint, hardcoded prod secret in source).
-- `high` — exploit possible with some constraint (authenticated IDOR,
+- `high` - exploit possible with some constraint (authenticated IDOR,
   XSS on internal page, secret in log that ships off-system).
-- `medium` — security weakness without an obvious exploit path
+- `medium` - security weakness without an obvious exploit path
   (weak crypto, missing rate limit, over-permissive CORS).
-- `low` — defense-in-depth gap (missing security header).
+- `low` - defense-in-depth gap (missing security header).
 
 ## Output discipline
 

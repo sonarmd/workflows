@@ -6,7 +6,7 @@ description: |
   yarn/npm install) when available; sensible defaults apply otherwise.
 
   Findings are emitted to the workflow-run logs (no SARIF upload, no
-  Security tab — that's GHAS, which this replaces). Failure semantics
+  Security tab - that's GHAS, which this replaces). Failure semantics
   per scanner:
     - Semgrep: --severity ERROR/WARNING (registry rule severities)
     - Gitleaks: any leak fails when fail_on_findings=true
@@ -52,11 +52,11 @@ runs:
           echo "::notice::security-scan: using configs from ${ROOT}"
           echo "installed=true" >> "$GITHUB_OUTPUT"
         else
-          echo "::notice::security-scan: @sonarmd/star-config not found at ${ROOT} — using defaults"
+          echo "::notice::security-scan: @sonarmd/star-config not found at ${ROOT} - using defaults"
           echo "installed=false" >> "$GITHUB_OUTPUT"
         fi
 
-    # ────────────────────────────── Semgrep ──────────────────────────────
+    # ------------------------------ Semgrep ------------------------------
     - name: Install Semgrep
       if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' semgrep ') }}
       shell: bash
@@ -87,7 +87,7 @@ runs:
         echo "security-scan/semgrep: semgrep scan ${ARGS[*]} --severity=ERROR --severity=WARNING ."
         semgrep scan "${ARGS[@]}" --severity=ERROR --severity=WARNING .
 
-    # ────────────────────────────── Gitleaks ─────────────────────────────
+    # ------------------------------ Gitleaks -----------------------------
     - name: Run Gitleaks
       if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' gitleaks ') }}
       shell: bash
@@ -98,7 +98,7 @@ runs:
         GITLEAKS_VERSION: ${{ inputs.gitleaks_version }}
       run: |
         set -euo pipefail
-        # Download the gitleaks binary — avoids depending on an upstream
+        # Download the gitleaks binary - avoids depending on an upstream
         # third-party action's SHA, keeps the action self-contained.
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
         ARCH=$(uname -m)
@@ -133,7 +133,7 @@ runs:
         echo "security-scan/gitleaks: gitleaks ${ARGS[*]}"
         ./gitleaks "${ARGS[@]}"
 
-    # ─────────────────────────────── Trivy ───────────────────────────────
+    # ------------------------------- Trivy -------------------------------
     - name: Run Trivy
       if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' trivy ') }}
       uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0

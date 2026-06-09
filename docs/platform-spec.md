@@ -7,14 +7,14 @@ Authoritative, single-source specification. Implementation must match this docum
 ## 1. Architecture
 
 ```
-PR → ci-core (setup + steps + validate + bundle-pipeline) → merge
-  → cd-core (tag + release + deploy <env> <identifier> <url>) → Ansible
+PR -> ci-core (setup + steps + validate + bundle-pipeline) -> merge
+  -> cd-core (tag + release + deploy <env> <identifier> <url>) -> Ansible
 ```
 
 Three workflows:
-- `ci-core.yml` — validation, packaging, release evidence
-- `cd-core.yml` — tag, release, handoff to Ansible via Slack
-- `break-glass.yml` — emergency recovery for trusted artifacts
+- `ci-core.yml` - validation, packaging, release evidence
+- `cd-core.yml` - tag, release, handoff to Ansible via Slack
+- `break-glass.yml` - emergency recovery for trusted artifacts
 
 GitHub Actions is NOT the deploy authority. Ansible is.
 
@@ -30,7 +30,7 @@ GitHub Actions is NOT the deploy authority. Ansible is.
 5. Produce bundle output
 
 ### Repos MAY NOT control:
-- **Deploy identity (identifier)** — platform-owned via `.github/repo-identity.yml`
+- **Deploy identity (identifier)** - platform-owned via `.github/repo-identity.yml`
 - Environment selection
 - Slack routing or channels
 - Deployment behavior
@@ -124,18 +124,18 @@ File MUST exist at repo root. Name MUST be `deploy.json`.
 | `bundles[].name` | string | yes | Unique bundle name |
 | `bundles[].path` | string | yes | Bundle directory path relative to build root |
 | `bundles[].target` | enum | yes | `s3`, `ec2`, `eas`, `cdk`, `lambda`, `fargate` |
-| `bundles[].hosts` | object | yes | Label → Ansible inventory match key |
+| `bundles[].hosts` | object | yes | Label -> Ansible inventory match key |
 
 ### Rules
 
-- `app` — required, non-empty string
-- `identifier` — required, pattern `^[a-z][a-z0-9_-]{0,31}$`
-- `bundles` — required, minimum 1 item
-- `bundles[].name` — unique within manifest, pattern `^[a-z][a-z0-9_-]{0,63}$`
-- `bundles[].path` — non-empty, relative path
-- `bundles[].target` — ONLY: `s3`, `ec2`, `eas`, `cdk`, `lambda`, `fargate`. Anything else → FAIL
-- `bundles[].hosts` — required, non-empty object. Values must be unique within bundle. Values are opaque Ansible inventory match keys — NOT DNS, NOT networking
-- Template variables — ONLY `${env}` is allowed. No other dynamic templating.
+- `app` - required, non-empty string
+- `identifier` - required, pattern `^[a-z][a-z0-9_-]{0,31}$`
+- `bundles` - required, minimum 1 item
+- `bundles[].name` - unique within manifest, pattern `^[a-z][a-z0-9_-]{0,63}$`
+- `bundles[].path` - non-empty, relative path
+- `bundles[].target` - ONLY: `s3`, `ec2`, `eas`, `cdk`, `lambda`, `fargate`. Anything else -> FAIL
+- `bundles[].hosts` - required, non-empty object. Values must be unique within bundle. Values are opaque Ansible inventory match keys - NOT DNS, NOT networking
+- Template variables - ONLY `${env}` is allowed. No other dynamic templating.
 - `additionalProperties: false` at all levels
 
 ---
@@ -144,14 +144,14 @@ File MUST exist at repo root. Name MUST be `deploy.json`.
 
 The repo produces build output in a build root directory (default: `./dist`).
 
-### Mode 1 — Multi-bundle
+### Mode 1 - Multi-bundle
 
 If the build root contains subdirectories:
 ```
 ./dist/
-  api/          → bundle "api"
-  lambda1/      → bundle "lambda1"
-  lambda2/      → bundle "lambda2"
+  api/          -> bundle "api"
+  lambda1/      -> bundle "lambda1"
+  lambda2/      -> bundle "lambda2"
 ```
 
 Rules:
@@ -160,9 +160,9 @@ Rules:
 - Each bundle = exactly one target
 - Every declared bundle path MUST exist
 - Every actual subdirectory MUST be declared
-- Mismatch in either direction → FAIL
+- Mismatch in either direction -> FAIL
 
-### Mode 2 — Single-bundle
+### Mode 2 - Single-bundle
 
 If the build root contains NO subdirectories:
 ```
@@ -176,7 +176,7 @@ Rules:
 - Treated as ONE bundle
 - deploy.json MUST contain exactly ONE bundle
 - That bundle's `path` is the build root itself
-- If multiple bundles are declared → FAIL
+- If multiple bundles are declared -> FAIL
 
 ---
 
@@ -193,10 +193,10 @@ Exact sequence (normative):
 5.  run-shell-block(setup)
 6.  run-shell-block(steps)
 
-7.  validate-release-contract    ← schema validation
-8.  validate-build-output        ← structure alignment
+7.  validate-release-contract    <- schema validation
+8.  validate-build-output        <- structure alignment
 
-9.  bundle-pipeline              ← per-bundle packaging
+9.  bundle-pipeline              <- per-bundle packaging
 
 10. close-ci
 ```
@@ -245,7 +245,7 @@ for each bundle in deploy.json:
        "timestamp": "<iso>"
      }
 
-  9. tar bundle → ./release/<name>.tar.gz
+  9. tar bundle -> ./release/<name>.tar.gz
  10. emit: ./release/<name>.sbom.json
  11. emit: ./release/<name>.sha512
  12. emit: ./release/<name>.checksum
@@ -255,7 +255,7 @@ for each bundle in deploy.json:
 after loop:
 
   14. assert all declared bundles were processed
-  15. tar ./release → release.tar.gz
+  15. tar ./release -> release.tar.gz
   16. generate release.tar.gz.sha512
   17. generate release.tar.gz.checksum
   18. sign release.tar.gz (Sigstore attestation)
@@ -279,7 +279,7 @@ after loop:
 
 ### Outer release:
 ```
-release.tar.gz          ← contains entire ./release/ directory
+release.tar.gz          <- contains entire ./release/ directory
 release.tar.gz.sha512
 release.tar.gz.checksum
 ```
@@ -326,10 +326,10 @@ release/v4.2.3
 Pattern: `^release\/v([0-9]+\.[0-9]+\.[0-9]+)$`
 
 ### Version authority
-- **Staging**: release branch name is the version source (`release/v1.0.0` → `1.0.0`)
+- **Staging**: release branch name is the version source (`release/v1.0.0` -> `1.0.0`)
 - **Production**: version is derived from the **merged release branch**, NOT from
   "latest staging tag". Detection order:
-  1. GitHub PR event source branch (`github.event.pull_request.head.ref`) — preferred
+  1. GitHub PR event source branch (`github.event.pull_request.head.ref`) - preferred
   2. Merge commit message parsing (fallback)
   3. Second parent branch inspection (fallback)
   4. Merged branch containment (last resort)
@@ -364,7 +364,7 @@ Pattern: `^release\/v([0-9]+\.[0-9]+\.[0-9]+)$`
 
 ### Next release branch
 After successful production CD:
-- Current: v1.0.0 → Next: v1.1.0 (bump minor, zero patch)
+- Current: v1.0.0 -> Next: v1.1.0 (bump minor, zero patch)
 - Creates `release/v1.1.0` explicitly from `origin/master`
 - Skips if branch already exists
 - Initial commit tagged `[skip ci]`

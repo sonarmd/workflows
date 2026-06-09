@@ -5,7 +5,7 @@ description: |
   Stage 1 agent reads as grounding context for its review.
 
   Runs in the prepare job (Ubuntu, full toolchain, BASE checkout present)
-  — NOT in the agent container. The agent stays tool-free; the
+  - NOT in the agent container. The agent stays tool-free; the
   capability lives in the analyzers that run before the LLM is invoked.
 
   Scripts shipped:
@@ -17,7 +17,7 @@ description: |
     - dependency-delta.sh       detects new package-manifest entries
     - byte-scan.sh              flags suspicious bytes / grammar violations
                                   via vendored guarded-fs (lib/guarded-fs/)
-    - run-all.sh                orchestrator → analysis.md
+    - run-all.sh                orchestrator -> analysis.md
 
   Vendored library:
     - lib/guarded-fs/           multi-grammar byte/grammar scanner; source

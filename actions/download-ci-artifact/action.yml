@@ -3,11 +3,11 @@ description: |
   Downloads the release artifact produced by ci-core's bundle-release step.
 
   Two modes:
-    1. In-run: ci-core ran in the current workflow run (release/* push) —
+    1. In-run: ci-core ran in the current workflow run (release/* push) -
        artifact is uploaded in this run. Default download-artifact@v4 picks
        it up with no run-id.
     2. Cross-run: ci-core was skipped in the current run (master/main
-       promote, because CI already passed on the release branch) — find
+       promote, because CI already passed on the release branch) - find
        the prior successful run for this SHA and download from it.
 
 inputs:
@@ -31,7 +31,7 @@ outputs:
 runs:
   using: composite
   steps:
-    # ── Mode 1: try in-run download (no run-id = current run) ─────────────
+    # -- Mode 1: try in-run download (no run-id = current run) -------------
     - name: Download artifact (in-run)
       id: in_run
       continue-on-error: true
@@ -40,7 +40,7 @@ runs:
         name: ${{ inputs.artifact_name }}
         path: ${{ inputs.output_dir }}
 
-    # ── Mode 2: fall back to cross-run lookup by SHA ──────────────────────
+    # -- Mode 2: fall back to cross-run lookup by SHA ----------------------
     - name: Discover prior CI run for SHA
       id: find
       if: steps.in_run.outcome == 'failure'
@@ -60,7 +60,7 @@ runs:
 
           // Any completed+successful run that isn't the current run and
           // produced artifacts is a candidate. We don't filter by workflow
-          // name — caller repos name their workflow whatever they want
+          // name - caller repos name their workflow whatever they want
           // (CI, CI/CD, ci.yml, etc.).
           const candidates = data.workflow_runs
             .filter(r => r.id !== context.runId

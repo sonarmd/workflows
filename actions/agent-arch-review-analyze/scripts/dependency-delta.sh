@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dependency-delta.sh — detect additions to package manifests in a PR
+# dependency-delta.sh - detect additions to package manifests in a PR
 # diff. Useful for grounding the dependency-judge lens: every new dep
 # is a long-term commitment that deserves explicit consideration.
 #

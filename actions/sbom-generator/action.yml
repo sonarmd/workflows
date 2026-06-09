@@ -3,7 +3,7 @@ description: |
   Generates a CycloneDX Software Bill of Materials for release output.
   Auto-detects the project type (Node.js or Python) and runs the
   appropriate SBOM generator. SBOM generation failure is a warning,
-  not an error — it will not block the pipeline.
+  not an error - it will not block the pipeline.
 
 inputs:
   output_file:
@@ -36,7 +36,7 @@ runs:
         GENERATED=false
         COMPONENT_COUNT=0
 
-        # ── Node.js ──────────────────────────────────────────────
+        # -- Node.js ----------------------------------------------
         if [ -f package.json ]; then
           echo "sbom-generator: detected Node.js project, generating CycloneDX SBOM..."
           if npx --yes @cyclonedx/cyclonedx-npm --output-file "$OUTPUT_FILE" 2>/dev/null; then
@@ -47,10 +47,10 @@ runs:
             GENERATED=true
             echo "sbom-generator: $COMPONENT_COUNT components"
           else
-            echo "::warning::sbom-generator: CycloneDX generation failed — continuing without SBOM"
+            echo "::warning::sbom-generator: CycloneDX generation failed - continuing without SBOM"
           fi
 
-        # ── Python ───────────────────────────────────────────────
+        # -- Python -----------------------------------------------
         elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
           echo "sbom-generator: detected Python project, generating CycloneDX SBOM..."
           if pip install --quiet cyclonedx-bom 2>/dev/null \
@@ -62,12 +62,12 @@ runs:
             GENERATED=true
             echo "sbom-generator: $COMPONENT_COUNT components"
           else
-            echo "::warning::sbom-generator: CycloneDX generation failed — continuing without SBOM"
+            echo "::warning::sbom-generator: CycloneDX generation failed - continuing without SBOM"
           fi
 
-        # ── Unknown ──────────────────────────────────────────────
+        # -- Unknown ----------------------------------------------
         else
-          echo "sbom-generator: no supported package manager detected — skipping SBOM"
+          echo "sbom-generator: no supported package manager detected - skipping SBOM"
         fi
 
         echo "component_count=$COMPONENT_COUNT" >> "$GITHUB_OUTPUT"

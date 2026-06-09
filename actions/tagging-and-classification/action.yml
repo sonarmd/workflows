@@ -41,7 +41,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # ── Find base ref ────────────────────────────────────────
+        # -- Find base ref ----------------------------------------
         if [ -z "$BASE_REF" ]; then
           # Find the latest tag for this identifier, or any tag
           if [ -n "$IDENTIFIER" ]; then
@@ -51,14 +51,14 @@ runs:
             BASE_REF=$(git tag -l 'v[0-9]*' --sort=-version:refname 2>/dev/null | head -1 || true)
           fi
           if [ -z "$BASE_REF" ]; then
-            # No tags at all — use first commit
+            # No tags at all - use first commit
             BASE_REF=$(git rev-list --max-parents=0 HEAD 2>/dev/null | head -1 || echo "HEAD~10")
           fi
         fi
 
         echo "tagging-and-classification: base ref = $BASE_REF"
 
-        # ── Parse commits ────────────────────────────────────────
+        # -- Parse commits ----------------------------------------
         RESULT=$(python3 <<'PYEOF'
         import subprocess, json, re, hashlib
 

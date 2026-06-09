@@ -9,7 +9,7 @@ name: Agent Architecture Review (org default)
 #
 # To enable org-wide:
 #   1. github.com/organizations/sonarmd/settings/actions
-#   2. Required workflows → Add workflow
+#   2. Required workflows -> Add workflow
 #   3. Source: sonarmd/workflows
 #   4. Path: .github/workflows/agent-architecture-review-default.yml
 #   5. Scope: choose repositories

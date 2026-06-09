@@ -1,10 +1,10 @@
 name: CI/CD
 
-# ── Caller example ────────────────────────────────────────────────────────
+# -- Caller example --------------------------------------------------------
 #
 # The caller is the SINGLE source of truth for GITHUB_TOKEN permissions.
 # This orchestrator (and ci-core / cd-core) declares no permissions of its
-# own — every internal job inherits the caller's grant. Add a new scope to
+# own - every internal job inherits the caller's grant. Add a new scope to
 # the caller's workflow-level `permissions:` block and the orchestrator can
 # use it; no change here required.
 #
@@ -16,7 +16,7 @@ name: CI/CD
 #       branches: [master, 'release/**']
 #     push:
 #       branches: ['release/**', master]
-#       tags: ['prd-*-v*-b*']      # required — fires cut_release after a prd deploy
+#       tags: ['prd-*-v*-b*']      # required - fires cut_release after a prd deploy
 #   concurrency:
 #     group: cicd-${{ github.event.pull_request.number || github.ref_name }}
 #     cancel-in-progress: true
@@ -39,10 +39,10 @@ name: CI/CD
 #           yarn build
 #       secrets: inherit
 #
-# Event routing (automatic — no config needed):
-#   pull_request / merge_group  → CI only
-#   push to release/**          → check CI status → CI (if needed) → CD (stg)
-#   push to master              → check CI status → CI (if needed) → CD (prd)
+# Event routing (automatic - no config needed):
+#   pull_request / merge_group  -> CI only
+#   push to release/**          -> check CI status -> CI (if needed) -> CD (stg)
+#   push to master              -> check CI status -> CI (if needed) -> CD (prd)
 
 on:
   workflow_call:
@@ -76,7 +76,7 @@ on:
         type: string
         default: 'ubuntu-24.04-arm'
 
-# No `permissions:` block — the caller is the single source of truth for
+# No `permissions:` block - the caller is the single source of truth for
 # GITHUB_TOKEN scopes. Every job below inherits the caller's grant. See the
 # header-block caller example for the scopes the caller must offer for the
 # full CI/CD path (CI publish + CD pull from GHCR + anchor tag push + cut
@@ -84,11 +84,11 @@ on:
 
 jobs:
 
-  # ── Check: only runs on push events ──────────────────────────────────────
+  # -- Check: only runs on push events --------------------------------------
   # Looks for a prior passing CI run on this commit SHA.
-  # Outputs:  none     → no CI found, run CI then CD
-  #           success  → CI already passed, run CD only
-  #           failure  → CI failed/cancelled, cancel this run
+  # Outputs:  none     -> no CI found, run CI then CD
+  #           success  -> CI already passed, run CD only
+  #           failure  -> CI failed/cancelled, cancel this run
   check:
     if: github.event_name == 'push' && github.ref_type == 'branch'
     runs-on: ubuntu-24.04-arm
@@ -117,23 +117,23 @@ jobs:
             const run = ciRuns[ciRuns.length - 1];
 
             if (!run) {
-              core.info('check: no CI run found — will run CI then CD');
+              core.info('check: no CI run found - will run CI then CD');
               core.setOutput('status', 'none');
               return;
             }
 
             if (run.status === 'completed' && run.conclusion === 'success') {
-              core.info(`check: CI already passed (run ${run.id}) — will run CD only`);
+              core.info(`check: CI already passed (run ${run.id}) - will run CD only`);
               core.setOutput('status', 'success');
             } else if (run.status === 'completed') {
-              core.info(`check: CI concluded '${run.conclusion}' — cancelling`);
+              core.info(`check: CI concluded '${run.conclusion}' - cancelling`);
               core.setOutput('status', 'failure');
             } else {
-              core.info(`check: CI is in progress (${run.status}) — will run CI+CD from scratch`);
+              core.info(`check: CI is in progress (${run.status}) - will run CI+CD from scratch`);
               core.setOutput('status', 'none');
             }
 
-  # ── CI: runs on PR/merge_group, or on push when no prior CI ──────────────
+  # -- CI: runs on PR/merge_group, or on push when no prior CI --------------
   # Job-level `timeout-minutes` is not valid on reusable-workflow callers
   # (jobs that use `uses:`). The 10-minute cap lives inside ci-core.yml's
   # actual run job via `timeout-minutes: ${{ inputs.timeout }}` (default
@@ -157,13 +157,13 @@ jobs:
       runs_on:          ${{ inputs.runs_on }}
     secrets: inherit
 
-  # ── Canary verify: history-integrity tripwire ───────────────────────────
+  # -- Canary verify: history-integrity tripwire ---------------------------
   # Runs on push to a branch BEFORE CD. Reads `.github/history-canaries.txt`
   # in the caller and verifies every anchored SHA is still reachable from
-  # HEAD. If any have vanished, fails the run and blocks CD — history was
+  # HEAD. If any have vanished, fails the run and blocks CD - history was
   # rewritten and we refuse to ship a regression.
   # No-ops gracefully if the caller has no canary file (un-seeded repo).
-  # Runs on every event (PR, merge_group, push) in parallel with `ci` — no
+  # Runs on every event (PR, merge_group, push) in parallel with `ci` - no
   # `needs:` so CI is never gated by canary completion. Mark this job as a
   # required status check in each caller's branch protection so merges and
   # CD both refuse to proceed on regression.
@@ -187,11 +187,11 @@ jobs:
           app-id: ${{ vars.CANARY_APP_ID }}
           app-private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
 
-  # ── Canary reconcile: auto-build a recovery PR on regression ─────────────
+  # -- Canary reconcile: auto-build a recovery PR on regression -------------
   # Runs only when canary_verify finds orphaned anchors. Cherry-picks the
   # dropped commits onto a fresh `recovery/canary-<timestamp>` branch, pushes
   # it, and opens a draft PR assigned to the CODEOWNER. CD remains blocked
-  # — this just removes manual cherry-picking work, it doesn't bypass review.
+  # - this just removes manual cherry-picking work, it doesn't bypass review.
   canary_reconcile:
     needs: [canary_verify]
     if: |
@@ -211,12 +211,12 @@ jobs:
           app-id: ${{ vars.CANARY_APP_ID }}
           app-private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
 
-  # ── CD: runs on branch push only, after CI passes and canaries verify ────
+  # -- CD: runs on branch push only, after CI passes and canaries verify ----
   # cd-core handles the promote-or-generate logic internally:
-  #   release/** → always cuts a new prerelease (stg).
-  #   master/main → finds the prerelease on HEAD's ancestry and promotes it
-  #                 to a prd release. If none found, fails loudly — the
-  #                 release/vX.Y.Z → master flow must precede master deploys.
+  #   release/** -> always cuts a new prerelease (stg).
+  #   master/main -> finds the prerelease on HEAD's ancestry and promotes it
+  #                 to a prd release. If none found, fails loudly - the
+  #                 release/vX.Y.Z -> master flow must precede master deploys.
   # Tag pushes are excluded here so the prd tag created by cd-core fires only
   # `cut_release` (below) and never re-enters CD in a loop.
   # Same rule as above: no `timeout-minutes` on reusable-workflow callers.
@@ -231,17 +231,17 @@ jobs:
       needs.check.outputs.ci_status != 'failure' &&
       needs.canary_verify.result == 'success' &&
       (needs.ci.result == 'success' || needs.ci.result == 'skipped')
-    # cd-core takes no inputs — discovers the CI artifact by SHA.
+    # cd-core takes no inputs - discovers the CI artifact by SHA.
     uses: sonarmd/workflows/.github/workflows/cd-core.yml@main
     secrets: inherit
 
-  # ── Canary anchor: tag every commit on main with an immutable anchor ─────
+  # -- Canary anchor: tag every commit on main with an immutable anchor -----
   # After a successful CD on a branch push, scan the commits that landed and
   # push `anchor/<short-sha>-<reason>` for each. Reason encodes a notable
   # property (merge / subject-marker / critical-path / large-diff / tagged)
-  # or defaults to `commit`. Full commit-level coverage — no gaps for a
+  # or defaults to `commit`. Full commit-level coverage - no gaps for a
   # rewrite to hide in.
-  # Tags are immutable once created — enforced by the caller's tag protection
+  # Tags are immutable once created - enforced by the caller's tag protection
   # ruleset on `refs/tags/anchor/*` (no update, no deletion except by the
   # configured bypass actor). This action never modifies repo files.
   # Requires caller to use rebase merge (not squash) so individual commits
@@ -257,7 +257,7 @@ jobs:
     timeout-minutes: 3
     # Requires `contents: write` from the caller to push tags (GH treats
     # refs as contents). The caller's tag ruleset on refs/tags/anchor/*
-    # narrows that grant to creation-only — update and deletion are blocked
+    # narrows that grant to creation-only - update and deletion are blocked
     # at the platform level even when the workflow has write.
     steps:
       - uses: sonarmd/workflows/actions/canary-anchor@main
@@ -265,11 +265,11 @@ jobs:
           before-sha: ${{ github.event.before }}
           after-sha:  ${{ github.sha }}
 
-  # ── Cut next release branch (triggered by prd tag push) ──────────────────
+  # -- Cut next release branch (triggered by prd tag push) ------------------
   # CD creates the tag `prd-<identifier>-vX.Y.Z-bN`. That tag push fires this
   # job, which parses the version out of the tag, bumps it, and cuts
   # `release/v<next>` from the default branch. The tag IS how we know the
-  # version that just shipped — and therefore what to cut next.
+  # version that just shipped - and therefore what to cut next.
   cut_release:
     if: |
       github.event_name == 'push' &&
@@ -290,11 +290,11 @@ jobs:
           script: |
             const identifier = process.env.IDENTIFIER_VAR;
             if (!identifier) {
-              core.setFailed('cut_release: repo variable DEPLOY_IDENTIFIER is not set (repo Settings → Variables → Actions)');
+              core.setFailed('cut_release: repo variable DEPLOY_IDENTIFIER is not set (repo Settings -> Variables -> Actions)');
               return;
             }
 
-            // Parse the tag itself — this IS the source of truth for what
+            // Parse the tag itself - this IS the source of truth for what
             // version just shipped. `context.ref` is `refs/tags/<name>`.
             const tagName = context.ref.replace(/^refs\/tags\//, '');
             const m = tagName.match(/^prd-([^-]+)-v(\d+\.\d+\.\d+)-b\d+$/);
@@ -303,7 +303,7 @@ jobs:
               return;
             }
             if (m[1] !== identifier) {
-              core.setFailed(`cut_release: tag identifier '${m[1]}' != repo DEPLOY_IDENTIFIER '${identifier}' — refusing to act on a non-matching tag`);
+              core.setFailed(`cut_release: tag identifier '${m[1]}' != repo DEPLOY_IDENTIFIER '${identifier}' - refusing to act on a non-matching tag`);
               return;
             }
             const shippedVersion = m[2];
@@ -375,7 +375,7 @@ jobs:
           set -euo pipefail
           BRANCH="release/v${NEXT_VERSION}"
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            echo "::notice::cut_release: $BRANCH already exists — no-op"
+            echo "::notice::cut_release: $BRANCH already exists - no-op"
             exit 0
           fi
           git checkout -b "$BRANCH"

@@ -42,7 +42,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # ── Find previous tag if not provided ────────────────────
+        # -- Find previous tag if not provided --------------------
         if [ -z "$PREVIOUS_TAG" ]; then
           if [ -n "$IDENTIFIER" ]; then
             PREVIOUS_TAG=$(git tag -l "*-${IDENTIFIER}-*" --sort=-version:refname 2>/dev/null | head -1 || true)
@@ -134,7 +134,7 @@ runs:
                 continue
             md_lines.append(f"### {cat_name}\n")
             for e in items:
-                md_lines.append(f"- [{e['id']}] {e['subject']} ({e['sha']}) — {e['author']}")
+                md_lines.append(f"- [{e['id']}] {e['subject']} ({e['sha']}) - {e['author']}")
             md_lines.append("")
 
         md_content = "\n".join(md_lines)

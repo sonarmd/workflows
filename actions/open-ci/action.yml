@@ -38,7 +38,7 @@ runs:
         set -euo pipefail
         SHOULD_SKIP=false
 
-        # ── Circuit breaker: check last 3 CI runs ───────────────
+        # -- Circuit breaker: check last 3 CI runs ---------------
         CI_FILE=$(gh api "repos/${REPO}/actions/workflows" \
           --jq '.workflows[] | select(.name == "CI") | .path' 2>/dev/null | head -1 || true)
 
@@ -48,7 +48,7 @@ runs:
             --jq '[.workflow_runs[].conclusion] | join(",")' 2>/dev/null || echo "")
 
           if [ "$CONCLUSIONS" = "failure,failure,failure" ]; then
-            echo "::warning::open-ci: Circuit breaker tripped — 3 consecutive CI failures on ${BRANCH}."
+            echo "::warning::open-ci: Circuit breaker tripped - 3 consecutive CI failures on ${BRANCH}."
             echo "::warning::Fix your code locally before pushing again."
             SHOULD_SKIP=true
 
@@ -64,12 +64,12 @@ runs:
           fi
         fi
 
-        # ── Deploy manifest check ────────────────────────────────
+        # -- Deploy manifest check --------------------------------
         if [ -n "$DEPLOY_MANIFEST" ] && [ ! -f "$DEPLOY_MANIFEST" ]; then
           echo "::notice::open-ci: deploy manifest '$DEPLOY_MANIFEST' not found. validate-release-contract will handle this."
         fi
 
-        # ── Build run context ────────────────────────────────────
+        # -- Build run context ------------------------------------
         RUN_CONTEXT=$(python3 -c "
         import json
         ctx = {

@@ -58,7 +58,7 @@ jobs:
             docs/caller-canary-ops.yml.template
 
   canary-integration:
-    name: canary anchor → rewrite → verify (sandbox)
+    name: canary anchor -> rewrite -> verify (sandbox)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -95,14 +95,14 @@ jobs:
           tag="anchor/main-${short}-test"
           git tag "$tag" "$HEAD_SHA"
 
-          echo "Anchored $tag → $HEAD_SHA"
+          echo "Anchored $tag -> $HEAD_SHA"
 
           # Verify: assert anchor sha is ancestor of HEAD. Should pass.
           if ! git merge-base --is-ancestor "$HEAD_SHA" HEAD; then
             echo "::error::Initial verify failed unexpectedly"
             exit 1
           fi
-          echo "✓ Pre-rewrite verify passed."
+          echo "[OK] Pre-rewrite verify passed."
 
           # Simulate force-push that rewrites history: reset to MID_SHA and
           # rebuild forward with different commits. New HEAD does NOT contain
@@ -116,8 +116,8 @@ jobs:
 
           # Verify: anchor sha is no longer ancestor of HEAD. Should fail.
           if git merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
-            echo "::error::Verify failed to detect rewrite — anchor still appears as ancestor"
+            echo "::error::Verify failed to detect rewrite - anchor still appears as ancestor"
             exit 1
           fi
-          echo "✓ Post-rewrite verify correctly flagged orphan."
+          echo "[OK] Post-rewrite verify correctly flagged orphan."
           echo "::notice::Canary integration test PASSED."

@@ -4,14 +4,14 @@ name: Deploy Signing Keys Worker
 # Run once after initial setup, and again whenever workers/signing-keys/ changes.
 #
 # Prerequisites:
-#   CF_API_TOKEN    — CF API token with Workers Scripts Edit + Workers KV Edit
-#   KV_NAMESPACE_ID — repo variable (set after creating the KV namespace)
+#   CF_API_TOKEN    - CF API token with Workers Scripts Edit + Workers KV Edit
+#   KV_NAMESPACE_ID - repo variable (set after creating the KV namespace)
 #
 # One-time KV setup (run locally with wrangler):
 #   cd workers/signing-keys
 #   npx wrangler kv namespace create SIGNING_KEYS
-#   # → paste the id into repo variable KV_NAMESPACE_ID
-#   # → paste the id into workers/signing-keys/wrangler.toml
+#   # -> paste the id into repo variable KV_NAMESPACE_ID
+#   # -> paste the id into workers/signing-keys/wrangler.toml
 
 on:
   workflow_dispatch:
@@ -43,7 +43,7 @@ jobs:
             echo "::error::KV_NAMESPACE_ID repo variable is not set."
             echo "::error::Create the KV namespace first:"
             echo "::error::  cd workers/signing-keys && npx wrangler kv namespace create SIGNING_KEYS"
-            echo "::error::Then set KV_NAMESPACE_ID in repo Settings → Variables → Actions."
+            echo "::error::Then set KV_NAMESPACE_ID in repo Settings -> Variables -> Actions."
             exit 1
           fi
           sed -i "s/REPLACE_WITH_KV_NAMESPACE_ID/$KV_NAMESPACE_ID/" wrangler.toml
@@ -65,5 +65,5 @@ jobs:
           if [ "$STATUS" = "200" ]; then
             echo "deploy-worker: healthz OK"
           else
-            echo "::warning::deploy-worker: healthz returned $STATUS — worker may still be propagating"
+            echo "::warning::deploy-worker: healthz returned $STATUS - worker may still be propagating"
           fi

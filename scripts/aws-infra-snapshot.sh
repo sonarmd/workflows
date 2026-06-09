@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #
-# AWS Infrastructure Snapshot — Read-Only, No Data Exposure
+# AWS Infrastructure Snapshot - Read-Only, No Data Exposure
 #
 # Captures infrastructure metadata for diagramming. Zero data plane access.
 # No CloudTrail, CloudWatch logs, RDS data, S3 objects, Athena, or secrets.
@@ -24,10 +24,10 @@ echo "Account: $ACCOUNT | Region: $REGION | Output: $OUTDIR"
 run() {
   local name="$1"; shift
   echo "  Querying $name..."
-  "$@" --region "$REGION" --output json > "$OUTDIR/${name}.json" 2>/dev/null || echo "  ⚠ $name failed (may not exist in this account)"
+  "$@" --region "$REGION" --output json > "$OUTDIR/${name}.json" 2>/dev/null || echo "  [WARN] $name failed (may not exist in this account)"
 }
 
-# ── Networking ──────────────────────────────────────────────────
+# -- Networking --------------------------------------------------
 echo "=== Networking ==="
 run vpcs                    aws ec2 describe-vpcs
 run subnets                 aws ec2 describe-subnets
@@ -40,13 +40,13 @@ run security-groups         aws ec2 describe-security-groups
 run network-acls            aws ec2 describe-network-acls
 run elastic-ips             aws ec2 describe-addresses
 
-# ── Compute (metadata only — no console output, no user data) ──
+# -- Compute (metadata only - no console output, no user data) --
 echo "=== Compute ==="
 run ec2-instances           aws ec2 describe-instances --query 'Reservations[].Instances[].{InstanceId:InstanceId,InstanceType:InstanceType,State:State.Name,SubnetId:SubnetId,VpcId:VpcId,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,SecurityGroups:SecurityGroups,Tags:Tags,IamInstanceProfile:IamInstanceProfile,LaunchTime:LaunchTime}'
 run ecs-clusters            aws ecs list-clusters
 run autoscaling-groups      aws autoscaling describe-auto-scaling-groups --query 'AutoScalingGroups[].{Name:AutoScalingGroupName,MinSize:MinSize,MaxSize:MaxSize,DesiredCapacity:DesiredCapacity,VPCZoneIdentifier:VPCZoneIdentifier,LaunchTemplate:LaunchTemplate,Tags:Tags}'
 
-# ── ECS detail (if clusters exist) ──
+# -- ECS detail (if clusters exist) --
 if [ -f "$OUTDIR/ecs-clusters.json" ]; then
   CLUSTERS=$(python3 -c "import json; d=json.load(open('$OUTDIR/ecs-clusters.json')); print(' '.join(d.get('clusterArns',[])))" 2>/dev/null || true)
   if [ -n "$CLUSTERS" ]; then
@@ -62,7 +62,7 @@ if [ -f "$OUTDIR/ecs-clusters.json" ]; then
   fi
 fi
 
-# ── Load Balancing ──────────────────────────────────────────────
+# -- Load Balancing ----------------------------------------------
 echo "=== Load Balancing ==="
 run albs                    aws elbv2 describe-load-balancers
 run target-groups           aws elbv2 describe-target-groups
@@ -77,7 +77,7 @@ if [ -f "$OUTDIR/albs.json" ]; then
   done
 fi
 
-# ── DNS ─────────────────────────────────────────────────────────
+# -- DNS ---------------------------------------------------------
 echo "=== DNS ==="
 run hosted-zones            aws route53 list-hosted-zones
 if [ -f "$OUTDIR/hosted-zones.json" ]; then
@@ -88,30 +88,30 @@ if [ -f "$OUTDIR/hosted-zones.json" ]; then
   done
 fi
 
-# ── Certificates ────────────────────────────────────────────────
+# -- Certificates ------------------------------------------------
 echo "=== Certificates ==="
 run acm-certs               aws acm list-certificates --query 'CertificateSummaryList[].{DomainName:DomainName,CertificateArn:CertificateArn,Status:Status}'
 
-# ── IAM (global, not regional — but useful for trust relationships) ──
+# -- IAM (global, not regional - but useful for trust relationships) --
 echo "=== IAM ==="
 run iam-roles               aws iam list-roles --query 'Roles[].{RoleName:RoleName,Arn:Arn,AssumeRolePolicyDocument:AssumeRolePolicyDocument,CreateDate:CreateDate}'
 run iam-instance-profiles   aws iam list-instance-profiles --query 'InstanceProfiles[].{Name:InstanceProfileName,Arn:Arn,Roles:Roles[].RoleName}'
 
-# ── ElastiCache (endpoints + SGs only, no data) ────────────────
+# -- ElastiCache (endpoints + SGs only, no data) ----------------
 echo "=== ElastiCache ==="
 run elasticache-clusters    aws elasticache describe-cache-clusters --query 'CacheClusters[].{CacheClusterId:CacheClusterId,Engine:Engine,EngineVersion:EngineVersion,CacheNodeType:CacheNodeType,NumCacheNodes:NumCacheNodes,CacheSubnetGroupName:CacheSubnetGroupName,SecurityGroups:SecurityGroups,ConfigurationEndpoint:ConfigurationEndpoint}'
 run elasticache-replication aws elasticache describe-replication-groups --query 'ReplicationGroups[].{ReplicationGroupId:ReplicationGroupId,Status:Status,NodeGroups:NodeGroups,AtRestEncryptionEnabled:AtRestEncryptionEnabled,TransitEncryptionEnabled:TransitEncryptionEnabled}'
 run elasticache-subnets     aws elasticache describe-cache-subnet-groups
 
-# ── S3 (bucket list + policy/location only — NO object access) ──
+# -- S3 (bucket list + policy/location only - NO object access) --
 echo "=== S3 (metadata only) ==="
 run s3-buckets              aws s3api list-buckets --query 'Buckets[].{Name:Name,CreationDate:CreationDate}'
 
-# ── CloudFront ──────────────────────────────────────────────────
+# -- CloudFront --------------------------------------------------
 echo "=== CloudFront ==="
 run cloudfront-distros      aws cloudfront list-distributions --query 'DistributionList.Items[].{Id:Id,DomainName:DomainName,Aliases:Aliases.Items,Origins:Origins.Items[].{Id:Id,DomainName:DomainName},Status:Status,Enabled:Enabled}'
 
-# ── Summary ─────────────────────────────────────────────────────
+# -- Summary -----------------------------------------------------
 echo ""
 echo "Done. Files:"
 ls -1 "$OUTDIR"/ | while read f; do

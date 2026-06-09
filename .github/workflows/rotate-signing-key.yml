@@ -12,15 +12,15 @@ name: Rotate CI Signing Key
 #   - Posts a Slack notification with the fingerprint.
 #
 # Prerequisites (one-time):
-#   CF_API_TOKEN   — CF API token with Workers KV Storage Edit permission
-#                    Scope: Account → Workers KV Storage → Edit
-#   KV_NAMESPACE_ID — paste from wrangler or CF dashboard after creating
+#   CF_API_TOKEN   - CF API token with Workers KV Storage Edit permission
+#                    Scope: Account -> Workers KV Storage -> Edit
+#   KV_NAMESPACE_ID - paste from wrangler or CF dashboard after creating
 #                    the smd-signing-keys namespace (stored as a repo var)
-#   GH_ADMIN_PAT   — GitHub PAT with admin:org scope (for org secrets)
+#   GH_ADMIN_PAT   - GitHub PAT with admin:org scope (for org secrets)
 #                    Falls back to repo-level secrets if not set.
-#   SLACK_WEBHOOK_URL — existing secret
+#   SLACK_WEBHOOK_URL - existing secret
 #
-# To run: Actions → Rotate CI Signing Key → Run workflow
+# To run: Actions -> Rotate CI Signing Key -> Run workflow
 
 on:
   workflow_dispatch:
@@ -43,7 +43,7 @@ jobs:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
-      # ── 1. Generate ED25519 GPG key in memory ─────────────────────────────
+      # -- 1. Generate ED25519 GPG key in memory -----------------------------
       - name: Generate signing key
         id: keygen
         shell: bash
@@ -58,7 +58,7 @@ jobs:
           GNUPGHOME=$(mktemp -d /tmp/keygen.XXXXXX)
           chmod 0700 "$GNUPGHOME"
 
-          # Generate — no passphrase, 2-year expiry, CI identity
+          # Generate - no passphrase, 2-year expiry, CI identity
           gpg --batch --homedir "$GNUPGHOME" --gen-key <<EOF
           %no-protection
           Key-Type: EDDSA
@@ -86,7 +86,7 @@ jobs:
           # Mask private key in all logs immediately
           echo "::add-mask::$PRIV_B64"
 
-          # Clean up GPG homedir — key is in memory/outputs only
+          # Clean up GPG homedir - key is in memory/outputs only
           gpgconf --homedir "$GNUPGHOME" --kill gpg-agent 2>/dev/null || true
           rm -rf "$GNUPGHOME"
 
@@ -100,7 +100,7 @@ jobs:
 
           echo "keygen: ED25519 key $FP generated at $TIMESTAMP"
 
-      # ── 2. Read current chain head from CF KV ─────────────────────────────
+      # -- 2. Read current chain head from CF KV -----------------------------
       - name: Read chain head from CF KV
         id: chain
         shell: bash
@@ -124,12 +124,12 @@ jobs:
           echo "prev=${PREV}" >> "$GITHUB_OUTPUT"
 
           if [ -z "$PREV" ]; then
-            echo "chain: genesis — this is the first key in the chain"
+            echo "chain: genesis - this is the first key in the chain"
           else
             echo "chain: previous head = $PREV"
           fi
 
-      # ── 3. Write new key record to CF KV ──────────────────────────────────
+      # -- 3. Write new key record to CF KV ----------------------------------
       - name: Write key record to CF KV
         shell: bash
         env:
@@ -177,9 +177,9 @@ jobs:
 
           echo "kv: key:${FINGERPRINT} written, chain:head updated"
 
-      # ── 4. Publish public key to OpenPGP keyserver ────────────────────────
+      # -- 4. Publish public key to OpenPGP keyserver ------------------------
       # Publishing to keys.openpgp.org under ci+signing@sonarmd.com adds a
-      # second independent trust anchor — separate from both GitHub (where
+      # second independent trust anchor - separate from both GitHub (where
       # artifacts live) and Cloudflare (primary trust store). Anyone can
       # confirm the key was intentionally published by verifying via the
       # keyserver. keys.openpgp.org requires email verification before the
@@ -204,7 +204,7 @@ jobs:
           echo "Note: UID becomes searchable after email verification at"
           echo "      https://keys.openpgp.org/upload"
 
-      # ── 5. Update GitHub secrets ───────────────────────────────────────────
+      # -- 5. Update GitHub secrets -------------------------------------------
       # Writes CI_SIGNING_KEY (latest, what sign-release reads) and an
       # archived CI_SIGNING_KEY_{TIMESTAMP} for forensics.
       # Uses GH_ADMIN_PAT for org-level secrets if available; falls back to
@@ -257,21 +257,21 @@ jobs:
                   encrypted_value: encVal,
                   key_id: repoKey.key_id,
                 });
-                core.info(`repo secret ${secretName} updated (no GH_ADMIN_PAT — org secrets unavailable)`);
+                core.info(`repo secret ${secretName} updated (no GH_ADMIN_PAT - org secrets unavailable)`);
               }
             }
 
             const octokit = new Octokit({ auth: process.env.GH_ADMIN_PAT || github.token });
 
-            // Always-latest pointer — what sign-release reads
+            // Always-latest pointer - what sign-release reads
             await upsertSecret(octokit, 'CI_SIGNING_KEY', privB64);
 
-            // Archived copy keyed by timestamp — forensics / rollback
+            // Archived copy keyed by timestamp - forensics / rollback
             await upsertSecret(octokit, `CI_SIGNING_KEY_${timestamp}`, privB64);
 
             core.info(`secrets written: CI_SIGNING_KEY + CI_SIGNING_KEY_${timestamp}`);
 
-      # ── 5. Slack notification ──────────────────────────────────────────────
+      # -- 5. Slack notification ----------------------------------------------
       - name: Notify Slack
         if: env.SLACK_WEBHOOK_URL != ''
         shell: bash
@@ -297,7 +297,7 @@ jobs:
               f'>Actor: {os.environ[\"ACTOR\"]}\n'
               f'>Chain: {os.environ[\"CHAIN_URL\"]}\n\n'
               'CI will sign new builds with this key immediately. '
-              'No action needed — existing deploys still verify against older keys in the chain.'
+              'No action needed - existing deploys still verify against older keys in the chain.'
             )
           }))
           " PREV_MSG="$PREV_MSG" CHAIN_URL="$CHAIN_URL")
@@ -307,7 +307,7 @@ jobs:
             --data "$PAYLOAD" \
             "$SLACK_WEBHOOK_URL"
 
-      # ── 6. Summary ────────────────────────────────────────────────────────
+      # -- 6. Summary --------------------------------------------------------
       - name: Job summary
         shell: bash
         env:
@@ -330,9 +330,9 @@ jobs:
           | Latest key | https://signing-keys.sonarmd.workers.dev/keys |
 
           **GitHub secrets updated:**
-          - \`CI_SIGNING_KEY\` — always points to this key
-          - \`CI_SIGNING_KEY_${TIMESTAMP}\` — archived copy
+          - \`CI_SIGNING_KEY\` - always points to this key
+          - \`CI_SIGNING_KEY_${TIMESTAMP}\` - archived copy
 
           New builds sign with this key immediately.
-          Existing artifacts remain verifiable — all keys stay in the chain.
+          Existing artifacts remain verifiable - all keys stay in the chain.
           SUMMARY

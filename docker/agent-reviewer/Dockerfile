@@ -17,8 +17,8 @@
 # is injected by the calling workflow at runtime; never baked in.
 #
 # Tags:
-#   :latest          — most recent build of `main`
-#   :sha-<12hex>     — pinned by commit; reusable workflow uses this
+#   :latest          - most recent build of `main`
+#   :sha-<12hex>     - pinned by commit; reusable workflow uses this
 #
 # Build (local):
 #   docker build -t ghcr.io/sonarmd/agent-reviewer:dev docker/agent-reviewer
@@ -45,7 +45,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     AGENT_REVIEWER_RUBRICS_DIR=/opt/rubrics \
     AGENT_REVIEWER_SCHEMAS_DIR=/opt/schemas
 
-# System packages — minimal. NO gh CLI by design.
+# System packages - minimal. NO gh CLI by design.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -61,7 +61,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 COPY rubrics/ /opt/rubrics/
 COPY schemas/ /opt/schemas/
 
-# Reference cards — lean one-page primers (DDD, FCIS, Clean Architecture,
+# Reference cards - lean one-page primers (DDD, FCIS, Clean Architecture,
 # abstraction discipline) included in the agent prompt by the entrypoint.
 # Kept deliberately short so they grouund the model without bloating
 # token usage on every PR.

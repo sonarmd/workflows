@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# file-metrics.sh — language-agnostic structural metrics for a file.
+# file-metrics.sh - language-agnostic structural metrics for a file.
 #
 # Usage:  file-metrics.sh <file-path>
 # Output: <file>\t<lines>\t<funcs>\t<max-func-len>\t<max-depth>
 #
 # Metrics:
-#   lines         — total non-blank, non-comment lines (best-effort)
-#   funcs         — function-like declarations matched by a coarse regex
+#   lines         - total non-blank, non-comment lines (best-effort)
+#   funcs         - function-like declarations matched by a coarse regex
 #                   across JS/TS/Python/Go/Rust/Java/C-family. Designed
 #                   to be conservative (under-count rather than over-count
 #                   to avoid false signal on string literals etc.)
-#   max-func-len  — longest contiguous block following a function declaration
+#   max-func-len  - longest contiguous block following a function declaration
 #                   that stays at an indentation > the declaration's indent
 #                   (heuristic; misses one-liners and braced styles a bit)
-#   max-depth     — deepest leading-whitespace indent across the file
+#   max-depth     - deepest leading-whitespace indent across the file
 #                   (proxy for control-flow nesting depth)
 
 set -euo pipefail
@@ -34,13 +34,13 @@ LINES=$(awk '
   END { print c+0 }
 ' "$F")
 
-# function count — coarse regex covering common forms.
+# function count - coarse regex covering common forms.
 # `grep -c` always prints a count on stdout (0 when nothing matches) but exits
 # non-zero on zero matches. Swallow the exit code with `|| true`; do NOT add
 # `|| echo 0`, which would append a second "0" and produce a two-line value.
 FUNCS=$(grep -cE '^[[:space:]]*(function[[:space:]]+[A-Za-z_]|def[[:space:]]+[A-Za-z_]|func[[:space:]]+\(?[A-Za-z_]|fn[[:space:]]+[A-Za-z_]|public[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|private[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|protected[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|static[[:space:]]+[a-z]+[[:space:]]+[A-Za-z_].*\(|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[=:][[:space:]]*\(?[A-Za-z_, ]*\)?[[:space:]]*=>[[:space:]]*[{(])' "$F" 2>/dev/null || true)
 
-# max nesting depth — count leading spaces (assume 2 or 4-space indent)
+# max nesting depth - count leading spaces (assume 2 or 4-space indent)
 MAX_DEPTH=$(awk '
   /^[[:space:]]*$/ { next }
   {
@@ -55,7 +55,7 @@ MAX_DEPTH=$(awk '
   END { print maxd+0 }
 ' "$F")
 
-# max function length — scan for function-like declarations, then count
+# max function length - scan for function-like declarations, then count
 # subsequent lines at greater indent until indent returns to declaration level.
 MAX_FUNC_LEN=$(awk '
   function flush() {

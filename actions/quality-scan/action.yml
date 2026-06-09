@@ -7,7 +7,7 @@ description: |
   yarn/npm install) when available; sensible defaults apply otherwise.
 
   Pairs with sonarmd/workflows/actions/security-scan. Coverage threshold
-  enforcement is NOT here — that belongs in the test step itself via
+  enforcement is NOT here - that belongs in the test step itself via
   @sonarmd/star-config/quality/coverage imported into jest/vitest config.
 
   Findings are emitted as workflow-run logs and a markdown report
@@ -45,11 +45,11 @@ runs:
           echo "::notice::quality-scan: using configs from ${ROOT}"
           echo "installed=true" >> "$GITHUB_OUTPUT"
         else
-          echo "::notice::quality-scan: @sonarmd/star-config not found at ${ROOT} — using defaults"
+          echo "::notice::quality-scan: @sonarmd/star-config not found at ${ROOT} - using defaults"
           echo "installed=false" >> "$GITHUB_OUTPUT"
         fi
 
-    # ────────────────────────────── jscpd ────────────────────────────────
+    # ------------------------------ jscpd --------------------------------
     - name: Run jscpd (cross-file duplication)
       if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' jscpd ') }}
       shell: bash
@@ -64,13 +64,13 @@ runs:
         if [ "$STAR_INSTALLED" = "true" ] && [ -f "${STAR_ROOT}/jscpd/default.json" ]; then
           ARGS+=(--config "${STAR_ROOT}/jscpd/default.json")
         else
-          # No star-config — emit a markdown report at a known path so the
+          # No star-config - emit a markdown report at a known path so the
           # summary attachment below still has something to read.
           ARGS+=(--reporters markdown --output ./jscpd-report)
         fi
         # jscpd_path is documented as space-separated. Split into an array
         # so each path is its own argv entry; paths with spaces are not
-        # representable here (acceptable trade-off — string-array inputs
+        # representable here (acceptable trade-off - string-array inputs
         # aren't supported by composite actions).
         IFS=' ' read -r -a JSCPD_PATHS <<< "$JSCPD_PATH"
         # jscpd's threshold is set inside the config file. Its exit code
@@ -86,13 +86,13 @@ runs:
         # Attach the markdown report to the run summary if jscpd produced one.
         if [ -f "./jscpd-report/jscpd-report.md" ]; then
           {
-            echo "## jscpd — cross-file duplication"
+            echo "## jscpd - cross-file duplication"
             echo ""
             cat "./jscpd-report/jscpd-report.md"
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
-    # ─────────────────────────────── knip ────────────────────────────────
+    # ------------------------------- knip --------------------------------
     - name: Run knip (unused exports / deps)
       if: ${{ inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' knip ') }}
       shell: bash
@@ -108,7 +108,7 @@ runs:
         fi
         echo "quality-scan/knip: npx knip ${ARGS[*]}"
         REPORT="$(mktemp)"
-        # Capture stderr too — knip emits diagnostics there; without 2>&1
+        # Capture stderr too - knip emits diagnostics there; without 2>&1
         # the summary attachment loses them.
         if npx --yes knip "${ARGS[@]}" > "$REPORT" 2>&1; then
           EXIT=0
@@ -118,12 +118,12 @@ runs:
 
         # Attach the markdown report to the run summary.
         {
-          echo "## knip — unused exports and dependencies"
+          echo "## knip - unused exports and dependencies"
           echo ""
           cat "$REPORT"
         } >> "$GITHUB_STEP_SUMMARY"
 
         if [ "$FAIL_ON" = "true" ] && [ "$EXIT" -ne 0 ]; then
-          echo "::error::quality-scan/knip: reported issues (exit=$EXIT) — see summary"
+          echo "::error::quality-scan/knip: reported issues (exit=$EXIT) - see summary"
           exit "$EXIT"
         fi

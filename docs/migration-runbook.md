@@ -13,10 +13,10 @@ Migrating from the old imperative CI wrappers (`ci-node.yml`, `gate.yml`) to the
 
 ### Migration Order
 
-1. **Land gate workflows** in `sonarmd/workflows` (no breaking changes — new files only)
+1. **Land gate workflows** in `sonarmd/workflows` (no breaking changes - new files only)
 2. **frontend-patient-app** first (smallest repo, cleanest template)
 3. **triggr_api** second (custom CI already, just add artifact uploads + gate calls)
-4. **frontend** third (monorepo, most complex — path filtering + synthetic reports)
+4. **frontend** third (monorepo, most complex - path filtering + synthetic reports)
 5. **Deprecate `gate.yml`** after all consumers migrated
 6. **Delete `ci-node.yml`** (already removed in this branch)
 
@@ -64,7 +64,7 @@ For each repository:
    +   test_result: ${{ needs.test.result }}
    ```
 
-6. **Remove stale outputs** — drop `test_count` from job outputs and gate inputs
+6. **Remove stale outputs** - drop `test_count` from job outputs and gate inputs
 
 7. **Add deploy gates** to deploy workflows (build-gate + deploy-gate chain)
 
@@ -93,7 +93,7 @@ Original migration from CircleCI. Kept for reference.
 ### Phase 1: Frontend CI
 
 1. Copy `per-repo/frontend/.github/workflows/ci.yml` to `sonarmd/frontend`
-2. Open PR — GHA CI runs alongside CircleCI
+2. Open PR - GHA CI runs alongside CircleCI
 3. Verify same tests pass/fail, timing comparable
 4. Merge to staging
 

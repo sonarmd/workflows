@@ -73,7 +73,7 @@ runs:
         echo "artifact-store-push: pushing ${#FILES[@]} file(s) to $REF"
         for F in "${FILES[@]}"; do echo "  - $F"; done
 
-        # Note: no `image.created` annotation — keeping it out makes the
+        # Note: no `image.created` annotation - keeping it out makes the
         # manifest deterministic for identical content.
         oras push "$REF" \
           --artifact-type "application/vnd.sonarmd.release.v1+tar" \

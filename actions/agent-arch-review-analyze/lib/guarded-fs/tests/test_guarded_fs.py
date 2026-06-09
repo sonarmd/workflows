@@ -68,7 +68,7 @@ class TestScanners(unittest.TestCase):
 
     # 2. U+00B4 (ACUTE ACCENT) is rejected.
     def test_acute_accent_rejected(self):
-        body = "before ´ after".encode("utf-8")
+        body = "before ' after".encode("utf-8")
         findings, _ = scan_with("byte", body)
         self.assertTrue(any(f.reason == "acute_accent" for f in findings))
 
@@ -81,7 +81,7 @@ class TestScanners(unittest.TestCase):
                 sensitive_globs=["*.sh"],
             )
             path = t.path("victim.sh")
-            content = "echo a — b\n"
+            content = "echo a - b\n"
             res = safe_write(path, content, grammar="byte", mode="strict_block", policy=policy)
             self.assertEqual(res["status"], "blocked")
             self.assertFalse(os.path.exists(path))
@@ -90,13 +90,13 @@ class TestScanners(unittest.TestCase):
 
     # 4. NBSP (U+00A0) is rejected.
     def test_nbsp_rejected(self):
-        body = "hello world".encode("utf-8")
+        body = "hello world".encode("utf-8")
         findings, _ = scan_with("byte", body)
         self.assertTrue(any(f.reason == "nbsp" for f in findings))
 
     # 5. ZERO WIDTH SPACE (U+200B) is rejected.
     def test_zws_rejected(self):
-        body = "a​b".encode("utf-8")
+        body = "ab".encode("utf-8")
         findings, _ = scan_with("byte", body)
         self.assertTrue(any(f.reason == "zero_width" for f in findings))
 
@@ -196,7 +196,7 @@ class TestSafeWrite(unittest.TestCase):
             with open(p, "wb") as f:
                 f.write(b"echo OK\n")
             policy = Policy(allowed_roots=[t.dir], sensitive_globs=["*.sh"])
-            bad = "echo —\n"  # EM DASH forbidden codepoint
+            bad = "echo -\n"  # EM DASH forbidden codepoint
             res = safe_write(p, bad, grammar="byte", mode="strict_block", policy=policy)
             self.assertEqual(res["status"], "blocked")
             self.assertFalse(res["file_changed"])

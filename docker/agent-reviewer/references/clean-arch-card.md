@@ -3,13 +3,13 @@
 ## The layers (in dependency direction)
 
 ```
-interface      ← HTTP handlers, CLI parsers, queue consumers
-    ↓
-application    ← use cases, services that orchestrate domain ops
-    ↓
-domain         ← entities, value objects, aggregates, domain services
-    ↑
-infrastructure ← repositories, DB adapters, external API clients
+interface      <- HTTP handlers, CLI parsers, queue consumers
+    v
+application    <- use cases, services that orchestrate domain ops
+    v
+domain         <- entities, value objects, aggregates, domain services
+    ^
+infrastructure <- repositories, DB adapters, external API clients
 ```
 
 Dependencies point INWARD. Domain knows nothing of the layers around it.
@@ -30,7 +30,7 @@ Dependencies point INWARD. Domain knows nothing of the layers around it.
 
 ## How to verify
 
-The `dependency-direction.sh` analyzer flags these mechanically. Use its output as a starting point — confirm by reading the imports yourself if a finding feels borderline.
+The `dependency-direction.sh` analyzer flags these mechanically. Use its output as a starting point - confirm by reading the imports yourself if a finding feels borderline.
 
 ## When this card is relevant
 

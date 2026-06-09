@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# pattern-fit.sh — for a (new) file, find the most structurally similar
+# pattern-fit.sh - for a (new) file, find the most structurally similar
 # existing files in the repo. Helps the reviewer ground "this PR
 # introduces a new pattern where an existing one would have sufficed."
 #

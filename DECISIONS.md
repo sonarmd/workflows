@@ -2,19 +2,19 @@
 
 Architectural decisions for `sonarmd/workflows`. Per global rule #9, check here
 before reverting or modifying any existing pattern. If a decision contradicts
-what you think is correct, ASK — do not silently revert.
+what you think is correct, ASK - do not silently revert.
 
 ---
 
-## 2026-04-21 — CI/CD is THREE workflows. Nothing more.
+## 2026-04-21 - CI/CD is THREE workflows. Nothing more.
 
 **Decision:** `sonarmd/workflows/.github/workflows/` contains exactly three
 files. No exceptions, no "temporarily," no "for this one repo," no
 "for backward compatibility."
 
-1. `ci-core.yml` — CI only. Inputs: `setup`, `steps`. Signs + preserves artifact. Slack on fail.
-2. `cd-core.yml` — CD only. **No inputs.** Discovers by SHA. Tags commit, creates GH Release with the CI artifact bundle, pings Slack deploy channel.
-3. `cicd-orchestrator.yml` — routes: PR → CI only; push to master/main/release/** → reuse CI artifact if present, else run CI, then CD.
+1. `ci-core.yml` - CI only. Inputs: `setup`, `steps`. Signs + preserves artifact. Slack on fail.
+2. `cd-core.yml` - CD only. **No inputs.** Discovers by SHA. Tags commit, creates GH Release with the CI artifact bundle, pings Slack deploy channel.
+3. `cicd-orchestrator.yml` - routes: PR -> CI only; push to master/main/release/** -> reuse CI artifact if present, else run CI, then CD.
 
 All other logic (signing, tagging, slack formatting, artifact download, etc.)
 is a composite action under `actions/<name>/action.yml` at the repo root.
@@ -22,7 +22,7 @@ is a composite action under `actions/<name>/action.yml` at the repo root.
 **Rationale:** `sonarmd/workflows` owns orchestration, platform, deploy verbs,
 servers. Caller repos own their build, lint, tests. Hard boundaries. No
 repeated work. No validation where unnecessary. Every caller's workflow file
-looks the same — a thin wrapper passing `setup` + `steps` to the orchestrator.
+looks the same - a thin wrapper passing `setup` + `steps` to the orchestrator.
 
 **Forbidden files in caller repos** (delete on sight, never re-add):
 - `deploy.yml`
@@ -44,7 +44,7 @@ history as a single committed artifact rather than scattered across the diff: `a
 action), `preflight.yml`, `static-analysis-gate.yml`, `tag-release.yml`
 (absorbed into `cd-core.yml`), `test-gate.yml`.
 
-`ci-cd-core.yml` → renamed to `cicd-orchestrator.yml`. A stub at the old
+`ci-cd-core.yml` -> renamed to `cicd-orchestrator.yml`. A stub at the old
 path exists for one week after merge; then removed.
 
 **If you think you need an exception:** you don't. If a caller genuinely has
@@ -55,7 +55,7 @@ top-level workflow. Ask the repo owner before deviating.
 
 ---
 
-## 2026-04-21 — Caller repos run ONE workflow file.
+## 2026-04-21 - Caller repos run ONE workflow file.
 
 **Decision:** Every repo in the `sonarmd/` org that uses this orchestrator
 has exactly one file in its `.github/workflows/` directory, named `ci.yml`,
@@ -76,7 +76,7 @@ sanity build as part of CI `steps`.
 
 ---
 
-## 2026-04-21 — `deploy.json` contract is validated at the edge, once.
+## 2026-04-21 - `deploy.json` contract is validated at the edge, once.
 
 **Decision:** Every caller repo includes a `deploy.json` at the repo root
 conforming to the schema defined by `sonarmd/workflows`. The CI step bundles
@@ -89,7 +89,7 @@ validation = repeated work = violates the "no repeated work" rule.
 
 ---
 
-## 2026-04-21 — GitHub does not access AWS. Ansible does.
+## 2026-04-21 - GitHub does not access AWS. Ansible does.
 
 **Decision:** GitHub Actions workflows never assume AWS IAM roles. No OIDC
 federation from GHA to AWS. GitHub's job is to build, sign, tag, publish
@@ -99,7 +99,7 @@ Ansible (on the Ansible server, using its own IAM role scoped to the server)
 picks up the Slack signal via hubot and performs the actual AWS operations:
 - Frontend: `aws s3 sync` per app per env
 - API: EC2 deploy + secrets drop + Lambda zips to CDK bucket
-- CDK: synth JSON → S3 → trigger CloudFormation
+- CDK: synth JSON -> S3 -> trigger CloudFormation
 - Mobile: call EAS with the git tag
 
 `infra-cdk/GithubOidcStack` exists for historical reasons or for a different
@@ -107,7 +107,7 @@ purpose; it is not consumed by this architecture and should not be wired in.
 
 ---
 
-## 2026-05-23 — Agent Architecture Review lives outside the CI/CD core.
+## 2026-05-23 - Agent Architecture Review lives outside the CI/CD core.
 
 **Decision:** A new top-level reusable workflow,
 `.github/workflows/agent-architecture-review.yml`, runs an agent-based
@@ -115,7 +115,7 @@ ARCHITECTURE reviewer on every PR. It is **not** part of the CI/CD core
 (`ci-core`, `cd-core`, `cicd-orchestrator`).
 
 **Rationale:** The "three workflows only" rule scopes specifically to CI/CD
-orchestration. Architecture review is an orthogonal concern — it does not
+orchestration. Architecture review is an orthogonal concern - it does not
 gate the build, sign the release, or drive deploy. It produces advisory
 output (comments, labels, a check run). Same pattern as
 `auto-safety-tag.yml`, which also lives outside the CI/CD core and is
@@ -152,7 +152,7 @@ that the publisher RE-FETCHES via API.
 - Per-repo override: optional `.github/agent-review.yml` in consumer repo.
 - Caller template: `per-repo/_template/.github/workflows/agent-architecture-review.yml`.
 
-**Rollout — pick one:**
+**Rollout - pick one:**
 - **Path A (preferred):** org admin registers the default wrapper as a
   required workflow + sets `ANTHROPIC_API_KEY` as an org-level secret.
   Zero per-repo effort. Per-repo tuning via `.github/agent-review.yml`.
@@ -160,7 +160,7 @@ that the publisher RE-FETCHES via API.
   DRAFT PR per repo adding the thin caller template.
 
 **Auth:** primary is `CLAUDE_CODE_OAUTH_TOKEN` (Claude Code subscription
-billing — generated by `claude setup-token`). `ANTHROPIC_API_KEY` is
+billing - generated by `claude setup-token`). `ANTHROPIC_API_KEY` is
 accepted as a fallback if a caller prefers per-token billing. The image
 detects which is set; OAuth token wins if both are present. Either secret
 is exposed ONLY to the `review-agent` job; the publisher never sees them.
@@ -170,7 +170,7 @@ checked out as executable by default. The diff is fetched via API and
 treated as DATA. `allow_pr_head_checkout` is an explicit opt-in for
 read-only context (still no package manager invocation).
 
-**Failure behavior:** advisory by default. Malformed LLM output → neutral
+**Failure behavior:** advisory by default. Malformed LLM output -> neutral
 check + "review unavailable" comment + exit 0. A bad model day never
 blocks the org, even in `required` enforcement mode.
 

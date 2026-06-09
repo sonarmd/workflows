@@ -1,7 +1,7 @@
 name: Product Documentation
 description: |
   Publishes release-adjacent documentation updates when required by
-  policy. Has a hard 5-minute execution cap. Non-blocking by default —
+  policy. Has a hard 5-minute execution cap. Non-blocking by default -
   failure does not delay release unless the release class is explicitly
   documentation-gated.
 
@@ -62,29 +62,29 @@ runs:
         fi
         TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
 
-        # ── Check if Confluence credentials are available ────────
+        # -- Check if Confluence credentials are available --------
         if [ -z "${CONFLUENCE_USER:-}" ] || [ -z "${CONFLUENCE_TOKEN:-}" ]; then
-          echo "product-documentation: no Confluence credentials — skipping"
+          echo "product-documentation: no Confluence credentials - skipping"
           echo "published=false" >> "$GITHUB_OUTPUT"
           echo "confluence_url=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
         if [ -z "$CONFLUENCE_SPACE" ] || [ -z "$CONFLUENCE_PARENT_ID" ]; then
-          echo "product-documentation: no Confluence space/parent configured — skipping"
+          echo "product-documentation: no Confluence space/parent configured - skipping"
           echo "published=false" >> "$GITHUB_OUTPUT"
           echo "confluence_url=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
         if [ -z "$RELEASE_NOTES" ]; then
-          echo "product-documentation: no release notes to publish — skipping"
+          echo "product-documentation: no release notes to publish - skipping"
           echo "published=false" >> "$GITHUB_OUTPUT"
           echo "confluence_url=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        # ── Publish to Confluence with hard timeout ──────────────
+        # -- Publish to Confluence with hard timeout --------------
         timeout "$TIMEOUT_SECONDS" python3 <<'PYEOF' || {
           EXIT_CODE=$?
           if [ "$EXIT_CODE" -eq 124 ]; then

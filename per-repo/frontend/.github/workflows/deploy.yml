@@ -1,13 +1,13 @@
 name: Deploy
 
-# Single deploy workflow for all environments — frontend monorepo.
+# Single deploy workflow for all environments - frontend monorepo.
 # Environment is derived from the tag prefix. All 4 apps build and deploy
-# every time — no path filtering on deploy (consistency across all apps matters).
+# every time - no path filtering on deploy (consistency across all apps matters).
 #
 # Tag format:
-#   dev-fe-<version>   →  deploy to dev     (S3, no CloudFront)
-#   stg-fe-<version>   →  deploy to staging (S3 + CloudFront)
-#   prd-fe-<version>   →  deploy to production (GitHub Environment approval)
+#   dev-fe-<version>   ->  deploy to dev     (S3, no CloudFront)
+#   stg-fe-<version>   ->  deploy to staging (S3 + CloudFront)
+#   prd-fe-<version>   ->  deploy to production (GitHub Environment approval)
 
 on:
   push:
@@ -26,8 +26,8 @@ env:
   NODE_OPTIONS: --openssl-legacy-provider
 
 jobs:
-  # Parses tag prefix → all env-specific values in one place.
-  # Every downstream job consumes these outputs — no env logic anywhere else.
+  # Parses tag prefix -> all env-specific values in one place.
+  # Every downstream job consumes these outputs - no env logic anywhere else.
   setup:
     timeout-minutes: 10
     name: Resolve environment
@@ -48,9 +48,9 @@ jobs:
       cf-seat:         ${{ steps.parse.outputs.cf-seat }}
     steps:
       - id: parse
-        name: Parse tag → environment
+        name: Parse tag -> environment
         env:
-          # CloudFront IDs live in GitHub repo variables — injected here once.
+          # CloudFront IDs live in GitHub repo variables - injected here once.
           CF_ADMIN_STG:    ${{ vars.CF_DIST_ADMIN_STG }}
           CF_ADMIN_PRD:    ${{ vars.CF_DIST_ADMIN_PRD }}
           CF_PATIENT_STG:  ${{ vars.CF_DIST_PATIENT_STG }}
@@ -112,7 +112,7 @@ jobs:
           esac
           echo "Resolved: env=$(grep ^env= $GITHUB_OUTPUT | cut -d= -f2)"
 
-  # ── Build all 4 apps in parallel ──────────────────────────────────────────
+  # -- Build all 4 apps in parallel ------------------------------------------
   # Build script name is derived: yarn build-admin-dev, yarn build-admin-stg, etc.
   # GitHub Environment gates production deploys with approval.
 
@@ -196,7 +196,7 @@ jobs:
           path: seat/build/
           retention-days: 7
 
-  # ── Build gate — validates all 4 builds passed ────────────────────────────
+  # -- Build gate - validates all 4 builds passed ----------------------------
 
   summarize-builds:
     timeout-minutes: 10
@@ -239,13 +239,13 @@ jobs:
     if: always()
     uses: sonarmd/workflows/.github/workflows/deploy-gate.yml@main
     with:
-      # Deploy workflows are tag-triggered — CI gates already passed on the commit.
+      # Deploy workflows are tag-triggered - CI gates already passed on the commit.
       # Pass 'success' since the tag would not exist without CI passing.
       static_analysis_gate_result: success
       test_gate_result:            success
       build_gate_result:           ${{ needs.build-gate.outputs.gate_result }}
 
-  # ── Deploy all 4 apps in parallel ─────────────────────────────────────────
+  # -- Deploy all 4 apps in parallel -----------------------------------------
   # Same S3 sync pattern for every app. CloudFront invalidation runs only
   # when a distribution ID is set (empty string = skip = dev environment).
 

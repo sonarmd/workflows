@@ -1,7 +1,7 @@
-# Overlay — SENIOR EYE
+# Overlay - SENIOR EYE
 
 Apply the staff-engineer lens. You are looking for the things a senior
-reviewer would actually flag — not nitpicks, not theoretical issues, but
+reviewer would actually flag - not nitpicks, not theoretical issues, but
 the concrete risks and gaps that matter when this change lands.
 
 ## What to look at
@@ -9,7 +9,7 @@ the concrete risks and gaps that matter when this change lands.
 ### Blast radius
 
 - What does this change touch that the diff doesn't show? Shared utility
-  modified — who else calls it? Schema field renamed — what consumers
+  modified - who else calls it? Schema field renamed - what consumers
   break?
 - Changes to logging / metrics / instrumentation that could break
   dashboards, alerts, or SOC2 evidence trails.
@@ -47,17 +47,17 @@ the concrete risks and gaps that matter when this change lands.
 
 ## Severity calibration for this overlay
 
-- `high` — concrete risk on landing (missing tests for behavior changes
+- `high` - concrete risk on landing (missing tests for behavior changes
   with risk, blast-radius surprise, observability gap on a critical
   path).
-- `medium` — significant gap worth fixing before merge.
-- `low` — nit a senior would mention but not block on.
+- `medium` - significant gap worth fixing before merge.
+- `low` - nit a senior would mention but not block on.
 
 ## Output discipline
 
 - Category for overlay findings:
-  - Missing tests / observability / reversibility → `maintainability`.
-  - Coupling / blast radius → `coupling`.
+  - Missing tests / observability / reversibility -> `maintainability`.
+  - Coupling / blast radius -> `coupling`.
 - Overlay field MUST be `senior-eye`.
 - Be specific. "Add a test" is not actionable; "missing regression test
   for the empty-array branch on line 42" is.

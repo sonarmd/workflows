@@ -7,7 +7,7 @@ Every repo that ships to production uses the same two-file setup: a CI workflow 
 ## How it works
 
 ```
-PR → CI (lint + test + build + sign) → merge → CD (tag + release + @r2-d2) → Ansible deploy
+PR -> CI (lint + test + build + sign) -> merge -> CD (tag + release + @r2-d2) -> Ansible deploy
 ```
 
 ### Tag format
@@ -18,7 +18,7 @@ PR → CI (lint + test + build + sign) → merge → CD (tag + release + @r2-d2)
 
 Examples: `prd-api-b188`, `stg-fe-b44`, `prd-mobile-b12`
 
-No semver. Build number is monotonically incrementing across all runs of the workflow — it goes up forever.
+No semver. Build number is monotonically incrementing across all runs of the workflow - it goes up forever.
 
 - `stg` tags are created on merge to `release/*`
 - `prd` tags are created on merge to `master` or `main`
@@ -27,7 +27,7 @@ No semver. Build number is monotonically incrementing across all runs of the wor
 
 ## What goes in each repo
 
-### 1. `.github/workflows/cd.yml` — thin wrapper
+### 1. `.github/workflows/cd.yml` - thin wrapper
 
 ```yaml
 name: CD
@@ -55,7 +55,7 @@ That's it. One input. Everything else is driven by the repo's own files.
 
 ---
 
-### 2. `.github/workflows/ci.yml` — filled-out stub
+### 2. `.github/workflows/ci.yml` - filled-out stub
 
 ```yaml
 name: CI
@@ -102,13 +102,13 @@ jobs:
 
       - uses: sonarmd/workflows/actions/setup-node@<sha>
 
-      # ── Repo-specific setup ──────────────────────────────────────────────
+      # -- Repo-specific setup ----------------------------------------------
       # Add whatever your project needs: apt packages, docker containers, etc.
       - run: sudo apt-get update -qq && sudo apt-get install -y graphicsmagick
 
-      # ── Repo owns these steps ────────────────────────────────────────────
+      # -- Repo owns these steps --------------------------------------------
       - run: yarn lint
-      # - run: yarn typecheck    # optional — uncomment if you have a typecheck script
+      # - run: yarn typecheck    # optional - uncomment if you have a typecheck script
       - run: yarn build
       - name: Test
         env:
@@ -116,7 +116,7 @@ jobs:
           TZ: utc
         run: yarn test:ci --reporters=jest-junit
 
-      # ── Platform owns everything below ──────────────────────────────────
+      # -- Platform owns everything below ----------------------------------
       - uses: sonarmd/workflows/actions/ci-sign@<sha>
         if: always()
         with:
@@ -137,7 +137,7 @@ The "Repo owns" section is the only thing you edit per-repo. Everything above an
 
 ---
 
-### 3. `deploy.json` — deploy config (committed to repo)
+### 3. `deploy.json` - deploy config (committed to repo)
 
 Defines every deployable unit in this repo. Ansible reads this from the release artifact to know what to do.
 
@@ -161,7 +161,7 @@ Defines every deployable unit in this repo. Ansible reads this from the release 
 }
 ```
 
-**`{env}` is a placeholder** — the CD workflow substitutes the actual environment (`stg` or `prd`) before packaging. Ansible receives a fully resolved deploy.json.
+**`{env}` is a placeholder** - the CD workflow substitutes the actual environment (`stg` or `prd`) before packaging. Ansible receives a fully resolved deploy.json.
 
 #### Target types
 
@@ -185,21 +185,21 @@ Defines every deployable unit in this repo. Ansible reads this from the release 
 |--------|-------------|
 | `setup-node` | Installs Node from `package.json` volta/engines, caches yarn deps |
 | `ci-sign` | Verifies test report has real tests, generates CycloneDX SBOM, uploads evidence, attests with Sigstore |
-| `ping-slack` | CI-focused Slack notifier — fires on start, success, and failure with branch/commit/actor context |
-| `slack-notify` | Deploy-focused Slack notifier — fires with env/version/actor context |
+| `ping-slack` | CI-focused Slack notifier - fires on start, success, and failure with branch/commit/actor context |
+| `slack-notify` | Deploy-focused Slack notifier - fires with env/version/actor context |
 | `load-secrets` | 1Password secret injection via service account |
 
 ### CD workflow (`workflows/cd.yml`)
 
-1. Infer env from branch (`release/*` → stg, `master` → prd)
+1. Infer env from branch (`release/*` -> stg, `master` -> prd)
 2. Build tag: `{env}-{identifier}-b{run_number}`
 3. Get GitHub App token from 1Password
 4. Checkout repo
 5. Run `yarn build` (repo provides this)
-6. Resolve `deploy.json` — substitute `{env}`, validate it exists
-7. Package `release.tar.gz` — `deploy.json + package.json + dist/ + cdk.out/` (whatever exists)
+6. Resolve `deploy.json` - substitute `{env}`, validate it exists
+7. Package `release.tar.gz` - `deploy.json + package.json + dist/ + cdk.out/` (whatever exists)
 8. Create git tag + GitHub release (pre-release for stg, full release for prd)
-9. Notify `#ops`: `@r2-d2 {env} {identifier} {tag} {artifact_url}` → triggers Ansible
+9. Notify `#ops`: `@r2-d2 {env} {identifier} {tag} {artifact_url}` -> triggers Ansible
 
 ---
 
@@ -208,11 +208,11 @@ Defines every deployable unit in this repo. Ansible reads this from the release 
 1. **Install the SonarMD deploy GitHub App** on the repo
 2. **Add required secrets** to the repo:
    - `SLACK_WEBHOOK_URL`
-   - `OP_SERVICE_ACCOUNT_TOKEN_AGORA` (mapped to `OP_SERVICE_ACCOUNT_TOKEN` in the CD wrapper — see stub above)
-3. **Add `deploy.json`** — define the units this repo deploys
+   - `OP_SERVICE_ACCOUNT_TOKEN_AGORA` (mapped to `OP_SERVICE_ACCOUNT_TOKEN` in the CD wrapper - see stub above)
+3. **Add `deploy.json`** - define the units this repo deploys
 4. **Add `ci.yml`** and **`cd.yml`** from the stubs above
-5. **Ensure `yarn build` builds everything** — all lambda bundles, all output — in one command
-6. **Ensure `yarn test:ci` produces `junit.xml`** — `ci-sign` gate rejects builds without it
+5. **Ensure `yarn build` builds everything** - all lambda bundles, all output - in one command
+6. **Ensure `yarn test:ci` produces `junit.xml`** - `ci-sign` gate rejects builds without it
 
 ---
 

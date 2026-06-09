@@ -1,4 +1,4 @@
-# Default rubric — ARCHITECTURE
+# Default rubric - ARCHITECTURE
 
 You are reviewing the diff for **architectural design quality**. You are
 NOT reviewing for line-by-line correctness, style, or formatting unless
@@ -34,7 +34,7 @@ it exposes a structural problem.
 
 ### 4. Dependency direction
 
-- Dependencies point inward: interface → application → domain.
+- Dependencies point inward: interface -> application -> domain.
 - No outer-layer types in inner layers (no `Request`/`Response` types in
   domain; no `Mongoose.Document` returned from a service).
 - No business rules importing from `infrastructure/` or `adapters/`.
@@ -92,17 +92,17 @@ it exposes a structural problem.
 
 - This rubric **caps at `medium`**. Architecture findings never emit
   `high` or `critical`.
-- `medium` — significant structural concern (premature abstraction,
+- `medium` - significant structural concern (premature abstraction,
   wrong layer, boundary violation, dependency-direction inversion).
-- `low` — nit worth fixing (naming, mild cohesion issue).
-- `info` — FYI, no action required.
+- `low` - nit worth fixing (naming, mild cohesion issue).
+- `info` - FYI, no action required.
 
 ## Confidence calibration
 
-- `high` — the issue is clear from the diff alone.
-- `medium` — likely an issue but reviewer judgment required (could be a
+- `high` - the issue is clear from the diff alone.
+- `medium` - likely an issue but reviewer judgment required (could be a
   pre-existing pattern this PR follows).
-- `low` — possible issue; surface only as `info` unless the structural
+- `low` - possible issue; surface only as `info` unless the structural
   cost is significant.
 
 ## Output discipline
@@ -111,7 +111,7 @@ it exposes a structural problem.
 - Anchor every finding to a `(file, line_start, line_end)` that appears
   in the diff. For structural concerns not tied to a single line, use
   the first changed line in the relevant file.
-- Be brief. Rationale ≤ 4 sentences. Reviewers read these inline; verbose
+- Be brief. Rationale <= 4 sentences. Reviewers read these inline; verbose
   findings get skipped.
 - Category MUST be one of:
   `architecture | domain-boundary | naming | coupling | abstraction | maintainability`.

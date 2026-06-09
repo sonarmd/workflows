@@ -33,14 +33,14 @@ runs:
         #   2. .node-version in working directory  (fnm / asdf canonical)
         #   3. .node-version at workspace root
         #   4. package.json engines.node (range expressions resolved to their
-        #      lowest concrete version; ">=18.0.0" → "18.0.0", which is
-        #      almost never what the caller wants — prefer .node-version)
+        #      lowest concrete version; ">=18.0.0" -> "18.0.0", which is
+        #      almost never what the caller wants - prefer .node-version)
         #   5. fall back to "24"
         #
         # The composite previously read engines.node directly with
         # `tr -d '^~>=x '`, which silently pinned ">=18.0.0" callers to
         # Node 18.0.0. .node-version is the canonical fnm/asdf file and
-        # should win when present. (We deliberately do NOT read .nvmrc —
+        # should win when present. (We deliberately do NOT read .nvmrc -
         # this org runs fnm, not nvm.)
         if [ -n "$INPUT_NODE_VERSION" ]; then
           VERSION="$INPUT_NODE_VERSION"
@@ -110,7 +110,7 @@ runs:
             corepack enable ;;
         esac
 
-    # No actions/cache restore — yarn v1 + cache restore has a known race
+    # No actions/cache restore - yarn v1 + cache restore has a known race
     # where the integrity dir is repopulated from the tarball but yarn install
     # still tries to mkdir() the same paths and dies with EEXIST. `yarn cache
     # clean` does not fully clear v6 integrity dirs. We pay the cold-cache
@@ -129,7 +129,7 @@ runs:
       run: |
         # SSH URLs in package.json (kept for local dev ergonomics) need to
         # resolve over HTTPS in CI since runners have no SSH key. Use
-        # UNAUTHENTICATED HTTPS — public repos (e.g. star-config) serve fine.
+        # UNAUTHENTICATED HTTPS - public repos (e.g. star-config) serve fine.
         # Injecting a token that lacks explicit access to the target repo
         # causes GitHub to return 404 "Repository not found" even for public
         # repos.
@@ -138,7 +138,7 @@ runs:
 
         # actions/checkout persists an Authorization header in the cloned
         # repo's LOCAL config. That header is sent on EVERY git fetch from
-        # github.com — including yarn's cross-repo dep fetches — and triggers
+        # github.com - including yarn's cross-repo dep fetches - and triggers
         # the same 404 on public repos. Strip it.
         git config --local --unset-all http."https://github.com/".extraheader || true
 
