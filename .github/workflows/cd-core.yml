@@ -61,8 +61,6 @@ jobs:
       # exports op:// refs, so direct GH secrets must come through this block.
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      CONFLUENCE_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
-      CONFLUENCE_TOKEN: ${{ secrets.CONFLUENCE_TOKEN }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -312,16 +310,19 @@ jobs:
           artifact_path: artifact/release.tar.gz
           release_id: ${{ steps.release.outputs.release_id }}
 
-      # Visibility surfaces (open-deployment + slack-deploy-message + confluence)
-      # replace the old single signal-deployment step. The Slack message keeps
-      # the existing trigger text format ("deploy ENV APP TAG ARTIFACT_URL") in
-      # its text fallback so the Ansible parser is unchanged. New: a GitHub
+      # Visibility surfaces (open-deployment + slack-deploy-message) replace
+      # the old single signal-deployment step. The Slack message keeps the
+      # existing trigger text format ("deploy ENV APP TAG ARTIFACT_URL") in
+      # its text fallback so the Ansible parser is unchanged. The GitHub
       # Deployment object lights up the repo Environments tab and the Jira
-      # Deployments panel (via the Atlassian for GitHub app). A Confluence row
-      # records the SHA forever in an append-only log.
+      # Deployments panel (via the Atlassian for GitHub app).
 
       - name: Open GitHub Deployment
         id: deployment
+        # Visibility surface only (Environments tab + Jira Deployments
+        # panel). The deploy itself is triggered by the Slack message
+        # below; a GitHub-API hiccup here must not block the deploy.
+        continue-on-error: true
         uses: sonarmd/workflows/actions/open-deployment@main
         with:
           environment: ${{ steps.ctx.outputs.env }}
@@ -342,27 +343,6 @@ jobs:
           sha: ${{ github.sha }}
           artifact_url: ${{ steps.artifact.outputs.artifact_url }}
           deployment_id: ${{ steps.deployment.outputs.deployment_id }}
-
-      - name: Confluence Deploy Log append
-        id: confluence
-        if: env.CONFLUENCE_BASE_URL != '' && vars.CONFLUENCE_DEPLOY_LOG_PAGE_ID != ''
-        continue-on-error: true
-        uses: sonarmd/workflows/actions/confluence-deploy-log-append@main
-        with:
-          base_url: ${{ env.CONFLUENCE_BASE_URL }}
-          api_token: ${{ env.CONFLUENCE_TOKEN }}
-          page_id: ${{ vars.CONFLUENCE_DEPLOY_LOG_PAGE_ID }}
-          app: ${{ steps.ctx.outputs.identifier }}
-          env: ${{ steps.ctx.outputs.env }}
-          tag: ${{ steps.build.outputs.tag }}
-          sha: ${{ github.sha }}
-          deployer: ${{ github.actor }}
-
-      - name: Release lifecycle
-        if: steps.ctx.outputs.env == 'prd'
-        uses: sonarmd/workflows/actions/release-lifecycle@main
-        with:
-          token: ${{ github.token }}
 
       - name: Notify Slack on failure
         if: failure()

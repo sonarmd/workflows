@@ -166,7 +166,27 @@ jobs:
       effective_post_inline: ${{ steps.config.outputs.post_inline_comments }}
       effective_apply_labels: ${{ steps.config.outputs.apply_labels }}
       effective_check_name: ${{ steps.config.outputs.check_name }}
+      auth_available: ${{ steps.auth_check.outputs.auth_available }}
     steps:
+      - name: Check LLM auth availability
+        # Gates the review-agent job. Both secrets are optional at the
+        # workflow_call boundary, but the agent container hard-fails (exit
+        # 2) if neither is set. Detecting absence here lets us skip the
+        # agent job cleanly (no red), and publish still runs because of
+        # its always() and synthesizes the neutral "unavailable" comment.
+        id: auth_check
+        env:
+          HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${HAS_OAUTH}" == "true" || "${HAS_API_KEY}" == "true" ]]; then
+            echo "auth_available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "auth_available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No LLM auth secret set (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY) on this repo/org. Agent review will be skipped; publish will post a neutral 'unavailable' check."
+          fi
+
       - name: Validate image_tag against allowlist
         # SECURITY: inputs.image_tag flows into the Stage 1 container.image
         # field. That container receives CLAUDE_CODE_OAUTH_TOKEN /
@@ -300,6 +320,7 @@ jobs:
   # from the workflow-level grant, breaking GHCR login.
   review-agent:
     needs: prepare
+    if: needs.prepare.outputs.auth_available == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -327,6 +348,12 @@ jobs:
           path: /work
 
       - name: Run agent (Stage 1)
+        # Never block the job on the agent itself. Almost every internal
+        # failure mode already routes through emit_malformed + exit 0
+        # inside the container; this catches the residual exit-nonzero
+        # cases (caller config error, sdk crash, etc.) and lets the
+        # publisher post a clean neutral comment with the reason.
+        continue-on-error: true
         uses: ./.sonarmd-workflows/actions/agent-arch-review-agent
         with:
           input_dir: /work
@@ -339,11 +366,18 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Upload findings
+        # Run on always() so a partially-written findings.json (or an
+        # emit_malformed payload from a soft-failed agent step) still
+        # reaches the publisher. Missing/empty path -> publisher's
+        # synthesize-fallback step writes a clean malformed payload.
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: agent-review-findings-${{ needs.prepare.outputs.pr_number }}
           path: /work/findings.json
           retention-days: 14
+          if-no-files-found: ignore
 
   # ─── STAGE 2: PUBLISH ─────────────────────────────────────────────────
   # Plain runner. Scoped write permissions. NO LLM access.
@@ -388,19 +422,18 @@ jobs:
           path: work/
 
       - name: Synthesize fallback findings if missing or empty
-        # Graceful degradation: if the agent job crashed before writing
-        # findings.json, OR if it uploaded a zero-byte file (OOM mid-write,
+        # Graceful degradation: if the agent job was skipped (no LLM auth
+        # secret on the repo/org), or if it crashed before writing
+        # findings.json, or if it uploaded a zero-byte file (OOM mid-write,
         # etc.), fabricate a malformed-status one so the publisher still
         # posts a neutral check + "review unavailable" comment rather than
-        # the whole publish job exploding. hashFiles() returns empty only
-        # when the file doesn't exist — we additionally check for empty
-        # content via the run step's own `[[ -s ]]` test, which catches
-        # the zero-byte case.
+        # the whole publish job exploding.
         env:
           HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
           BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
           REVIEW_MODE: ${{ needs.prepare.outputs.effective_review_mode }}
           OVERLAYS: ${{ needs.prepare.outputs.effective_overlays }}
+          AUTH_AVAILABLE: ${{ needs.prepare.outputs.auth_available }}
         run: |
           set -euo pipefail
           mkdir -p work
@@ -408,7 +441,7 @@ jobs:
             echo "::notice::findings.json present (size $(wc -c < work/findings.json) bytes); no synthesis needed"
             exit 0
           fi
-          # Preserve the audit trail — record what mode/overlays were
+          # Preserve the audit trail: record what mode/overlays were
           # requested even when degradation fires. Otherwise compliance
           # auditors looking at check-run history see every degraded run
           # as 'architecture / []' regardless of what the operator
@@ -418,11 +451,17 @@ jobs:
             | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
             | grep -v '^$' \
             | jq -R . | jq -s .)
+          if [[ "${AUTH_AVAILABLE}" == "false" ]]; then
+            SUMMARY="Agent review skipped: no LLM auth secret configured on this repo/org (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY). Org/repo admin: set one of those secrets to enable agent reviews."
+          else
+            SUMMARY="Agent review was unavailable for this PR. The agent job did not complete successfully. See the workflow run logs for details."
+          fi
           jq -n \
             --arg head "$HEAD_SHA" \
             --arg base "$BASE_SHA" \
             --arg mode "$REVIEW_MODE" \
             --argjson overlays "$OVERLAYS_JSON" \
+            --arg summary "$SUMMARY" \
             '{
               schema_version: "2",
               head_sha: $head,
@@ -430,12 +469,12 @@ jobs:
               review_mode: $mode,
               overlays_applied: $overlays,
               parser_status: "malformed",
-              summary_markdown: "Agent review was unavailable for this PR. The agent job did not complete successfully — see the workflow run logs for details.",
+              summary_markdown: $summary,
               labels: [],
               categories_present: [],
               findings: []
             }' > work/findings.json
-          echo "::warning::synthesized fallback findings.json — review-agent job did not upload a usable one"
+          echo "::warning::synthesized fallback findings.json (review-agent skipped or did not upload a usable one)"
 
       - name: Publish (Stage 2)
         uses: ./.sonarmd-workflows/actions/agent-arch-review-publish

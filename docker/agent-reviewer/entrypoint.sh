@@ -58,14 +58,6 @@ EOF
   exit 0
 fi
 
-require_env() {
-  local var="$1"
-  if [[ -z "${!var:-}" ]]; then
-    echo "::error::missing required env: $var" >&2
-    exit 2
-  fi
-}
-
 if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
   echo "::error::no claude auth — set CLAUDE_CODE_OAUTH_TOKEN (preferred) or ANTHROPIC_API_KEY" >&2
   exit 2
