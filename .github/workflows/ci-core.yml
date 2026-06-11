@@ -106,6 +106,22 @@ jobs:
         shell: bash
         run: ${{ inputs.steps }}
 
+      # Fail fast, not silent: a branch push is a deploy-driving event
+      # (the orchestrator routes it into CD, which needs the staged
+      # artifact). Without deploy.json every bundle/sign/stage step
+      # below skips silently and CD dies later with a misleading
+      # 'artifact not found' - that is how sonarmd/frontend shipped
+      # green CI and zero deploys (2026-06-08). Existence check only;
+      # contract validation still happens once, at the edge.
+      # PR / merge_group runs keep skipping quietly: repos without a
+      # deploy contract still get CI.
+      - name: Require deploy.json on deploy-driving refs
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') && hashFiles('deploy.json') == ''
+        shell: bash
+        run: |
+          echo "::error::ci-core: push to ${GITHUB_REF#refs/heads/} is a deploy-driving event but deploy.json is missing at the repo root. CD will have no artifact. Add deploy.json (schema: sonarmd/workflows/schemas/deploy.schema.json) or stop triggering push runs for this repo."
+          exit 1
+
       # Cache check: if a GitHub Release already has release.tar.gz attached
       # for this SHA (target_commitish), skip bundle/sign/stage. CD will pull
       # straight from the existing release asset.
