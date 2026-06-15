@@ -46,7 +46,7 @@ on:
         type: string
         default: "ubuntu-24.04-arm"
     secrets:
-      CI_SIGNING_KEY:
+      RELEASE_SIGNING_SECRET_B64:
         description: |
           Base64-encoded armored GPG private key used to sign
           submodule-checksums.txt inside the release artifact.
@@ -81,7 +81,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       # secrets context is unavailable in step `if` expressions; capture
       # presence as a plain env bool so the Sign release step can gate on it.
-      HAS_SIGNING_KEY: ${{ secrets.CI_SIGNING_KEY != '' }}
+      HAS_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_SECRET_B64 != '' }}
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
@@ -144,7 +144,7 @@ jobs:
         uses: sonarmd/workflows/actions/sign-release@main
         with:
           artifact_path: release.tar.gz
-          signing_key: ${{ secrets.CI_SIGNING_KEY }}
+          signing_key: ${{ secrets.RELEASE_SIGNING_SECRET_B64 }}
 
       # Stage the signed tarball for the CD job in the same workflow run.
       # Name is keyed by SHA so CD's download-artifact picks the right one.
