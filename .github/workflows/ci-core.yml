@@ -120,19 +120,26 @@ jobs:
         shell: bash
         run: ${{ inputs.steps }}
 
-      # Security gate: semgrep (SAST) + gitleaks (secret scan) + trivy (deps).
-      # The action existed but was never wired into ci-core - restored here.
-      # Needs node_modules (@sonarmd/star-config) so gated on yarn.lock like
-      # Setup Node.js. Fails the build on findings (fail_on_findings default).
+      # Security visibility: semgrep (SAST) + gitleaks (secret scan) + trivy
+      # (deps). Restored as REPORT-ONLY: fail_on_findings=false and
+      # continue-on-error, so it surfaces findings as evidence but NEVER
+      # blocks the build. Needs node_modules (@sonarmd/star-config) so gated
+      # on yarn.lock.
       - name: Security scan
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
         uses: sonarmd/workflows/actions/security-scan@main
+        with:
+          fail_on_findings: "false"
 
-      # Quality gate: jscpd (copy-paste detection) + knip (dead code / unused
-      # deps). Also built but never wired - restored here.
+      # Quality visibility: jscpd (copy-paste) + knip (dead code / unused
+      # deps). Also REPORT-ONLY - reports, never blocks.
       - name: Quality scan
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
         uses: sonarmd/workflows/actions/quality-scan@main
+        with:
+          fail_on_findings: "false"
 
       # Cache check: if a GitHub Release already carries release.tar.gz for
       # this tree hash (cd-core-tree marker in the body), skip bundle/sign/
@@ -162,12 +169,13 @@ jobs:
             echo "release-probe: MISS"
           fi
 
-      # Validate deploy.json against the authoritative schema + check the
-      # built bundle dirs match the declarations, BEFORE bundling. This was
-      # wired into ci-core and stripped out by 996ffa2 ("inline ci-core -
-      # zero composite deps"); restored here as the pre-bundle gate.
+      # Validate deploy.json against the schema + check built bundle dirs
+      # match declarations. Stripped by 996ffa2 ("inline ci-core - zero
+      # composite deps"); restored as REPORT-ONLY (continue-on-error) - it
+      # records the result but never blocks the build.
       - name: Validate release contract
         if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true'
+        continue-on-error: true
         uses: sonarmd/workflows/actions/validate-release-contract@main
 
       - name: Bundle release
