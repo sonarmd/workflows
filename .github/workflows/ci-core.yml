@@ -91,6 +91,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Content address: the tree hash is the identity of the build, not the
+      # commit SHA. It is invariant across squash/rebase merges that rewrite
+      # the SHA while leaving the file tree identical, so test/stg/prod that
+      # share a tree reuse one build and the artifact promotes without a
+      # rebuild. Keyed on HEAD's root tree.
+      - name: Compute tree hash
+        id: tree
+        shell: bash
+        # Repo-root tree, to match cd-core (which content-addresses at root).
+        # git rev-parse HEAD^{tree} returns the commit's root tree regardless
+        # of cwd, but pin to the workspace root so the two never diverge.
+        working-directory: ${{ github.workspace }}
+        run: echo "hash=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
         uses: sonarmd/workflows/actions/setup-node@main
@@ -106,22 +120,23 @@ jobs:
         shell: bash
         run: ${{ inputs.steps }}
 
-      # Cache check: if a GitHub Release already has release.tar.gz attached
-      # for this SHA (target_commitish), skip bundle/sign/stage. CD will pull
-      # straight from the existing release asset.
-      - name: Probe release for SHA
+      # Cache check: if a GitHub Release already carries release.tar.gz for
+      # this tree hash (cd-core-tree marker in the body), skip bundle/sign/
+      # stage. CD will pull straight from the existing release asset. Keyed
+      # on the tree hash so an identical tree under a rewritten SHA still hits.
+      - name: Probe release for tree hash
         id: probe
         if: hashFiles('deploy.json') != ''
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          TREE: ${{ steps.tree.outputs.hash }}
         shell: bash
         run: |
           set -euo pipefail
           tag=$(gh api -X GET "repos/$GH_REPO/releases" --paginate \
-                | jq -r --arg sha "$SHA" \
-                    '.[] | select(.target_commitish == $sha) | .tag_name' \
+                | jq -r --arg marker "<!-- cd-core-tree:$TREE -->" \
+                    '.[] | select(.body != null and (.body | contains($marker))) | .tag_name' \
                 | head -n1)
           if [ -n "$tag" ] && gh release view "$tag" --repo "$GH_REPO" --json assets \
               | jq -e '.assets[] | select(.name == "release.tar.gz")' >/dev/null; then
@@ -147,13 +162,13 @@ jobs:
           signing_key: ${{ secrets.CI_SIGNING_KEY }}
 
       # Stage the signed tarball for the CD job in the same workflow run.
-      # Name is keyed by SHA so CD's download-artifact picks the right one.
-      # Skipped on cache hit -- CD pulls from the existing release instead.
+      # Name is keyed by tree hash so CD's download-artifact picks the right
+      # one. Skipped on cache hit -- CD pulls from the existing release.
       - name: Stage release artifact
         if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ github.sha }}
+          name: release-${{ steps.tree.outputs.hash }}
           path: |
             release.tar.gz
             release.tar.gz.sha512
@@ -166,4 +181,4 @@ jobs:
         if: steps.probe.outputs.present == 'true'
         shell: bash
         run: |
-          echo "ci-core: release ${{ steps.probe.outputs.tag }} already has release.tar.gz for ${{ github.sha }} -- skipped rebuild."
+          echo "ci-core: release ${{ steps.probe.outputs.tag }} already has release.tar.gz for tree ${{ steps.tree.outputs.hash }} -- skipped rebuild."
