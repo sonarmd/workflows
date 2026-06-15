@@ -1,0 +1,90 @@
+name: Export Signing Public Key (one-shot)
+
+# One-shot helper. Emits the PUBLIC half of RELEASE_SIGNING_SECRET_B64 so it can
+# be committed to triggr_misc as the artifact-verify trust anchor.
+#
+# The private key is decrypted ONLY inside this ephemeral runner, into a
+# throwaway GPG homedir, and is NEVER written to a log or an artifact - only the
+# armored public key block leaves. A guard refuses to continue if any private
+# key material shows up in the export.
+#
+# Triggers on push to its own throwaway branch (avoids the workflow_dispatch
+# must-live-on-default-branch gotcha and keeps main untouched). Delete the
+# branch when the public key has been captured.
+
+on:
+  push:
+    branches: [chore/export-signing-pubkey]
+
+permissions:
+  contents: read
+
+jobs:
+  export-pubkey:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - name: Export public key only
+        env:
+          SIGNING_KEY_B64: ${{ secrets.RELEASE_SIGNING_SECRET_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SIGNING_KEY_B64:-}" ]; then
+            echo "::error::RELEASE_SIGNING_SECRET_B64 is empty or not accessible in this repo context."
+            echo "::error::If it is a repo-scoped secret, run this job in the repo that holds it (e.g. frontend)."
+            exit 1
+          fi
+
+          GNUPGHOME="$(mktemp -d)"
+          export GNUPGHOME
+          chmod 0700 "$GNUPGHOME"
+          cleanup() { rm -rf "$GNUPGHOME"; }
+          trap cleanup EXIT
+
+          # Decode + import the private key. The decoded bytes are piped straight
+          # into gpg - never echoed, never written to disk outside the keyring.
+          if ! printf '%s' "$SIGNING_KEY_B64" | base64 -d | gpg --batch --import 2>/tmp/import.err; then
+            echo "::error::failed to import signing key"
+            sed 's/^/import: /' /tmp/import.err || true
+            exit 1
+          fi
+
+          FPR="$(gpg --batch --with-colons --list-keys | awk -F: '/^fpr:/{print $10; exit}')"
+          if [ -z "$FPR" ]; then
+            echo "::error::could not derive a fingerprint from the imported key"
+            exit 1
+          fi
+          echo "signing key fingerprint: ${FPR}"
+          gpg --batch --with-colons --list-keys "$FPR" | awk -F: '/^uid:/{print "uid: " $10; exit}' || true
+
+          # Export ONLY the public half.
+          gpg --batch --armor --export "$FPR" > "${GITHUB_WORKSPACE}/ci-signing.pub"
+          echo "public key bytes: $(wc -c < "${GITHUB_WORKSPACE}/ci-signing.pub")"
+
+          # Hard guard: refuse if any private key material leaked into the file.
+          if grep -q 'PRIVATE KEY' "${GITHUB_WORKSPACE}/ci-signing.pub"; then
+            echo "::error::refusing to continue - private key material present in export"
+            rm -f "${GITHUB_WORKSPACE}/ci-signing.pub"
+            exit 1
+          fi
+
+          {
+            echo '### Signing public key'
+            echo ''
+            echo "Fingerprint: \`${FPR}\`"
+            echo ''
+            echo '```'
+            cat "${GITHUB_WORKSPACE}/ci-signing.pub"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload public key artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-signing-pub
+          path: ci-signing.pub
+          if-no-files-found: error
+          retention-days: 1
