@@ -34,6 +34,17 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # wrangler@4.x requires Node >= 22; the runner default is Node 20, so
+      # `npx wrangler deploy` hard-exits before it authenticates. Every
+      # deploy-signing-worker run failed here (2026-05-03..05-07), which is
+      # why the smd-signing-keys worker was never stood up and artifact-verify
+      # has had no trust store to fetch keys from. Pin Node 22 (matches the
+      # NODE_VERSION org var) so wrangler runs.
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Patch wrangler.toml with KV namespace ID
         working-directory: workers/signing-keys
         env:
