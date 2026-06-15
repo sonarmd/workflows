@@ -69,6 +69,16 @@ jobs:
           sparse-checkout-cone-mode: false
           fetch-depth: 2
 
+      # Content address: HEAD's root tree hash identifies the artifact. On a
+      # master/main promote this equals the release tip's tree (release is
+      # always cut from master and runs ahead, so master is its ancestor and
+      # the merge leaves the tree identical), so the stg artifact is found and
+      # promoted without a rebuild. Invariant across SHA-rewriting merges.
+      - name: Compute tree hash
+        id: tree
+        shell: bash
+        run: echo "hash=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
       - name: Load secrets
         uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0 # v2
         env:
@@ -81,6 +91,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           IDENTIFIER_VAR: ${{ vars.DEPLOY_IDENTIFIER }}
+          TREE: ${{ steps.tree.outputs.hash }}
         with:
           script: |
             const identifier = process.env.IDENTIFIER_VAR;
@@ -102,86 +113,69 @@ jobs:
               return;
             }
 
-            // ── master / main → promote existing prerelease to prd ──────
+            // -- master / main -> promote existing prerelease to prd ------
             if (ref === 'master' || ref === 'main') {
-              // Look at HEAD and HEAD's parents (merge-commit's second parent
-              // is the release-branch tip when master gets a release merge).
-              const { data: commit } = await github.rest.git.getCommit({
-                owner, repo, commit_sha: context.sha,
-              });
-              const candidateShas = new Set([context.sha, ...commit.parents.map(p => p.sha)]);
-              core.info(`cd-core: searching for prerelease on any of: ${[...candidateShas].join(', ')}`);
-
-              const prereleases = [];
+              // Content address: find the stg prerelease built from the same
+              // tree as this master HEAD. release is always cut from master and
+              // runs ahead, so master HEAD's tree equals the release tip's tree
+              // -- the artifact is the same bytes no matter how the
+              // release->master merge rewrote the commit SHA. Match on the
+              // cd-core-tree body marker, not the SHA.
+              const tree = process.env.TREE;
+              if (!/^[0-9a-f]{40}$/.test(tree || '')) {
+                core.setFailed(`cd-core: tree hash '${tree}' is not a 40-hex sha`);
+                return;
+              }
+              const marker = `<!-- cd-core-tree:${tree} -->`;
               const prereleasePrefix = `stg-${identifier}-v`;
+
+              let matched;
+              let scanned = 0;
               let page = 1;
-              while (true) {
+              while (!matched) {
                 const { data } = await github.rest.repos.listReleases({
                   owner, repo, per_page: 100, page,
                 });
                 if (!Array.isArray(data) || data.length === 0) break;
                 for (const r of data) {
                   if (r.prerelease && r.tag_name.startsWith(prereleasePrefix)) {
-                    prereleases.push(r);
+                    scanned += 1;
+                    if (r.body && r.body.includes(marker)) { matched = r; break; }
                   }
                 }
                 if (data.length < 100) break;
                 page += 1;
               }
-              core.info(`cd-core: scanning ${prereleases.length} stg-${identifier}-v* prereleases for an ancestor-SHA match`);
+              core.info(`cd-core: scanned ${scanned} stg-${identifier}-v* prereleases for tree ${tree}`);
 
-              let matched;
-              for (const pre of prereleases) {
-                try {
-                  const { data: tagRef } = await github.rest.git.getRef({
-                    owner, repo, ref: `tags/${pre.tag_name}`,
-                  });
-                  let tagSha = tagRef.object.sha;
-                  if (tagRef.object.type === 'tag') {
-                    const { data: tagObj } = await github.rest.git.getTag({
-                      owner, repo, tag_sha: tagSha,
-                    });
-                    tagSha = tagObj.object.sha;
-                  }
-                  if (candidateShas.has(tagSha)) {
-                    matched = pre;
-                    break;
-                  }
-                } catch (e) {
-                  if (e.status !== 404) throw e;
-                }
-              }
-
-              if (matched) {
-                // Strip the exact `stg-${identifier}-v` prefix rather than a regex,
-                // so identifiers containing hyphens (e.g. `core-api`) parse correctly.
-                if (!matched.tag_name.startsWith(prereleasePrefix)) {
-                  core.setFailed(`cd-core: matched prerelease '${matched.tag_name}' does not start with expected prefix '${prereleasePrefix}'`);
-                  return;
-                }
-                const versionTail = matched.tag_name.slice(prereleasePrefix.length);
-                const m = versionTail.match(/^(\d+\.\d+\.\d+)/);
-                if (!m) {
-                  core.setFailed(`cd-core: matched prerelease '${matched.tag_name}' has no parseable version`);
-                  return;
-                }
-                const version = m[1];
-                core.notice(`cd-core: master/main → promoting ${matched.tag_name} → prd ${identifier} v${version}`);
-                core.setOutput('env',            'prd');
-                core.setOutput('identifier',     identifier);
-                core.setOutput('version',        version);
-                core.setOutput('promoted_from',  matched.tag_name);
+              if (!matched) {
+                // No stg artifact was built from this tree. Refuse to ship an
+                // unversioned/unbuilt prd release -- fail loudly instead of the
+                // old YOLO-v404 fallback that silently shipped "unknown version"
+                // to prod. Run the release/vX.Y.Z -> master flow first.
+                core.setFailed(
+                  `cd-core: no stg-${identifier} prerelease was built from tree ${tree}. ` +
+                  `Promote requires the matching stg artifact -- run the ` +
+                  `release/vX.Y.Z -> master flow so the prerelease exists before ` +
+                  `pushing to ${ref}. Refusing to ship an unversioned prd build.`
+                );
                 return;
               }
 
-              // No stg prerelease on HEAD's ancestry. The workflow does NOT
-              // enforce the release/vX.Y.Z → master flow — direct pushes to
-              // master deploy. Fall through to YOLO prd: emit a v404 prd
-              // release ("unknown version"). No setFailed, no guard.
-              core.notice(`cd-core: master/main, no prerelease in ancestry → YOLO prd ${identifier} v404`);
-              core.setOutput('env',        'prd');
-              core.setOutput('identifier', identifier);
-              core.setOutput('version',    '404');
+              // Strip the exact `stg-${identifier}-v` prefix rather than a regex,
+              // so identifiers containing hyphens (e.g. `core-api`) parse correctly.
+              const versionTail = matched.tag_name.slice(prereleasePrefix.length);
+              const m = versionTail.match(/^(\d+\.\d+\.\d+)/);
+              if (!m) {
+                core.setFailed(`cd-core: matched prerelease '${matched.tag_name}' has no parseable version`);
+                return;
+              }
+              const version = m[1];
+              core.notice(`cd-core: master/main -> promoting ${matched.tag_name} -> prd ${identifier} v${version} (tree ${tree})`);
+              core.setOutput('env',            'prd');
+              core.setOutput('identifier',     identifier);
+              core.setOutput('version',        version);
+              core.setOutput('promoted_from',  matched.tag_name);
               return;
             }
 
@@ -244,21 +238,23 @@ jobs:
             core.info(`cd-core: ${tag}`);
             core.setOutput('tag', tag);
 
-      # Cache check: prefer an existing release asset for this SHA over the
-      # staged Actions artifact from the same workflow run. On cache hit the
-      # CI job skipped bundle/sign/stage; pull straight from the release.
-      - name: Probe release for SHA
+      # Cache check: prefer an existing release asset for this tree hash over
+      # the staged Actions artifact from the same workflow run. On cache hit
+      # the CI job skipped bundle/sign/stage; pull straight from the release.
+      # Keyed on the cd-core-tree body marker so an identical tree under a
+      # rewritten SHA still hits (this is what lets prod reuse the stg bytes).
+      - name: Probe release for tree hash
         id: probe
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          TREE: ${{ steps.tree.outputs.hash }}
         shell: bash
         run: |
           set -euo pipefail
           tag=$(gh api -X GET "repos/$GH_REPO/releases" --paginate \
-                | jq -r --arg sha "$SHA" \
-                    '.[] | select(.target_commitish == $sha) | .tag_name' \
+                | jq -r --arg marker "<!-- cd-core-tree:$TREE -->" \
+                    '.[] | select(.body != null and (.body | contains($marker))) | .tag_name' \
                 | head -n1)
           if [ -n "$tag" ] && gh release view "$tag" --repo "$GH_REPO" --json assets \
               | jq -e '.assets[] | select(.name == "release.tar.gz")' >/dev/null; then
@@ -287,7 +283,7 @@ jobs:
         if: steps.probe.outputs.present != 'true'
         uses: actions/download-artifact@v4
         with:
-          name: release-${{ github.sha }}
+          name: release-${{ steps.tree.outputs.hash }}
           path: artifact
 
       - name: Create tag
@@ -301,6 +297,7 @@ jobs:
         with:
           tag: ${{ steps.build.outputs.tag }}
           environment: ${{ steps.ctx.outputs.env }}
+          tree_hash: ${{ steps.tree.outputs.hash }}
 
       - name: Upload artifact
         id: artifact

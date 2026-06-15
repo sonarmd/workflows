@@ -16,6 +16,9 @@ inputs:
     description: 'Force prerelease flag. Auto-set for non-prd if not specified.'
     required: false
     default: ''
+  tree_hash:
+    description: 'Git tree hash (git rev-parse HEAD^{tree}) this release was built from. Recorded as a body marker so probe/promote can content-address the artifact instead of keying on the commit SHA.'
+    required: true
 
 outputs:
   release_id:
@@ -36,13 +39,20 @@ runs:
         ENVIRONMENT:         ${{ inputs.environment }}
         RELEASE_NOTES:       ${{ inputs.release_notes }}
         PRERELEASE_OVERRIDE: ${{ inputs.prerelease }}
+        TREE_HASH:           ${{ inputs.tree_hash }}
       with:
         script: |
           const tag         = process.env.TAG;
           const environment = process.env.ENVIRONMENT;
           const preOverride = process.env.PRERELEASE_OVERRIDE;
+          const treeHash    = process.env.TREE_HASH;
           const isPrerelease = preOverride !== '' ? preOverride === 'true' : environment !== 'prd';
           const { owner, repo } = context.repo;
+
+          if (!/^[0-9a-f]{40}$/.test(treeHash)) {
+            core.setFailed(`create-release: tree_hash '${treeHash}' is not a 40-hex git tree sha`);
+            return;
+          }
 
           try {
             const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
@@ -63,9 +73,16 @@ runs:
               const notes = await github.rest.repos.generateReleaseNotes({ owner, repo, tag_name: tag });
               body = notes.data.body;
             } catch (e) {
-              core.warning(`create-release: could not generate release notes — ${e.message}`);
+              core.warning(`create-release: could not generate release notes - ${e.message}`);
             }
           }
+
+          // Content-address marker: the tree hash this artifact was built
+          // from. probe (ci-core/cd-core) and master-promote (cd-core) match
+          // on this line instead of the commit SHA, so the same bytes are
+          // found across squash/rebase merges that rewrite the SHA. One line,
+          // machine-greppable, appended below the human notes.
+          body = `${body}\n\n<!-- cd-core-tree:${treeHash} -->\n`;
 
           // Create as draft so assets can be attached before publishing.
           // Immutable-release org policies block asset uploads on published releases.

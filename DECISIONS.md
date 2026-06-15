@@ -13,7 +13,7 @@ files. No exceptions, no "temporarily," no "for this one repo," no
 "for backward compatibility."
 
 1. `ci-core.yml` — CI only. Inputs: `setup`, `steps`. Signs + preserves artifact. Slack on fail.
-2. `cd-core.yml` — CD only. **No inputs.** Discovers by SHA. Tags commit, creates GH Release with the CI artifact bundle, pings Slack deploy channel.
+2. `cd-core.yml` - CD only. **No inputs.** Discovers the artifact by tree hash (content address). Tags commit, creates GH Release with the CI artifact bundle, pings Slack deploy channel.
 3. `cicd-orchestrator.yml` — routes: PR → CI only; push to master/main/release/** → reuse CI artifact if present, else run CI, then CD.
 
 All other logic (signing, tagging, slack formatting, artifact download, etc.)
@@ -209,3 +209,43 @@ both yarn 1 and yarn 4. One install command, two package-manager majors.
 not a change to the THREE-workflow architecture. Future agents: do NOT remove
 the Corepack step as "unused flexibility." It is load-bearing for any caller
 with a `packageManager` field.
+
+---
+
+## 2026-06-14 - Artifacts are content-addressed by tree hash, not commit SHA
+
+ci-core and cd-core identify the release artifact by the git tree hash
+(`git rev-parse HEAD^{tree}`), recorded as a `<!-- cd-core-tree:<40hex> -->`
+marker in each GH Release body. The probe (skip-rebuild cache), the staged
+artifact name (`release-<tree>`), and the master/main prerelease-to-prd
+promote all match on that tree hash. The commit SHA is no longer an artifact
+identity anywhere.
+
+**Why:** the commit SHA is the wrong identity for "is this the same build."
+release/vX.Y.Z is always cut from master and runs ahead; master only advances
+by merging release back, and master's protection requires linear history, so
+the release->master merge is always squash/rebase - which **rewrites the
+commit SHA while leaving the file tree byte-identical**. The old SHA key broke
+on exactly that: (a) master-promote matched the stg prerelease by SHA ancestry,
+the rewritten SHA missed, and cd-core silently shipped a `v404` "unknown
+version" prd release (prd-mobile-v404-b1/b2 on frontend-patient-app are real);
+(b) any new commit with an identical tree was a fresh SHA -> cache MISS ->
+needless rebuild. The tree hash is invariant across the merge, so the exact
+stg bytes are found and promoted to prd without a rebuild, and identical trees
+across test/stg/prod reuse one build.
+
+**The v404 fallback is gone.** master/main with no stg prerelease for the
+current tree now **hard-fails** with a message telling the operator to run the
+release->master flow, instead of shipping an unversioned prod build. (The
+separate stg-side YOLO-v404 for a `release/*` branch that doesn't parse as
+`release/vX.Y.Z` is unrelated and was left intact - it never reaches prd.)
+
+**Prerequisite for callers (app-level, not enforced here):** build-once-promote
+across stg->prd is only valid if the artifact is environment-agnostic - per-env
+config injected at runtime, not baked into the bundle at build time. A caller
+that bakes an env-specific value into the build produces different trees per
+env and must not rely on cross-env promotion.
+
+**Scope:** changes the artifact-identity mechanism inside the existing THREE
+workflows + create-release action. Not a new workflow. Future agents: do NOT
+reintroduce SHA/`target_commitish` matching or any `v404` prd fallback.
