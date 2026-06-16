@@ -144,7 +144,13 @@ runs:
                         for match in re.finditer(r'\$\{([^}]+)\}', value):
                             var = match.group(1)
                             if var != "env":
-                                errors.append(f"{pfx}.hosts.{label}: only ${{env}} template variable allowed, found ${{{var}}}")
+                                # Build the dollar-brace bits as plain literals.
+                                # An f-string would double the braces into a
+                                # GitHub Actions expression delimiter, which the
+                                # template parser rejects at load time.
+                                allowed = "${env}"
+                                found = "${" + var + "}"
+                                errors.append(f"{pfx}.hosts.{label}: only {allowed} template variable allowed, found {found}")
 
         # ── Build structure validation ───────────────────────────
         if os.path.isdir(build_dir) and not errors:
