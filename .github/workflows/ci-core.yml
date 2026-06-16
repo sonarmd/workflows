@@ -120,6 +120,27 @@ jobs:
         shell: bash
         run: ${{ inputs.steps }}
 
+      # Security visibility: semgrep (SAST) + gitleaks (secret scan) + trivy
+      # (deps). Restored as REPORT-ONLY: fail_on_findings=false and
+      # continue-on-error, so it surfaces findings as evidence but NEVER
+      # blocks the build. Needs node_modules (@sonarmd/star-config) so gated
+      # on yarn.lock.
+      - name: Security scan
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/security-scan@main
+        with:
+          fail_on_findings: "false"
+
+      # Quality visibility: jscpd (copy-paste) + knip (dead code / unused
+      # deps). Also REPORT-ONLY - reports, never blocks.
+      - name: Quality scan
+        if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/quality-scan@main
+        with:
+          fail_on_findings: "false"
+
       # Cache check: if a GitHub Release already carries release.tar.gz for
       # this tree hash (cd-core-tree marker in the body), skip bundle/sign/
       # stage. CD will pull straight from the existing release asset. Keyed
@@ -147,6 +168,15 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "release-probe: MISS"
           fi
+
+      # Validate deploy.json against the schema + check built bundle dirs
+      # match declarations. Stripped by 996ffa2 ("inline ci-core - zero
+      # composite deps"); restored as REPORT-ONLY (continue-on-error) - it
+      # records the result but never blocks the build.
+      - name: Validate release contract
+        if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true'
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/validate-release-contract@main
 
       - name: Bundle release
         if: hashFiles('deploy.json') != '' && steps.probe.outputs.present != 'true'
