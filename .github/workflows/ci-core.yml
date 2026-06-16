@@ -82,6 +82,9 @@ jobs:
       # secrets context is unavailable in step `if` expressions; capture
       # presence as a plain env bool so the Sign release step can gate on it.
       HAS_SIGNING_KEY: ${{ secrets.CI_SIGNING_KEY != '' }}
+      # Lifted to job env (matches cd-core) so the failure-notify step can read
+      # it via env. Available through `secrets: inherit` from the caller.
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
@@ -212,3 +215,75 @@ jobs:
         shell: bash
         run: |
           echo "ci-core: release ${{ steps.probe.outputs.tag }} already has release.tar.gz for tree ${{ steps.tree.outputs.hash }} -- skipped rebuild."
+
+      # -- Failure visibility -----------------------------------------------
+      # CI failures were silent here, so the only Slack signal was cd-core's
+      # advisory "Deploy failed" - which mislabels a build/test/lint break as a
+      # deploy-server problem (no visibility into the real cause). Surface
+      # WHAT failed, WHERE, and a deep link straight to the failed step's logs.
+      - name: Resolve failure context
+        id: failctx
+        if: failure()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            let where = 'CI', stepName = 'unknown step', jobUrl = runUrl, excerpt = '';
+            try {
+              const { data } = await github.rest.actions.listJobsForWorkflowRun({
+                owner, repo, run_id: context.runId, per_page: 100,
+              });
+              const failed = data.jobs.find((j) => j.conclusion === 'failure');
+              if (failed) {
+                where = failed.name;
+                jobUrl = failed.html_url || runUrl;
+                const step = (failed.steps || []).find((s) => s.conclusion === 'failure');
+                if (step) stepName = step.name;
+                // Spoon-feed: pull the failed job's log and surface the error
+                // tail directly, so the reader sees WHAT broke without clicking.
+                try {
+                  const log = await github.rest.actions.downloadJobLogsForWorkflowJob({
+                    owner, repo, job_id: failed.id,
+                  });
+                  // Guard: a job log can be many MB and contain anything. Keep
+                  // ONLY the trailing bytes (where the error is), bounded, and
+                  // tail-slice the buffer itself so we never materialize or
+                  // split the whole blob. Cap the char count too.
+                  const TAIL = 8000;
+                  const d = log.data;
+                  let raw = '';
+                  if (typeof d === 'string') {
+                    raw = d.slice(-TAIL);
+                  } else if (d) {
+                    const buf = Buffer.from(d);
+                    raw = buf.subarray(Math.max(0, buf.length - TAIL)).toString('utf8');
+                  }
+                  const lines = raw
+                    .split('\n')
+                    .map((l) => l.replace(/^\S+\s/, '').trimEnd()) // strip leading timestamp
+                    .filter((l) => l.trim().length > 0);
+                  excerpt = lines.slice(-18).join('\n').slice(-1400);
+                } catch (e) {
+                  core.warning(`log fetch failed: ${e.message}`);
+                }
+              }
+            } catch (e) {
+              core.warning(`failure-context lookup failed: ${e.message}`);
+            }
+            const details =
+              `CI broke in "${where}" at step "${stepName}" - build/lint/test failed, so NO ` +
+              `artifact was produced and the deploy never started. Fix CI, not the deploy server.\n\n` +
+              `Error tail:\n\`\`\`\n${excerpt || '(open the logs link)'}\n\`\`\`\n` +
+              `Full logs: ${jobUrl}`;
+            core.setOutput('details', details);
+
+      - name: Notify Slack on CI failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        uses: sonarmd/workflows/actions/notify-slack@main
+        with:
+          webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+          status: failure
+          app_name: ${{ vars.DEPLOY_IDENTIFIER || github.event.repository.name }}
+          tag: ${{ github.ref_name }}
+          details: ${{ steps.failctx.outputs.details }}
