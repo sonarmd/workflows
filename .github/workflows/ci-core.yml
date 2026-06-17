@@ -155,6 +155,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Prod path always rebuilds. The tree hash is NOT a complete content
+          # address for env-baked apps: the frontend bakes VITE_APP_ENV (and
+          # thus the API host) into the bundle at build time, so the stg-built
+          # and prd-built artifacts differ despite an identical tree. Reusing
+          # the tree-matched stg artifact on a master/main promote shipped the
+          # STAGING bundle to prod (prod called api.stg.sonarmd.com). On the
+          # prod path force a cache miss so bundle/sign/stage run on the fresh
+          # build this run already produced with BUILD_ENV=prd. Runtime-env
+          # apps (api/cdk) just rebuild to identical bytes -- harmless.
+          if [ "${GITHUB_REF_NAME:-}" = "master" ] || [ "${GITHUB_REF_NAME:-}" = "main" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "release-probe: prod path (${GITHUB_REF_NAME}) - forcing fresh build, no stg-bytes reuse"
+            exit 0
+          fi
           tag=$(gh api -X GET "repos/$GH_REPO/releases" --paginate \
                 | jq -r --arg marker "<!-- cd-core-tree:$TREE -->" \
                     '.[] | select(.body != null and (.body | contains($marker))) | .tag_name' \

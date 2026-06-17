@@ -238,9 +238,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TREE: ${{ steps.tree.outputs.hash }}
+          ENV: ${{ steps.ctx.outputs.env }}
         shell: bash
         run: |
           set -euo pipefail
+          # Prod always uses the freshly-built artifact, never the promoted stg
+          # bytes. Env-baked apps (frontend bakes VITE_APP_ENV / API host at
+          # build time) produce different bytes for stg vs prd from the same
+          # tree, so promoting the stg artifact shipped staging config to prod
+          # (prod called api.stg.sonarmd.com). On a prd promote force a cache
+          # miss: pull the fresh artifact this run's CI staged with
+          # BUILD_ENV=prd, not the stg release asset. The stg prerelease is
+          # still located in Resolve context for the version number; only the
+          # bytes change. Runtime-env apps rebuild to identical bytes - harmless.
+          if [ "${ENV:-}" = "prd" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "release-probe: prd promote - forcing fresh artifact (no stg-bytes reuse)"
+            exit 0
+          fi
           tag=$(gh api -X GET "repos/$GH_REPO/releases" --paginate \
                 | jq -r --arg marker "<!-- cd-core-tree:$TREE -->" \
                     '.[] | select(.body != null and (.body | contains($marker))) | .tag_name' \
