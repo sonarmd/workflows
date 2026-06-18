@@ -48,13 +48,21 @@ jobs:
     name: run
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    # Scope the job to a GitHub Environment so SLACK_BOT_TOKEN resolves to the
+    # per-environment value (production app token vs staging app token) with no
+    # change to how it is referenced below. Ref -> environment mirrors the ctx
+    # step exactly: release/** -> staging, master/main -> production. Keep this
+    # expression in sync with the ctx resolver. Callers without these
+    # environment secrets fall back to the inherited org SLACK_BOT_TOKEN.
+    environment: ${{ startsWith(github.ref, 'refs/heads/release/') && 'staging' || 'production' }}
     env:
       # Forward-compat: node20 action runtime deprecates 2026-06-02. Opt in
       # to node24 now so actions that haven't republished (download-artifact,
       # github-script) run on node24.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      # The Slack secrets the deploy notifier needs are GitHub org secrets.
-      # Lift them to job-level env here; downstream steps read them as env.X.
+      # SLACK_WEBHOOK_URL is an org secret; SLACK_BOT_TOKEN resolves per the
+      # job environment above (production/staging), falling back to the org
+      # secret. Lifted to job-level env so downstream steps read them as env.X.
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
