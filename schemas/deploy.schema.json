@@ -48,13 +48,34 @@
             "enum": ["s3", "ec2", "eas", "cdk", "lambda", "fargate"]
           },
           "hosts": {
-            "type": "object",
-            "description": "Label → Ansible inventory match key. Values are opaque identifiers resolved by the deployment system. Only ${env} template variable allowed.",
-            "minProperties": 1,
-            "additionalProperties": {
-              "type": "string",
-              "minLength": 1
-            }
+            "description": "Canonical shape: env -> array of unique target identifiers this bundle deploys to in that env (s3 bucket, lambda function, ec2 hostname, fargate service, eas channel). Legacy shapes (flat string array; label -> string object) are still accepted during rollout but deprecated.",
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Canonical: env key -> array of unique non-empty target strings.",
+                "minProperties": 1,
+                "propertyNames": {"enum": ["dev", "stg", "prd"]},
+                "additionalProperties": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {"type": "string", "minLength": 1}
+                }
+              },
+              {
+                "type": "array",
+                "description": "Legacy (deprecated): flat list of target strings.",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1}
+              },
+              {
+                "type": "object",
+                "description": "Legacy (deprecated): label -> string target.",
+                "minProperties": 1,
+                "additionalProperties": {"type": "string", "minLength": 1}
+              }
+            ]
           }
         }
       }
