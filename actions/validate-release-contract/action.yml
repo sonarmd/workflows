@@ -80,6 +80,11 @@ runs:
         elif not IDENT_PATTERN.match(manifest["identifier"]):
             errors.append(f"'identifier' value '{manifest['identifier']}' does not match pattern ^[a-z][a-z0-9_-]{{0,31}}$")
 
+        # lambda_tag is optional, but when present must be a string (the schema
+        # declares it a string; the cdk deploy reads it as an immutable tag).
+        if "lambda_tag" in manifest and not isinstance(manifest["lambda_tag"], str):
+            errors.append("'lambda_tag' must be a string")
+
         if "bundles" not in manifest:
             errors.append("Missing required field: 'bundles'")
         elif not isinstance(manifest["bundles"], list):
@@ -175,6 +180,17 @@ runs:
                     str_values = [v for v in legacy_values if isinstance(v, str)]
                     if len(str_values) != len(set(str_values)):
                         errors.append(f"{pfx}.hosts: values must be unique within bundle")
+                    # Legacy is tolerated but still env-templated on the deploy
+                    # side, which only substitutes ${env}. Reject any other
+                    # placeholder so a typo (e.g. ${branch}) cannot package as
+                    # deprecated-but-valid and then fail to resolve at deploy.
+                    for value in str_values:
+                        for match in re.finditer(r'\$?\{([^}]+)\}', value):
+                            var = match.group(1)
+                            if var != "env":
+                                allowed = "${env}"
+                                found = "${" + var + "}"
+                                errors.append(f"{pfx}.hosts: only {allowed} template variable allowed, found {found}")
                 else:
                     errors.append(
                         f"{pfx}.hosts: must be an object mapping env -> array of target "
