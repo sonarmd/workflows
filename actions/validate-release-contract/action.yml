@@ -63,7 +63,7 @@ runs:
         NAME_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,63}$')
 
         # ── Top-level fields ─────────────────────────────────────
-        valid_keys = {"app", "identifier", "bundles", "build_root"}
+        valid_keys = {"app", "identifier", "bundles", "build_root", "lambda_tag"}
         for key in manifest:
             if key not in valid_keys:
                 errors.append(f"Unknown top-level field: '{key}' (allowed: {valid_keys})")

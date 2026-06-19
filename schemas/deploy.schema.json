@@ -13,6 +13,10 @@
       "default": "dist",
       "minLength": 1
     },
+    "lambda_tag": {
+      "type": "string",
+      "description": "Optional pin: an immutable api release tag the cdk deploy uses for lambda code instead of the newest build. Consumed by the cdk deploy; empty string means unpinned."
+    },
     "app": {
       "type": "string",
       "description": "Application name.",
