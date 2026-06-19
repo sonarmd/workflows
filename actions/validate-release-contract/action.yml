@@ -63,7 +63,7 @@ runs:
         NAME_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,63}$')
 
         # ── Top-level fields ─────────────────────────────────────
-        valid_keys = {"app", "identifier", "bundles", "build_root"}
+        valid_keys = {"app", "identifier", "bundles", "build_root", "lambda_tag"}
         for key in manifest:
             if key not in valid_keys:
                 errors.append(f"Unknown top-level field: '{key}' (allowed: {valid_keys})")
@@ -79,6 +79,11 @@ runs:
             errors.append("'identifier' must be a string")
         elif not IDENT_PATTERN.match(manifest["identifier"]):
             errors.append(f"'identifier' value '{manifest['identifier']}' does not match pattern ^[a-z][a-z0-9_-]{{0,31}}$")
+
+        # lambda_tag is optional, but when present must be a string (the schema
+        # declares it a string; the cdk deploy reads it as an immutable tag).
+        if "lambda_tag" in manifest and not isinstance(manifest["lambda_tag"], str):
+            errors.append("'lambda_tag' must be a string")
 
         if "bundles" not in manifest:
             errors.append("Missing required field: 'bundles'")
@@ -123,34 +128,74 @@ runs:
                 elif bundle["target"] not in VALID_TARGETS:
                     errors.append(f"{pfx}.target: '{bundle['target']}' not allowed. Must be one of: {sorted(VALID_TARGETS)}")
 
-                # hosts
+                # hosts. Canonical shape is env -> array of unique target
+                # strings: { "stg": ["healthcheck-stg"], "prd": [...] }. Each
+                # env maps to the unique identifiers this bundle lands on in
+                # that env (s3 bucket, lambda function, ec2 hostname, fargate
+                # service, eas channel). Legacy shapes (flat string array;
+                # label -> string object) are still accepted during the rollout
+                # but emit a deprecation notice.
+                ALLOWED_ENVS = {"dev", "stg", "prd"}
+
+                def _is_canonical_hosts(h):
+                    return (
+                        isinstance(h, dict)
+                        and len(h) > 0
+                        and all(isinstance(v, list) for v in h.values())
+                    )
+
                 if "hosts" not in bundle:
                     errors.append(f"{pfx}: missing required field 'hosts'")
-                elif not isinstance(bundle["hosts"], dict):
-                    errors.append(f"{pfx}.hosts: must be an object (label → match_key), not {type(bundle['hosts']).__name__}")
-                elif len(bundle["hosts"]) == 0:
-                    errors.append(f"{pfx}.hosts: must not be empty")
-                else:
-                    host_values = list(bundle["hosts"].values())
-                    for label, value in bundle["hosts"].items():
+                elif _is_canonical_hosts(bundle["hosts"]):
+                    # Canonical: env -> array of unique non-empty strings.
+                    for env_key, targets in bundle["hosts"].items():
+                        ekp = f"{pfx}.hosts.{env_key}"
+                        if env_key not in ALLOWED_ENVS:
+                            errors.append(f"{pfx}.hosts: env key '{env_key}' not in {sorted(ALLOWED_ENVS)}")
+                        if not targets:
+                            errors.append(f"{ekp}: must list at least one target")
+                        for t in targets:
+                            if not isinstance(t, str) or not t.strip():
+                                errors.append(f"{ekp}: targets must be non-empty strings")
+                        str_targets = [t for t in targets if isinstance(t, str)]
+                        if len(str_targets) != len(set(str_targets)):
+                            errors.append(f"{ekp}: target values must be unique within env")
+                elif isinstance(bundle["hosts"], (list, dict)) and len(bundle["hosts"]) > 0:
+                    # Legacy shape. Tolerated during rollout; warn loudly.
+                    print(
+                        f"::notice::validate-release-contract: {pfx}.hosts uses a "
+                        f"deprecated shape; migrate to the canonical "
+                        f"env -> array of target strings "
+                        f"(e.g. {{\"stg\": [\"name-stg\"], \"prd\": [\"name-prd\"]}}).",
+                        file=sys.stderr,
+                    )
+                    legacy_values = (
+                        bundle["hosts"]
+                        if isinstance(bundle["hosts"], list)
+                        else list(bundle["hosts"].values())
+                    )
+                    for value in legacy_values:
                         if not isinstance(value, str) or not value.strip():
-                            errors.append(f"{pfx}.hosts.{label}: must be a non-empty string")
-                    if len(host_values) != len(set(host_values)):
+                            errors.append(f"{pfx}.hosts: legacy values must be non-empty strings")
+                    str_values = [v for v in legacy_values if isinstance(v, str)]
+                    if len(str_values) != len(set(str_values)):
                         errors.append(f"{pfx}.hosts: values must be unique within bundle")
-
-                    # Template variable check
-                    for label, value in bundle["hosts"].items():
-                        # Only ${env} allowed
-                        for match in re.finditer(r'\$\{([^}]+)\}', value):
+                    # Legacy is tolerated but still env-templated on the deploy
+                    # side, which only substitutes ${env}. Reject any other
+                    # placeholder so a typo (e.g. ${branch}) cannot package as
+                    # deprecated-but-valid and then fail to resolve at deploy.
+                    for value in str_values:
+                        for match in re.finditer(r'\$?\{([^}]+)\}', value):
                             var = match.group(1)
                             if var != "env":
-                                # Build the dollar-brace bits as plain literals.
-                                # An f-string would double the braces into a
-                                # GitHub Actions expression delimiter, which the
-                                # template parser rejects at load time.
                                 allowed = "${env}"
                                 found = "${" + var + "}"
-                                errors.append(f"{pfx}.hosts.{label}: only {allowed} template variable allowed, found {found}")
+                                errors.append(f"{pfx}.hosts: only {allowed} template variable allowed, found {found}")
+                else:
+                    errors.append(
+                        f"{pfx}.hosts: must be an object mapping env -> array of target "
+                        f"strings (got {type(bundle['hosts']).__name__})"
+                    )
 
         # ── Build structure validation ───────────────────────────
         if os.path.isdir(build_dir) and not errors:
