@@ -1,0 +1,31 @@
+name: Doc Author (org default)
+
+# Top-level trigger for the doc-author pipeline, modeled on
+# agent-architecture-review-default.yml. Registered as an ORG-LEVEL workflow so it runs
+# on every deploy across scoped repos with zero per-repo configuration. It calls the
+# reusable doc-author.yml, which runs in parallel with the CD path on the same push.
+#
+# To enable org-wide:
+#   1. github.com/organizations/sonarmd/settings/actions
+#   2. Required workflows -> Add workflow
+#   3. Source: sonarmd/workflows
+#   4. Path: .github/workflows/doc-author-default.yml
+#   5. Scope: choose repositories
+#   6. Ensure OP_SERVICE_ACCOUNT_TOKEN exists as an org-level Actions secret scoped to
+#      the same repos, and that its 1Password service account can READ the `ci-cd` and
+#      `Platform Admin` vaults (the doc-author secrets live there).
+#
+# Non-blocking: doc-author.yml never gates a deploy.
+
+on:
+  push:
+    branches: [master, main, 'release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  author:
+    uses: ./.github/workflows/doc-author.yml
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
