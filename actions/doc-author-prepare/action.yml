@@ -1,0 +1,59 @@
+name: doc-author-prepare
+description: |
+  Stage 0 of automated doc authoring. Gathers the grounding evidence the author stage
+  needs - WITHOUT any LLM access - from the merged feature: changed files + commit
+  subjects since the baseline ref, the .agent/ records added for the work, and the
+  existing documentation corpus (titles + excerpts). Emits change.json, corpus.json,
+  and grounding.md. Read-only; failure must not block the deploy (caller sets
+  continue-on-error).
+
+inputs:
+  repo:
+    description: 'Caller checkout to analyze.'
+    required: false
+    default: ${{ github.workspace }}
+  since:
+    description: 'Baseline git ref to diff from. Empty = last tag, else HEAD~50.'
+    required: false
+    default: ''
+  corpus_dir:
+    description: 'Directory of existing doc markdown (<slug>.md + <slug>.meta.json).'
+    required: false
+    default: ''
+  output_dir:
+    description: 'Where to write the artifacts.'
+    required: false
+    default: 'work'
+
+outputs:
+  grounding_path:
+    description: 'Path to grounding.md.'
+    value: ${{ steps.run.outputs.grounding_path }}
+  corpus_path:
+    description: 'Path to corpus.json.'
+    value: ${{ steps.run.outputs.corpus_path }}
+  change_path:
+    description: 'Path to change.json.'
+    value: ${{ steps.run.outputs.change_path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Gather grounding context
+      id: run
+      shell: bash
+      env:
+        REPO: ${{ inputs.repo }}
+        SINCE: ${{ inputs.since }}
+        CORPUS_DIR: ${{ inputs.corpus_dir }}
+        OUTPUT_DIR: ${{ inputs.output_dir }}
+      run: |
+        set -euo pipefail
+        node "${{ github.action_path }}/scripts/prepare.js" \
+          --repo "$REPO" \
+          ${SINCE:+--since "$SINCE"} \
+          ${CORPUS_DIR:+--corpus-dir "$CORPUS_DIR"} \
+          --out "$OUTPUT_DIR"
+        echo "grounding_path=${OUTPUT_DIR}/grounding.md" >> "$GITHUB_OUTPUT"
+        echo "corpus_path=${OUTPUT_DIR}/corpus.json" >> "$GITHUB_OUTPUT"
+        echo "change_path=${OUTPUT_DIR}/change.json" >> "$GITHUB_OUTPUT"

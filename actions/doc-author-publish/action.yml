@@ -1,0 +1,85 @@
+name: doc-author-publish
+description: |
+  Stage 2 of automated doc authoring. NO LLM access. For each authored page: runs the
+  safety gate (ASCII + secret + PHI scan), renders markdown to Confluence storage format,
+  creates-or-updates the page by title (idempotent), applies labels/parent, and back-links
+  related existing pages to it. A page that fails the gate is SKIPPED, never uploaded.
+  Non-blocking with a hard time cap: a publish failure never fails the deploy.
+
+  Confluence credentials are read from the environment (CONFLUENCE_USER / CONFLUENCE_TOKEN),
+  injected upstream by 1Password/load-secrets. With no credentials the action runs in
+  dry-run and only logs intended changes.
+
+inputs:
+  authored_path:
+    description: 'Path to authored.json from the doc-author stage.'
+    required: true
+  corpus_path:
+    description: 'Path to corpus.json from doc-author-prepare (cross-link resolution).'
+    required: false
+    default: ''
+  confluence_space:
+    description: 'Confluence space key.'
+    required: false
+    default: 'SE'
+  confluence_parent_id:
+    description: 'Fallback parent page id when a page parent title is not found.'
+    required: false
+    default: ''
+  timeout_minutes:
+    description: 'Hard execution cap in minutes. Maximum 5.'
+    required: false
+    default: '5'
+
+outputs:
+  result_path:
+    description: 'Path to publish-result.json.'
+    value: ${{ steps.run.outputs.result_path }}
+  created:
+    description: 'Number of pages created.'
+    value: ${{ steps.run.outputs.created }}
+  updated:
+    description: 'Number of pages updated.'
+    value: ${{ steps.run.outputs.updated }}
+
+runs:
+  using: composite
+  steps:
+    - name: Ensure pandoc
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v pandoc >/dev/null 2>&1; then
+          sudo apt-get update -y && sudo apt-get install -y pandoc
+        fi
+
+    - name: Publish to Confluence
+      id: run
+      shell: bash
+      env:
+        AUTHORED_PATH: ${{ inputs.authored_path }}
+        CORPUS_PATH: ${{ inputs.corpus_path }}
+        CONFLUENCE_SPACE: ${{ inputs.confluence_space }}
+        CONFLUENCE_PARENT_ID: ${{ inputs.confluence_parent_id }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        CONFLUENCE_USER: ${{ env.CONFLUENCE_USER }}
+        CONFLUENCE_TOKEN: ${{ env.CONFLUENCE_TOKEN }}
+        CONFLUENCE_BASE_URL: ${{ env.CONFLUENCE_BASE_URL }}
+      run: |
+        set -uo pipefail
+        MAX=5
+        if [ "${TIMEOUT_MINUTES}" -gt "$MAX" ] 2>/dev/null; then TIMEOUT_MINUTES=$MAX; fi
+        SECS=$((TIMEOUT_MINUTES * 60))
+        timeout "$SECS" node "${{ github.action_path }}/lib/publish.js" \
+          --authored "$AUTHORED_PATH" \
+          ${CORPUS_PATH:+--corpus "$CORPUS_PATH"} || {
+            echo "::warning::doc-author-publish: non-zero exit or timeout (non-blocking)"
+          }
+        echo "result_path=publish-result.json" >> "$GITHUB_OUTPUT"
+        if [ -f publish-result.json ]; then
+          echo "created=$(node -e 'process.stdout.write(String(require("./publish-result.json").created||0))')" >> "$GITHUB_OUTPUT"
+          echo "updated=$(node -e 'process.stdout.write(String(require("./publish-result.json").updated||0))')" >> "$GITHUB_OUTPUT"
+        else
+          echo "created=0" >> "$GITHUB_OUTPUT"
+          echo "updated=0" >> "$GITHUB_OUTPUT"
+        fi

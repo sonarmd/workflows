@@ -1,0 +1,58 @@
+name: doc-author
+description: |
+  Stage 1 of automated doc authoring. Reads the grounding context + corpus from
+  doc-author-prepare and asks Claude to author or update the catalog pages warranted by
+  what shipped. Emits authored.json. Non-blocking: with no API key, or on any model
+  error, it writes an empty page set and exits 0 (publish then no-ops). The model is
+  instructed to emit ASCII-only, PHI-free markdown; the publish gate is the backstop.
+
+inputs:
+  grounding_path:
+    description: 'Path to grounding.md from doc-author-prepare.'
+    required: true
+  corpus_path:
+    description: 'Path to corpus.json from doc-author-prepare.'
+    required: true
+  output_path:
+    description: 'Where to write authored.json.'
+    required: false
+    default: 'work/authored.json'
+  model:
+    description: 'Anthropic model id.'
+    required: false
+    default: 'claude-opus-4-8'
+  anthropic_api_key:
+    description: 'Anthropic API key. If empty, the stage writes an empty page set.'
+    required: false
+    default: ''
+
+outputs:
+  authored_path:
+    description: 'Path to authored.json.'
+    value: ${{ steps.run.outputs.authored_path }}
+  page_count:
+    description: 'Number of pages the model proposed.'
+    value: ${{ steps.run.outputs.page_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Author docs
+      id: run
+      shell: bash
+      env:
+        GROUNDING_PATH: ${{ inputs.grounding_path }}
+        CORPUS_PATH: ${{ inputs.corpus_path }}
+        OUTPUT_PATH: ${{ inputs.output_path }}
+        MODEL: ${{ inputs.model }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+      run: |
+        set -euo pipefail
+        node "${{ github.action_path }}/scripts/author.js" \
+          --grounding "$GROUNDING_PATH" \
+          --corpus "$CORPUS_PATH" \
+          --out "$OUTPUT_PATH" \
+          --model "$MODEL"
+        echo "authored_path=${OUTPUT_PATH}" >> "$GITHUB_OUTPUT"
+        COUNT=$(node -e 'const j=require(process.argv[1]);process.stdout.write(String((j.pages||[]).length))' "$OUTPUT_PATH" 2>/dev/null || echo 0)
+        echo "page_count=${COUNT}" >> "$GITHUB_OUTPUT"
