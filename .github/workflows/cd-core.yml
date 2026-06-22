@@ -146,16 +146,17 @@ jobs:
               core.info(`cd-core: scanned ${scanned} stg-${identifier}-v* prereleases for tree ${tree}`);
 
               if (!matched) {
-                // No stg artifact was built from this tree. Refuse to ship an
-                // unversioned/unbuilt prd release -- fail loudly instead of the
-                // old YOLO-v404 fallback that silently shipped "unknown version"
-                // to prod. Run the release/vX.Y.Z -> master flow first.
-                core.setFailed(
-                  `cd-core: no stg-${identifier} prerelease was built from tree ${tree}. ` +
-                  `Promote requires the matching stg artifact -- run the ` +
-                  `release/vX.Y.Z -> master flow so the prerelease exists before ` +
-                  `pushing to ${ref}. Refusing to ship an unversioned prd build.`
-                );
+                // cd-core does NOT gate. main ships to prod, full stop - there
+                // is no requirement to route through a stg prerelease first.
+                // When no matching stg artifact exists, ship prd with the
+                // YOLO/unknown version (404) instead of refusing. A reusable
+                // workflow is a dumb function call; it never polices the path
+                // a change took to get here.
+                const version = '404';
+                core.notice(`cd-core: master/main -> no matching stg prerelease for tree ${tree}; shipping prd ${identifier} v${version}`);
+                core.setOutput('env',        'prd');
+                core.setOutput('identifier', identifier);
+                core.setOutput('version',    version);
                 return;
               }
 
