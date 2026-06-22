@@ -37,7 +37,22 @@ const SYSTEM = [
   '"labels":["system-page"],"markdown":"# ...","backlinks":["Other Title"]}]}',
 ].join('\n');
 
-async function callClaude(model, grounding, corpus) {
+// Resolve LLM auth. Prefer a Claude Code subscription OAuth token (Bearer +
+// oauth beta header); fall back to an Anthropic API key (x-api-key). Never send
+// both - the API rejects a request carrying x-api-key and a bearer token together.
+function llmAuth() {
+  const oauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (oauth) {
+    return { ok: true, mode: 'oauth', headers: { authorization: `Bearer ${oauth}`, 'anthropic-beta': 'oauth-2025-04-20' } };
+  }
+  if (apiKey) {
+    return { ok: true, mode: 'api-key', headers: { 'x-api-key': apiKey } };
+  }
+  return { ok: false, mode: 'none', headers: {} };
+}
+
+async function callClaude(model, grounding, corpus, auth) {
   const userParts = [
     'EXISTING CORPUS TITLES (link targets / pages you may update):',
     JSON.stringify({ titles: corpus.titles, slugToTitle: corpus.slugToTitle }, null, 0),
@@ -51,7 +66,7 @@ async function callClaude(model, grounding, corpus) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      ...auth.headers,
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     },
@@ -103,15 +118,17 @@ async function main() {
   const grounding = fs.existsSync(groundingPath) ? fs.readFileSync(groundingPath, 'utf8') : '';
   const corpus = fs.existsSync(corpusPath) ? JSON.parse(fs.readFileSync(corpusPath, 'utf8')) : { titles: [], pages: [] };
 
+  const auth = llmAuth();
   let authored = { pages: [] };
   if (has('--offline')) {
     authored = offlineFixture(corpus);
     console.log('doc-author: offline fixture (no model call)');
-  } else if (!process.env.ANTHROPIC_API_KEY) {
-    console.log('doc-author: no ANTHROPIC_API_KEY - writing empty page set (non-blocking)');
+  } else if (!auth.ok) {
+    console.log('doc-author: no LLM auth (set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY) - writing empty page set (non-blocking)');
   } else {
     try {
-      const raw = await callClaude(model, grounding, corpus);
+      console.log(`doc-author: calling ${model} via ${auth.mode}`);
+      const raw = await callClaude(model, grounding, corpus, auth);
       const json = extractJson(raw);
       authored = json ? JSON.parse(json) : { pages: [] };
       if (!Array.isArray(authored.pages)) authored = { pages: [] };

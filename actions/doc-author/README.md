@@ -32,9 +32,12 @@ script. The publish gate is still the hard backstop against anything the model e
 
 ## Auth (injected upstream, never stored here)
 
-- `ANTHROPIC_API_KEY` -> doc-author input.
+- doc-author LLM: prefers `CLAUDE_CODE_OAUTH_TOKEN` (Claude Code subscription billing;
+  sent as `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20`), falls back to
+  `ANTHROPIC_API_KEY` (`x-api-key`). Set exactly one - sending both is rejected by the API.
+  With neither, the stage writes an empty page set (non-blocking).
 - `CONFLUENCE_USER` / `CONFLUENCE_TOKEN` (+ optional `CONFLUENCE_BASE_URL`) in the env for
-  doc-author-publish. Both come from 1Password via the load-secrets action in CI.
+  doc-author-publish. All come from 1Password via the load-secrets action in CI.
 
 ## Local testing (no network)
 

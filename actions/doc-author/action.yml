@@ -21,8 +21,12 @@ inputs:
     description: 'Anthropic model id.'
     required: false
     default: 'claude-opus-4-8'
+  claude_code_oauth_token:
+    description: 'Claude Code subscription OAuth token (preferred - subscription billing).'
+    required: false
+    default: ''
   anthropic_api_key:
-    description: 'Anthropic API key. If empty, the stage writes an empty page set.'
+    description: 'Anthropic API key (fallback - per-token billing). One of this or claude_code_oauth_token must be set, else the stage writes an empty page set.'
     required: false
     default: ''
 
@@ -45,6 +49,7 @@ runs:
         CORPUS_PATH: ${{ inputs.corpus_path }}
         OUTPUT_PATH: ${{ inputs.output_path }}
         MODEL: ${{ inputs.model }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
       run: |
         set -euo pipefail
