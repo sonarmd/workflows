@@ -77,6 +77,16 @@ runs:
             BUNDLE_PATH="$BUILD_DIR/$BPATH"
           elif [ -d "$BPATH" ]; then
             BUNDLE_PATH="$BPATH"
+          elif [ "$TARGET" = "eas" ]; then
+            # eas bundles are built on Expo's infrastructure at deploy time,
+            # not in CI, so no local bundle dir exists here. Emit a
+            # metadata-only bundle: the release still carries deploy.json +
+            # manifest + sbom, and the eas build runs on deploy keyed off this
+            # commit. Without this, every eas caller fails the path check below.
+            BUNDLE_PATH="./.eas-${NAME}"
+            mkdir -p "$BUNDLE_PATH"
+            printf 'eas bundle built at deploy time for commit %s\n' "$SHA" > "$BUNDLE_PATH/EAS_DEPLOY_MARKER"
+            echo "  eas: no CI bundle, metadata-only (built on deploy)"
           else
             echo "::error::bundle-pipeline: bundle '$NAME' path '$BPATH' not found (looked in '$BUILD_DIR/$BPATH' and '$BPATH')"
             exit 1
