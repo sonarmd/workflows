@@ -197,47 +197,24 @@ runs:
                         f"strings (got {type(bundle['hosts']).__name__})"
                     )
 
-        # ── Build structure validation ───────────────────────────
+        # -- Build structure validation ---------------------------
         if os.path.isdir(build_dir) and not errors:
             bundles = manifest.get("bundles", [])
 
-            # Detect mode: subdirectories = multi, no subdirectories = single
-            subdirs = [d for d in os.listdir(build_dir)
-                       if os.path.isdir(os.path.join(build_dir, d))]
+            # Mode follows the declared contract, not arbitrary directories
+            # on disk: one declared bundle is single, more is multi.
+            mode = "multi" if len(bundles) > 1 else "single"
 
-            if subdirs:
-                # MULTI-BUNDLE MODE
-                mode = "multi"
-
-                # Every declared bundle path must exist
-                for b in bundles:
-                    bundle_path = os.path.join(build_dir, b.get("path", ""))
-                    if not os.path.isdir(bundle_path):
-                        # Also try path directly (it may be relative to build root)
-                        alt_path = b.get("path", "")
-                        if not os.path.isdir(alt_path):
-                            errors.append(f"Bundle '{b.get('name','')}': path '{b.get('path','')}' not found in build output")
-
-                # Every actual subdirectory must be declared
-                declared_paths = {b.get("path", "") for b in bundles}
-                for subdir in subdirs:
-                    rel_path = subdir
-                    full_rel = os.path.join(build_dir, subdir)
-                    if rel_path not in declared_paths and subdir not in declared_paths:
-                        # Check if any declared path resolves to this subdir
-                        found = False
-                        for dp in declared_paths:
-                            if dp == rel_path or dp == subdir or os.path.join(build_dir, dp) == full_rel:
-                                found = True
-                                break
-                        if not found:
-                            errors.append(f"Build directory '{subdir}' exists but is not declared in deploy.json bundles")
-            else:
-                # SINGLE-BUNDLE MODE
-                mode = "single"
-
-                if len(bundles) != 1:
-                    errors.append(f"Single-bundle mode (no subdirectories in {build_dir}) requires exactly 1 bundle in deploy.json, got {len(bundles)}")
+            # Validate only the declared bundle paths: each one must exist.
+            # We never scan top-level directories and demand they be declared:
+            # build_root may be the repo root, where node_modules, .git, app
+            # workspaces, and dotdirs legitimately coexist with build output.
+            for b in bundles:
+                rel_path = b.get("path", "")
+                bundle_path = os.path.join(build_dir, rel_path)
+                # Accept either build_root-relative or already-relative paths.
+                if not os.path.isdir(bundle_path) and not os.path.isdir(rel_path):
+                    errors.append(f"Bundle '{b.get('name','')}': path '{rel_path}' not found in build output")
         elif not os.path.isdir(build_dir):
             mode = "unknown"
             # Build dir may not exist yet during schema-only validation
