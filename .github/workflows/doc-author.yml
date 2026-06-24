@@ -1,0 +1,122 @@
+name: Doc Author
+
+# Reusable workflow that authors/updates Confluence documentation from what shipped.
+# A sibling of agent-architecture-review.yml: it runs the doc-author composite actions
+# (prepare -> author -> publish) over the caller repo after a deploy. NON-BLOCKING by
+# design - every step is continue-on-error and the workflow never gates a deploy.
+#
+# Triggered as workflow_call (see doc-author-default.yml for the push trigger). It runs
+# in parallel with the orchestrator's CD because it fires on the same push event in a
+# separate workflow - it does NOT touch ci-core / cd-core / cicd-orchestrator.
+#
+# Secrets resolve from 1Password via the load-secrets action (one org secret,
+# OP_SERVICE_ACCOUNT_TOKEN). The author stage prefers the Claude Code OAuth token; the
+# publish stage uses the Confluence deploy credential.
+
+on:
+  workflow_call:
+    inputs:
+      corpus_dir:
+        description: "Dir of existing doc markdown for cross-link context. Empty in v1 (no corpus source wired yet)."
+        required: false
+        type: string
+        default: ""
+      since:
+        description: "Baseline git ref to diff from. Empty = last tag, else HEAD~50."
+        required: false
+        type: string
+        default: ""
+      model:
+        description: "Anthropic model id."
+        required: false
+        type: string
+        default: "claude-opus-4-8"
+      confluence_space:
+        description: "Confluence space key to publish into."
+        required: false
+        type: string
+        default: "SE"
+      timeout:
+        description: "Job timeout in minutes."
+        required: false
+        type: number
+        default: 12
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: "1Password service account token used by load-secrets."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: doc-author-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  author:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    permissions:
+      contents: read
+    steps:
+      # Caller repo (the one being deployed): full history for diff, tags, and .agent/.
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # sonarmd/workflows at the same version this workflow runs at, so the local
+      # composite actions resolve on consumer repos. Same rationale as agent-arch-review.
+      - name: Checkout sonarmd/workflows (for composite actions)
+        uses: actions/checkout@v4
+        with:
+          repository: sonarmd/workflows
+          ref: ${{ github.workflow_sha }}
+          path: .sonarmd-workflows
+          fetch-depth: 1
+
+      # Resolve 1Password op:// refs into the job env (export-env writes to GITHUB_ENV).
+      # vault `ci-cd` is the renamed CI/CD vault; `Platform Admin` holds the Confluence
+      # deploy credential (its service account must have read on that vault).
+      - name: Load secrets
+        uses: ./.sonarmd-workflows/actions/load-secrets
+        with:
+          op-service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          export-env: "true"
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: op://ci-cd/claude-agora-oauth/credential
+          CONFLUENCE_USER: op://Platform Admin/confluence-deployments-token/username
+          CONFLUENCE_TOKEN: op://Platform Admin/confluence-deployments-token/credential
+
+      - name: Prepare grounding
+        id: prepare
+        continue-on-error: true
+        uses: ./.sonarmd-workflows/actions/doc-author-prepare
+        with:
+          repo: ${{ github.workspace }}
+          since: ${{ inputs.since }}
+          corpus_dir: ${{ inputs.corpus_dir }}
+          output_dir: work
+
+      - name: Author docs
+        id: author
+        continue-on-error: true
+        uses: ./.sonarmd-workflows/actions/doc-author
+        with:
+          grounding_path: work/grounding.md
+          corpus_path: work/corpus.json
+          output_path: work/authored.json
+          model: ${{ inputs.model }}
+          claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Publish to Confluence
+        id: publish
+        continue-on-error: true
+        uses: ./.sonarmd-workflows/actions/doc-author-publish
+        with:
+          authored_path: work/authored.json
+          corpus_path: work/corpus.json
+          confluence_space: ${{ inputs.confluence_space }}
+        env:
+          CONFLUENCE_BASE_URL: https://sonarmd.atlassian.net/wiki
