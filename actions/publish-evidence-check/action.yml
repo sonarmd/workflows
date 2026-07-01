@@ -1,0 +1,180 @@
+name: Publish Evidence Check
+description: |
+  Publishes the CI evidence bundle as a native GitHub Check Run: the full
+  labeled report (SAST / SCA / secret scan / tests / code-quality / SBOM,
+  with findings) rendered in the Checks tab. The already-installed
+  GitHub-for-Jira connector reads GitHub checks with its own auth and
+  surfaces it as a Build on the linked issue - no extra credential, no
+  custom connector.
+
+  Reads the evidence dir produced by ci-evidence-bundle (manifest.json +
+  the per-control JSON reports) and composes:
+    - a one-line title (SAST pass, SCA N findings, Secrets pass, Tests X/Y)
+    - a summary table (the control / TSC / status matrix)
+    - a detailed body with per-control finding highlights and a pointer to
+      the full evidence artifact + the S3 audit copy.
+
+  Report-only: conclusion is 'success' when clean, 'neutral' when scanners
+  report findings, 'failure' only when tests actually failed. It never
+  blocks a merge unless a repo marks this check required.
+
+  Requires `checks: write` on the caller's GITHUB_TOKEN.
+
+inputs:
+  evidence_dir:
+    description: "Directory produced by ci-evidence-bundle."
+    required: false
+    default: "ci-evidence"
+  name:
+    description: "Check run name (shown in the Checks tab and synced to Jira)."
+    required: false
+    default: "CI Security and Test Evidence"
+  token:
+    description: "GITHUB_TOKEN with checks: write."
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish evidence check run
+      uses: actions/github-script@v8
+      env:
+        EVID: ${{ inputs.evidence_dir }}
+        CHECK_NAME: ${{ inputs.name }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const evid = process.env.EVID;
+          const name = process.env.CHECK_NAME;
+          const MAX_TEXT = 60000;        // GitHub caps check output.text at 64KB
+          const MAX_FINDINGS = 20;       // per control, in the detailed body
+
+          const manifestPath = path.join(evid, 'manifest.json');
+          if (!fs.existsSync(manifestPath)) {
+            core.warning(`publish-evidence-check: no manifest at ${manifestPath} - skipping`);
+            return;
+          }
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          const controls = manifest.controls || [];
+
+          const readJson = (file) => {
+            try { return JSON.parse(fs.readFileSync(path.join(evid, file), 'utf8')); }
+            catch (e) { return null; }
+          };
+
+          // Per-control finding highlights: bounded, defensive. Each returns a
+          // list of short strings for the detailed body.
+          const highlights = (c) => {
+            const d = readJson(c.file);
+            if (!d) return [];
+            const cap = (arr, fmt) => (arr || []).slice(0, MAX_FINDINGS).map(fmt);
+            try {
+              if (c.tool === 'semgrep')
+                return cap(d.results, r => `${r.check_id} - ${r.path}:${(r.start||{}).line ?? '?'}`);
+              if (c.tool === 'gitleaks')
+                return cap(Array.isArray(d) ? d : [], r => `${r.RuleID || r.Description || 'leak'} - ${r.File}:${r.StartLine ?? '?'}`);
+              if (c.tool === 'trivy') {
+                const out = [];
+                for (const r of (d.Results || [])) {
+                  for (const v of (r.Vulnerabilities || [])) out.push(`${v.VulnerabilityID} (${v.Severity}) - ${v.PkgName} ${v.InstalledVersion}`);
+                  for (const s of (r.Secrets || [])) out.push(`secret ${s.RuleID} - ${r.Target}:${s.StartLine ?? '?'}`);
+                  for (const m of (r.Misconfigurations || [])) out.push(`${m.ID} (${m.Severity}) - ${m.Title}`);
+                  if (out.length >= MAX_FINDINGS) break;
+                }
+                return out.slice(0, MAX_FINDINGS);
+              }
+            } catch (e) { /* fall through to empty */ }
+            return [];
+          };
+
+          // Product-priority signal: the few things a non-engineer must see
+          // first - leaked secrets, high/critical vulnerabilities, failing
+          // tests. Everything else is detail below.
+          const byTool = t => controls.find(c => c.tool === t);
+          const trivyData = () => { const c = byTool('trivy'); return c ? readJson(c.file) : null; };
+
+          let secrets = 0, highCrit = 0, vulnTotal = 0;
+          const gl = byTool('gitleaks');
+          if (gl && typeof gl.findings === 'number') secrets += gl.findings;
+          const td = trivyData();
+          if (td) for (const r of (td.Results || [])) {
+            secrets += (r.Secrets || []).length;
+            for (const v of (r.Vulnerabilities || [])) {
+              vulnTotal++;
+              if (['HIGH', 'CRITICAL'].includes(v.Severity)) highCrit++;
+            }
+          }
+          const testCtl = byTool('test runner');
+          const tf = (testCtl && testCtl.findings && typeof testCtl.findings === 'object') ? testCtl.findings : null;
+          const testFail = tf ? (tf.failures || 0) + (tf.errors || 0) : 0;
+          const testTotal = tf ? (tf.tests || 0) : 0;
+          const testPass = testTotal - testFail - (tf ? (tf.skipped || 0) : 0);
+          const sast = byTool('semgrep');
+          const sastN = sast && typeof sast.findings === 'number' ? sast.findings : 0;
+
+          const actionNeeded = secrets > 0 || highCrit > 0 || testFail > 0;
+          const verdict = actionNeeded ? 'ACTION NEEDED' : (sastN > 0 ? 'REVIEW' : 'CLEAN');
+
+          const short = `${verdict} - secrets ${secrets}, high/crit vulns ${highCrit}` +
+                        `${tf ? `, tests ${testPass}/${testTotal}` : ''}`;
+
+          // Summary leads with "What matters" (product), then the full control
+          // matrix (audit). Detail per control comes in the body.
+          let summary = `## What matters\n\n`;
+          const flags = [];
+          if (secrets > 0)  flags.push(`**Potential secrets committed: ${secrets}** - review immediately`);
+          if (highCrit > 0) flags.push(`**High/Critical vulnerabilities: ${highCrit}** (of ${vulnTotal} total)`);
+          if (testFail > 0) flags.push(`**Failing tests: ${testFail}** of ${testTotal}`);
+          if (sastN > 0)    flags.push(`SAST issues to review: ${sastN}`);
+          summary += flags.length ? flags.map(f => `- ${f}`).join('\n') : 'No high-priority findings. All security scans clean and tests passing.';
+          summary += `\n\n## All controls\n\n`;
+
+          const cell = v => v == null ? '-' : String(v);
+          const fmtFindings = f => (f && typeof f === 'object')
+            ? `${f.tests||0} tests, ${(f.failures||0)+(f.errors||0)} failed, ${f.skipped||0} skipped`
+            : cell(f);
+          summary += '| Control | SOC2 TSC | Tool | Findings | Status |\n|---|---|---|---|---|\n';
+          for (const c of controls)
+            summary += `| ${c.control} | ${c.tsc} | ${c.tool} | ${fmtFindings(c.findings)} | ${c.status} |\n`;
+
+          // Detailed body with per-control highlights + pointer to full reports.
+          let text = `Repo ${manifest.repo} | commit ${manifest.commit} | ${manifest.ref}\n\n`;
+          for (const c of controls) {
+            text += `\n### ${c.control} (${c.tool}) - ${c.status}\n`;
+            text += `Evidence file: \`${c.file}\`${c.sha256 ? ` (sha256 ${c.sha256.slice(0,16)}...)` : ''}\n\n`;
+            const hs = highlights(c);
+            if (hs.length) {
+              for (const h of hs) text += `- ${h}\n`;
+              const total = typeof c.findings === 'number' ? c.findings : hs.length;
+              if (total > hs.length) text += `- ...and ${total - hs.length} more (see full report)\n`;
+            }
+          }
+          text += `\nFull reports are in the ci-evidence artifact for this run and the S3 audit copy stored next to the release. This check is report-only.\n`;
+          if (text.length > MAX_TEXT) text = text.slice(0, MAX_TEXT) + '\n...(truncated)';
+
+          const hasTestFail = controls.some(c =>
+            c.tool === 'test runner' && c.findings && ((c.findings.failures||0)+(c.findings.errors||0) > 0));
+          const hasFindings = controls.some(c => c.status === 'findings');
+          const conclusion = hasTestFail ? 'failure' : (hasFindings ? 'neutral' : 'success');
+
+          // Attach to the PR head commit when present so the connector keys the
+          // build off the same commit the PR carries; fall back to context.sha.
+          const headSha = (context.payload.pull_request && context.payload.pull_request.head.sha) || context.sha;
+
+          await github.rest.checks.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name,
+            head_sha: headSha,
+            status: 'completed',
+            conclusion,
+            output: {
+              title: short.slice(0, 250),
+              summary,
+              text,
+            },
+          });
+          core.info(`publish-evidence-check: created check '${name}' (${conclusion}) on ${headSha}`);

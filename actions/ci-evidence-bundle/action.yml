@@ -1,0 +1,264 @@
+name: CI Evidence Bundle
+description: |
+  Consolidates the security-scan, quality-scan, and test outputs produced this
+  run into ONE labeled audit-evidence artifact.
+
+  Reads the directory the scan actions wrote their JSON reports to (see the
+  output_dir input on security-scan / quality-scan) plus the JUnit test report,
+  then writes:
+    - INDEX.md      human-readable, labels every file with its standardized
+                    control name (SAST, SCA, Secret Scanning, Automated Testing,
+                    ...) and its SOC2 Trust Services Criteria reference.
+    - manifest.json machine-readable: per control -> {tool, file, sha256,
+                    findings/counts, status}. status is honest: not-run when a
+                    control produced no file, pass when it ran clean, findings
+                    when it ran and reported items.
+  and uploads the whole directory as a single retained artifact.
+
+  This action does NOT gate the build. It is evidence collection only. A control
+  that did not run is recorded as not-run, never silently omitted.
+
+inputs:
+  evidence_dir:
+    description: "Directory the scan actions wrote their JSON reports to."
+    required: false
+    default: "ci-evidence"
+  test_report_path:
+    description: "JUnit XML path. Copied in as the Automated Testing evidence file."
+    required: false
+    default: "junit.xml"
+  artifact_name:
+    description: "Artifact name. Empty defaults to ci-evidence-<short-sha>."
+    required: false
+    default: ""
+  retention_days:
+    description: "Artifact retention in days."
+    required: false
+    default: "90"
+
+runs:
+  using: composite
+  steps:
+    - name: Assemble evidence bundle
+      id: assemble
+      shell: bash
+      env:
+        EVID: ${{ inputs.evidence_dir }}
+        JUNIT: ${{ inputs.test_report_path }}
+        ARTIFACT_IN: ${{ inputs.artifact_name }}
+        SHA: ${{ github.sha }}
+        REF: ${{ github.ref_name }}
+        REPO: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$EVID"
+        # Standardized name for the testing evidence, so the manifest and any
+        # downstream Jira push read one predictable path.
+        if [ -f "$JUNIT" ]; then
+          cp "$JUNIT" "$EVID/tests.junit.xml"
+        fi
+        GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+        python3 - "$EVID" "$SHA" "$REF" "$REPO" "$RUN_URL" "$GENERATED_AT" <<'PY'
+        import sys, os, json, hashlib
+        import xml.etree.ElementTree as ET
+
+        evid, sha, ref, repo, run_url, generated_at = sys.argv[1:7]
+
+        # Control catalog: standardized nomenclature + SOC2 TSC reference.
+        # kind drives how the file is counted. file is the standardized name
+        # the scan actions emit into the evidence dir.
+        catalog = [
+            ("Static Application Security Testing (SAST)", "CC7.1", "semgrep",        "sast.semgrep.json",    "semgrep"),
+            ("Software Composition Analysis (SCA)",        "CC7.1", "trivy",          "sca.trivy.json",       "trivy"),
+            ("Secret Scanning",                            "CC6.1", "gitleaks",       "secrets.gitleaks.json","gitleaks"),
+            ("Automated Testing (unit/integration)",       "CC8.1", "test runner",    "tests.junit.xml",      "junit"),
+            ("Code Quality - duplication",                 "CC8.1", "jscpd",          "duplication.jscpd.json","jscpd"),
+            ("Code Quality - unused code/deps",            "CC8.1", "knip",           "deadcode.knip.json",   "knip"),
+            ("Software Bill of Materials (SBOM)",          "CC7.1", "sbom-generator", "sbom.cyclonedx.json",  "sbom"),
+        ]
+
+        def sha256(path):
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+
+        def count(kind, path):
+            # Returns (findings:int|None, status_hint). Defensive: a malformed
+            # report yields findings=None and status 'present' rather than
+            # crashing the whole bundle.
+            try:
+                if kind == "junit":
+                    root = ET.parse(path).getroot()
+                    suites = [root] if root.tag == "testsuite" else root.iter("testsuite")
+                    tests = fails = errs = skips = 0
+                    for s in suites:
+                        tests += int(s.get("tests", 0) or 0)
+                        fails += int(s.get("failures", 0) or 0)
+                        errs  += int(s.get("errors", 0) or 0)
+                        skips += int(s.get("skipped", 0) or 0)
+                    bad = fails + errs
+                    return ({"tests": tests, "failures": fails, "errors": errs, "skipped": skips},
+                            "pass" if bad == 0 else "fail")
+                data = json.load(open(path))
+                if kind == "semgrep":
+                    n = len(data.get("results", []))
+                elif kind == "gitleaks":
+                    n = len(data) if isinstance(data, list) else 0
+                elif kind == "trivy":
+                    n = 0
+                    for r in (data.get("Results") or []):
+                        n += len(r.get("Vulnerabilities") or [])
+                        n += len(r.get("Secrets") or [])
+                        n += len(r.get("Misconfigurations") or [])
+                elif kind == "jscpd":
+                    stats = (data.get("statistics") or {}).get("total") or {}
+                    n = int(stats.get("clones", 0) or 0)
+                elif kind == "knip":
+                    # knip json shape varies by version; count issue entries.
+                    if isinstance(data, dict) and "issues" in data:
+                        iss = data["issues"]
+                        n = len(iss) if isinstance(iss, list) else sum(
+                            len(v) for v in iss.values() if isinstance(v, (list, dict)))
+                    elif isinstance(data, list):
+                        n = len(data)
+                    else:
+                        n = 0
+                elif kind == "sbom":
+                    # CycloneDX uses "components"; SPDX uses "packages".
+                    n = len(data.get("components", data.get("packages", [])))
+                else:
+                    n = None
+                return (n, "pass" if (n or 0) == 0 else "findings")
+            except Exception as e:
+                return (None, "present")
+
+        controls = []
+        for name, tsc, tool, fname, kind in catalog:
+            path = os.path.join(evid, fname)
+            if not os.path.isfile(path):
+                controls.append({"control": name, "tsc": tsc, "tool": tool,
+                                 "file": fname, "present": False,
+                                 "sha256": None, "findings": None, "status": "not-run"})
+                continue
+            findings, status = count(kind, path)
+            # SBOM is inventory, not a pass/fail gate.
+            if kind == "sbom":
+                status = "collected"
+            controls.append({"control": name, "tsc": tsc, "tool": tool,
+                             "file": fname, "present": True,
+                             "sha256": sha256(path), "findings": findings,
+                             "status": status})
+
+        # Product-priority summary: computed once here so every downstream
+        # surface (check run, Jira panel) renders the same numbers.
+        def _by_tool(t):
+            return next((c for c in controls if c["tool"] == t), None)
+
+        secrets = 0
+        gl = _by_tool("gitleaks")
+        if gl and isinstance(gl["findings"], int):
+            secrets += gl["findings"]
+        high_crit = 0
+        vuln_total = 0
+        tv = _by_tool("trivy")
+        if tv and tv["present"]:
+            try:
+                td = json.load(open(os.path.join(evid, tv["file"])))
+            except Exception:
+                td = None
+            if td:
+                for r in (td.get("Results") or []):
+                    secrets += len(r.get("Secrets") or [])
+                    for v in (r.get("Vulnerabilities") or []):
+                        vuln_total += 1
+                        if (v.get("Severity") or "").upper() in ("HIGH", "CRITICAL"):
+                            high_crit += 1
+        tc = _by_tool("test runner")
+        tf = tc["findings"] if (tc and isinstance(tc["findings"], dict)) else None
+        test_fail = (tf.get("failures", 0) + tf.get("errors", 0)) if tf else 0
+        test_total = tf.get("tests", 0) if tf else 0
+        test_pass = test_total - test_fail - (tf.get("skipped", 0) if tf else 0)
+        sast_c = _by_tool("semgrep")
+        sast_n = sast_c["findings"] if (sast_c and isinstance(sast_c["findings"], int)) else 0
+        action_needed = secrets > 0 or high_crit > 0 or test_fail > 0
+        verdict = "ACTION NEEDED" if action_needed else ("REVIEW" if sast_n > 0 else "CLEAN")
+        summary = {
+            "verdict": verdict,
+            "secrets": secrets,
+            "highCrit": high_crit,
+            "vulnTotal": vuln_total,
+            "testFail": test_fail,
+            "testTotal": test_total,
+            "testPass": test_pass,
+            "sast": sast_n,
+        }
+
+        manifest = {
+            "schema": "sonarmd.ci-evidence/v1",
+            "repo": repo,
+            "commit": sha,
+            "ref": ref,
+            "run_url": run_url,
+            "generated_at": generated_at,
+            "summary": summary,
+            "controls": controls,
+        }
+        with open(os.path.join(evid, "manifest.json"), "w") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
+
+        def cell(v):
+            return "-" if v is None else str(v)
+
+        lines = []
+        lines.append("# CI Security and Test Evidence")
+        lines.append("")
+        lines.append(f"Repo: {repo}  ")
+        lines.append(f"Commit: {sha}  ")
+        lines.append(f"Ref: {ref}  ")
+        lines.append(f"Run: {run_url}  ")
+        lines.append(f"Generated: {generated_at}")
+        lines.append("")
+        lines.append("Each row is a standardized control, the tool that produced")
+        lines.append("it, the evidence file in this bundle, and its result. Status")
+        lines.append("'not-run' means the control produced no evidence this run.")
+        lines.append("")
+        lines.append("| Control | SOC2 TSC | Tool | Evidence file | Findings | Status |")
+        lines.append("|---------|----------|------|---------------|----------|--------|")
+        for c in controls:
+            f = c["findings"]
+            if isinstance(f, dict):
+                ftxt = f"{f.get('tests',0)} tests, {f.get('failures',0)+f.get('errors',0)} failed, {f.get('skipped',0)} skipped"
+            else:
+                ftxt = cell(f)
+            fileref = c["file"] if c["present"] else f"{c['file']} (missing)"
+            lines.append(f"| {c['control']} | {c['tsc']} | {c['tool']} | {fileref} | {ftxt} | {c['status']} |")
+        lines.append("")
+        with open(os.path.join(evid, "INDEX.md"), "w") as f:
+            f.write("\n".join(lines))
+
+        # Mirror INDEX to the run summary for at-a-glance visibility.
+        summ = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summ:
+            with open(summ, "a") as f:
+                f.write("\n".join(lines) + "\n")
+        PY
+
+        NAME="$ARTIFACT_IN"
+        if [ -z "$NAME" ]; then
+          NAME="ci-evidence-${SHA:0:12}"
+        fi
+        echo "artifact_name=$NAME" >> "$GITHUB_OUTPUT"
+        echo "ci-evidence-bundle: assembled $(ls -1 "$EVID" | wc -l | tr -d ' ') files into $EVID (artifact: $NAME)"
+
+    - name: Upload evidence artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.assemble.outputs.artifact_name }}
+        path: ${{ inputs.evidence_dir }}
+        if-no-files-found: warn
+        retention-days: ${{ inputs.retention_days }}

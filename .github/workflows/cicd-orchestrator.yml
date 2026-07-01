@@ -27,6 +27,7 @@ name: CI/CD
 #     actions: read       # discover prior CI runs (cache probe)
 #     packages: write     # push/pull release tarball via GHCR-backed artifact store
 #     pull-requests: read # cut_release infers patch/minor from PR head ref
+#     checks: write       # publish the CI evidence check run (feeds the Jira Builds panel via the connector)
 #   jobs:
 #     cicd:
 #       uses: sonarmd/workflows/.github/workflows/cicd-orchestrator.yml@main

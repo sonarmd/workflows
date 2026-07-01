@@ -10,6 +10,14 @@ inputs:
     description: 'Path to JUnit XML test report.'
     required: false
     default: 'junit.xml'
+  evidence_dir:
+    description: |
+      Directory holding the SOC2 audit-evidence bundle (INDEX.md,
+      manifest.json, per-control reports) produced by ci-evidence-bundle.
+      When present, it is embedded in release.tar.gz under ci-evidence/ so
+      the evidence travels with the artifact to the deploy target.
+    required: false
+    default: 'ci-evidence'
 
 outputs:
   artifact_path:
@@ -31,6 +39,7 @@ runs:
       working-directory: ${{ github.workspace }}
       env:
         TEST_REPORT: ${{ inputs.test_report_path }}
+        EVIDENCE_DIR: ${{ inputs.evidence_dir }}
         SHA: ${{ github.sha }}
         REF: ${{ github.ref }}
         REPO: ${{ github.repository }}
@@ -194,6 +203,14 @@ runs:
         # ── Copy test report if exists ───────────────────────────
         if [ -f "$TEST_REPORT" ]; then
           cp "$TEST_REPORT" "${RELEASE_DIR}/test-report.xml"
+        fi
+
+        # --- Embed SOC2 audit-evidence bundle if present ---------
+        # Travels inside release.tar.gz so the deploy can extract it and
+        # persist it (e.g. to S3) as durable, artifact-linked evidence.
+        if [ -d "$EVIDENCE_DIR" ]; then
+          cp -R "$EVIDENCE_DIR" "${RELEASE_DIR}/ci-evidence"
+          echo "bundle-pipeline: embedded evidence bundle ($(find "$EVIDENCE_DIR" -type f | wc -l | tr -d ' ') files)"
         fi
 
         # ── Copy deploy.json into release ────────────────────────

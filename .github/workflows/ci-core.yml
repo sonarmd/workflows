@@ -127,13 +127,15 @@ jobs:
       # (deps). Restored as REPORT-ONLY: fail_on_findings=false and
       # continue-on-error, so it surfaces findings as evidence but NEVER
       # blocks the build. Needs node_modules (@sonarmd/star-config) so gated
-      # on yarn.lock.
+      # on yarn.lock. output_dir routes machine-readable reports into the
+      # shared evidence dir for the SOC2 audit-evidence bundle below.
       - name: Security scan
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
         continue-on-error: true
         uses: sonarmd/workflows/actions/security-scan@main
         with:
           fail_on_findings: "false"
+          output_dir: ci-evidence
 
       # Quality visibility: jscpd (copy-paste) + knip (dead code / unused
       # deps). Also REPORT-ONLY - reports, never blocks.
@@ -143,6 +145,58 @@ jobs:
         uses: sonarmd/workflows/actions/quality-scan@main
         with:
           fail_on_findings: "false"
+          output_dir: ci-evidence
+
+      # Supply-chain evidence: CycloneDX SBOM into the evidence dir. Warning,
+      # not a gate (the action itself never fails the build).
+      - name: SBOM
+        if: hashFiles(format('{0}/package.json', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/sbom-generator@main
+        with:
+          output_file: ci-evidence/sbom.cyclonedx.json
+
+      # SOC2 audit-evidence: consolidate SAST + SCA + secret scan + tests +
+      # quality + SBOM into ONE labeled artifact (INDEX.md + manifest.json),
+      # each file tagged with its control name and TSC reference. Evidence
+      # only - never gates. Always runs so a missing control is recorded as
+      # not-run rather than silently dropped.
+      - name: Evidence bundle
+        if: always() && hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/ci-evidence-bundle@main
+        with:
+          evidence_dir: ci-evidence
+          test_report_path: ${{ inputs.test_report_path }}
+
+      # Publish the evidence bundle as a native GitHub Check Run: product-first
+      # summary (secrets / high-crit vulns / failing tests) plus the full
+      # labeled control matrix. The already-installed GitHub-for-Jira connector
+      # reads GitHub checks with its own auth and surfaces this as a Build on
+      # the linked issue - no extra credential. Report-only; needs
+      # `checks: write` on the caller's token (continue-on-error so callers
+      # that have not granted it yet are unaffected).
+      - name: Publish evidence check
+        if: always() && hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/publish-evidence-check@main
+        with:
+          evidence_dir: ci-evidence
+
+      # Push the evidence to each linked Jira issue as an issue property over
+      # OAuth 2.0 (no password). The jira-evidence-connector Forge app renders
+      # it as a rich issue panel. Config-driven: no-ops when the OAuth secrets
+      # are unset, so it is safe to ship before the OAuth app is provisioned.
+      - name: Push evidence to Jira (OAuth)
+        if: always() && hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/push-evidence-oauth@main
+        with:
+          evidence_dir: ci-evidence
+          cloud_id: ${{ vars.JIRA_CLOUD_ID }}
+          client_id: ${{ secrets.JIRA_OAUTH_CLIENT_ID }}
+          client_secret: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+          refresh_token: ${{ secrets.JIRA_OAUTH_REFRESH_TOKEN }}
 
       # Cache check: if a GitHub Release already carries release.tar.gz for
       # this tree hash (cd-core-tree marker in the body), skip bundle/sign/
