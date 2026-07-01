@@ -169,6 +169,20 @@ jobs:
           evidence_dir: ci-evidence
           test_report_path: ${{ inputs.test_report_path }}
 
+      # Publish the evidence bundle as a native GitHub Check Run: product-first
+      # summary (secrets / high-crit vulns / failing tests) plus the full
+      # labeled control matrix. The already-installed GitHub-for-Jira connector
+      # reads GitHub checks with its own auth and surfaces this as a Build on
+      # the linked issue - no extra credential. Report-only; needs
+      # `checks: write` on the caller's token (continue-on-error so callers
+      # that have not granted it yet are unaffected).
+      - name: Publish evidence check
+        if: always() && hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/publish-evidence-check@main
+        with:
+          evidence_dir: ci-evidence
+
       # Cache check: if a GitHub Release already carries release.tar.gz for
       # this tree hash (cd-core-tree marker in the body), skip bundle/sign/
       # stage. CD will pull straight from the existing release asset. Keyed
