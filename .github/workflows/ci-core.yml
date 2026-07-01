@@ -183,6 +183,21 @@ jobs:
         with:
           evidence_dir: ci-evidence
 
+      # Push the evidence to each linked Jira issue as an issue property over
+      # OAuth 2.0 (no password). The jira-evidence-connector Forge app renders
+      # it as a rich issue panel. Config-driven: no-ops when the OAuth secrets
+      # are unset, so it is safe to ship before the OAuth app is provisioned.
+      - name: Push evidence to Jira (OAuth)
+        if: always() && hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/push-evidence-oauth@main
+        with:
+          evidence_dir: ci-evidence
+          cloud_id: ${{ vars.JIRA_CLOUD_ID }}
+          client_id: ${{ secrets.JIRA_OAUTH_CLIENT_ID }}
+          client_secret: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+          refresh_token: ${{ secrets.JIRA_OAUTH_REFRESH_TOKEN }}
+
       # Cache check: if a GitHub Release already carries release.tar.gz for
       # this tree hash (cd-core-tree marker in the body), skip bundle/sign/
       # stage. CD will pull straight from the existing release asset. Keyed

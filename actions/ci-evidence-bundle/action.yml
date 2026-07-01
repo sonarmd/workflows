@@ -153,6 +153,50 @@ runs:
                              "sha256": sha256(path), "findings": findings,
                              "status": status})
 
+        # Product-priority summary: computed once here so every downstream
+        # surface (check run, Jira panel) renders the same numbers.
+        def _by_tool(t):
+            return next((c for c in controls if c["tool"] == t), None)
+
+        secrets = 0
+        gl = _by_tool("gitleaks")
+        if gl and isinstance(gl["findings"], int):
+            secrets += gl["findings"]
+        high_crit = 0
+        vuln_total = 0
+        tv = _by_tool("trivy")
+        if tv and tv["present"]:
+            try:
+                td = json.load(open(os.path.join(evid, tv["file"])))
+            except Exception:
+                td = None
+            if td:
+                for r in (td.get("Results") or []):
+                    secrets += len(r.get("Secrets") or [])
+                    for v in (r.get("Vulnerabilities") or []):
+                        vuln_total += 1
+                        if (v.get("Severity") or "").upper() in ("HIGH", "CRITICAL"):
+                            high_crit += 1
+        tc = _by_tool("test runner")
+        tf = tc["findings"] if (tc and isinstance(tc["findings"], dict)) else None
+        test_fail = (tf.get("failures", 0) + tf.get("errors", 0)) if tf else 0
+        test_total = tf.get("tests", 0) if tf else 0
+        test_pass = test_total - test_fail - (tf.get("skipped", 0) if tf else 0)
+        sast_c = _by_tool("semgrep")
+        sast_n = sast_c["findings"] if (sast_c and isinstance(sast_c["findings"], int)) else 0
+        action_needed = secrets > 0 or high_crit > 0 or test_fail > 0
+        verdict = "ACTION NEEDED" if action_needed else ("REVIEW" if sast_n > 0 else "CLEAN")
+        summary = {
+            "verdict": verdict,
+            "secrets": secrets,
+            "highCrit": high_crit,
+            "vulnTotal": vuln_total,
+            "testFail": test_fail,
+            "testTotal": test_total,
+            "testPass": test_pass,
+            "sast": sast_n,
+        }
+
         manifest = {
             "schema": "sonarmd.ci-evidence/v1",
             "repo": repo,
@@ -160,6 +204,7 @@ runs:
             "ref": ref,
             "run_url": run_url,
             "generated_at": generated_at,
+            "summary": summary,
             "controls": controls,
         }
         with open(os.path.join(evid, "manifest.json"), "w") as f:

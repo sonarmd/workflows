@@ -1,0 +1,132 @@
+name: Push Evidence To Jira (OAuth)
+description: |
+  Writes the CI evidence bundle to each linked Jira issue as an issue property
+  (sonarmd.ci-evidence) using OAuth 2.0 - no password, no shared secret. The
+  Forge connector (jira-evidence-connector) reads that property and renders the
+  panel with its own Atlassian-managed auth.
+
+  Auth: OAuth 2.0 refresh-token grant. client_id / client_secret / refresh_token
+  come from agora_vault (same pattern as the confluence-sync workflows), never
+  hard-coded. The OAuth app needs the write:jira-work scope.
+
+  Issue keys are derived from the branch name, PR title, and recent commit
+  messages (uppercase KEY-123 form). Report-only: never fails the build.
+
+inputs:
+  evidence_dir:
+    description: "Directory produced by ci-evidence-bundle (holds manifest.json)."
+    required: false
+    default: "ci-evidence"
+  cloud_id:
+    description: "Atlassian cloud id for the target site."
+    required: true
+  client_id:
+    description: "OAuth 2.0 client id."
+    required: true
+  client_secret:
+    description: "OAuth 2.0 client secret."
+    required: true
+  refresh_token:
+    description: "OAuth 2.0 refresh token (offline_access)."
+    required: true
+  issue_keys:
+    description: "Optional space-separated override; empty = derive from branch/PR/commits."
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Push evidence to Jira issues
+      shell: bash
+      env:
+        EVID: ${{ inputs.evidence_dir }}
+        CLOUD_ID: ${{ inputs.cloud_id }}
+        CLIENT_ID: ${{ inputs.client_id }}
+        CLIENT_SECRET: ${{ inputs.client_secret }}
+        REFRESH_TOKEN: ${{ inputs.refresh_token }}
+        KEYS_IN: ${{ inputs.issue_keys }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        HEAD_REF: ${{ github.head_ref }}
+        REF_NAME: ${{ github.ref_name }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        SHA: ${{ github.sha }}
+      run: |
+        set -uo pipefail
+
+        if [ ! -f "$EVID/manifest.json" ]; then
+          echo "::notice::push-evidence-oauth: no manifest at $EVID - skipping"
+          exit 0
+        fi
+        if [ -z "$CLOUD_ID" ] || [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ] || [ -z "$REFRESH_TOKEN" ]; then
+          echo "::notice::push-evidence-oauth: OAuth config not set - skipping (no-op)"
+          exit 0
+        fi
+
+        # Derive issue keys from branch, PR title, and recent commits.
+        if [ -n "$KEYS_IN" ]; then
+          KEYS="$KEYS_IN"
+        else
+          KEYS=$(printf '%s\n%s\n%s\n' "$HEAD_REF $REF_NAME" "$PR_TITLE" "$(git log -5 --pretty=%s 2>/dev/null)" \
+                 | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | sort -u | tr '\n' ' ')
+        fi
+        if [ -z "$(echo "$KEYS" | tr -d '[:space:]')" ]; then
+          echo "::notice::push-evidence-oauth: no Jira issue keys found on branch/PR/commits - skipping"
+          exit 0
+        fi
+        echo "push-evidence-oauth: target issues: $KEYS"
+
+        # Build the property value: the full manifest + build context.
+        python3 - "$EVID/manifest.json" "$RUN_URL" "$SHA" "$REF_NAME" > payload.json <<'PY'
+        import sys, json
+        from datetime import datetime, timezone
+        manifest = json.load(open(sys.argv[1]))
+        payload = {
+            "manifest": manifest,
+            "build": {"runUrl": sys.argv[2], "commit": sys.argv[3], "ref": sys.argv[4]},
+            "receivedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        print(json.dumps(payload))
+        PY
+
+        # OAuth 2.0 refresh-token grant. Secrets are passed via env/stdin, never
+        # echoed. GitHub masks the secret inputs in logs.
+        ACCESS=$(python3 - <<'PY'
+        import os, json, urllib.request
+        req = urllib.request.Request(
+            "https://auth.atlassian.com/oauth/token",
+            data=json.dumps({
+                "grant_type": "refresh_token",
+                "client_id": os.environ["CLIENT_ID"],
+                "client_secret": os.environ["CLIENT_SECRET"],
+                "refresh_token": os.environ["REFRESH_TOKEN"],
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                print(json.load(r).get("access_token", ""))
+        except Exception as e:
+            print("", end="")
+        PY
+        )
+        if [ -z "$ACCESS" ]; then
+          echo "::warning::push-evidence-oauth: OAuth token exchange failed - skipping"
+          exit 0
+        fi
+
+        rc=0
+        for K in $KEYS; do
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+            "https://api.atlassian.com/ex/jira/$CLOUD_ID/rest/api/3/issue/$K/properties/sonarmd.ci-evidence" \
+            -H "Authorization: Bearer $ACCESS" \
+            -H "Content-Type: application/json" \
+            --data @payload.json || echo "000")
+          echo "push-evidence-oauth: $K -> HTTP $code"
+          case "$code" in 200|201) ;; *) rc=1 ;; esac
+        done
+        # Report-only: log a warning on any non-2xx but never fail the build.
+        if [ "$rc" -ne 0 ]; then
+          echo "::warning::push-evidence-oauth: one or more issue-property writes did not return 2xx"
+        fi
+        exit 0
