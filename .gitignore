@@ -3,3 +3,7 @@
 .claude
 .env
 
+
+# agent scratch (never committed)
+.tmp/
+.agent/sessions/

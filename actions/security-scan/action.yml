@@ -37,10 +37,26 @@ inputs:
     description: "Path to the @sonarmd/star-config package. Defaults to node_modules lookup."
     required: false
     default: "node_modules/@sonarmd/star-config"
+  output_dir:
+    description: |
+      When set, each scanner ALSO writes its native JSON report to this
+      directory using standardized SOC2 control filenames (sast.semgrep.json,
+      secrets.gitleaks.json, sca.trivy.json). Empty = log-only, unchanged
+      behavior for existing callers. The ci-evidence-bundle action reads this
+      directory to assemble the labeled audit-evidence artifact.
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
+    - name: Prepare evidence output dir
+      if: inputs.output_dir != ''
+      shell: bash
+      env:
+        DIR: ${{ inputs.output_dir }}
+      run: mkdir -p "$DIR"
+
     - name: Detect star-config
       id: detect
       shell: bash
@@ -72,6 +88,7 @@ runs:
         STAR_ROOT:       ${{ inputs.star_config_root }}
         CONFIGS:         ${{ inputs.semgrep_configs }}
         FAIL_ON:         ${{ inputs.fail_on_findings }}
+        DIR:             ${{ inputs.output_dir }}
       run: |
         set -euo pipefail
         ARGS=()
@@ -83,6 +100,13 @@ runs:
         fi
         if [ "$FAIL_ON" = "true" ]; then
           ARGS+=("--error")
+        fi
+        # --json-output writes the SAST evidence file WITHOUT changing the
+        # console output, so the human log is preserved alongside the machine
+        # report. Report-only runs still emit the file (semgrep writes it
+        # regardless of exit code).
+        if [ -n "$DIR" ]; then
+          ARGS+=("--json-output=${DIR}/sast.semgrep.json")
         fi
         echo "security-scan/semgrep: semgrep scan ${ARGS[*]} --severity=ERROR --severity=WARNING ."
         semgrep scan "${ARGS[@]}" --severity=ERROR --severity=WARNING .
@@ -96,6 +120,7 @@ runs:
         STAR_ROOT:        ${{ inputs.star_config_root }}
         FAIL_ON:          ${{ inputs.fail_on_findings }}
         GITLEAKS_VERSION: ${{ inputs.gitleaks_version }}
+        DIR:              ${{ inputs.output_dir }}
       run: |
         set -euo pipefail
         # Download the gitleaks binary — avoids depending on an upstream
@@ -125,6 +150,12 @@ runs:
         if [ "$STAR_INSTALLED" = "true" ] && [ -f "${STAR_ROOT}/gitleaks/default.toml" ]; then
           ARGS+=(--config "${STAR_ROOT}/gitleaks/default.toml")
         fi
+        # Secret-scanning evidence: gitleaks writes the JSON report at the end
+        # of the run regardless of exit code, so report-only runs still emit it.
+        # --redact (above) keeps any matched secret values out of the report.
+        if [ -n "$DIR" ]; then
+          ARGS+=(--report-format json --report-path "${DIR}/secrets.gitleaks.json")
+        fi
         if [ "$FAIL_ON" = "true" ]; then
           ARGS+=(--exit-code 1)
         else
@@ -148,3 +179,21 @@ runs:
         ignore-unfixed: true
         exit-code: ${{ inputs.fail_on_findings == 'true' && '1' || '0' }}
         scanners: vuln,secret,misconfig
+
+    # SCA evidence: trivy-action emits a single format per invocation, so the
+    # step above keeps the human-readable table in the logs and this report-only
+    # pass writes the machine-readable JSON for the audit-evidence bundle. Never
+    # fails the build (exit-code 0); it exists purely to produce the file.
+    - name: Trivy SCA evidence (json)
+      if: ${{ inputs.output_dir != '' && (inputs.scanners == '' || contains(format(' {0} ', inputs.scanners), ' trivy ')) }}
+      uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+      with:
+        scan-type: fs
+        scan-ref: .
+        trivy-config: ${{ steps.detect.outputs.installed == 'true' && format('{0}/trivy/config.yaml', inputs.star_config_root) || '' }}
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        exit-code: "0"
+        scanners: vuln,secret,misconfig
+        format: json
+        output: ${{ inputs.output_dir }}/sca.trivy.json

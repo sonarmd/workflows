@@ -30,10 +30,25 @@ inputs:
     description: "Path(s) to scan for duplication. Defaults to the repo root."
     required: false
     default: "."
+  output_dir:
+    description: |
+      When set, jscpd and knip ALSO write JSON reports to this directory using
+      standardized filenames (duplication.jscpd.json, deadcode.knip.json).
+      Empty = summary-only, unchanged behavior for existing callers. The
+      ci-evidence-bundle action reads this directory for the audit artifact.
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
+    - name: Prepare evidence output dir
+      if: inputs.output_dir != ''
+      shell: bash
+      env:
+        DIR: ${{ inputs.output_dir }}
+      run: mkdir -p "$DIR"
+
     - name: Detect star-config
       id: detect
       shell: bash
@@ -58,19 +73,27 @@ runs:
         STAR_ROOT:      ${{ inputs.star_config_root }}
         FAIL_ON:        ${{ inputs.fail_on_findings }}
         JSCPD_PATH:     ${{ inputs.jscpd_path }}
+        DIR:            ${{ inputs.output_dir }}
       run: |
         set -euo pipefail
         ARGS=()
         if [ "$STAR_INSTALLED" = "true" ] && [ -f "${STAR_ROOT}/jscpd/default.json" ]; then
           ARGS+=(--config "${STAR_ROOT}/jscpd/default.json")
-        else
-          # No star-config — emit a markdown report at a known path so the
-          # summary attachment below still has something to read.
+        fi
+        # Decide reporters + output. An evidence dir forces markdown+json into
+        # it (json is the duplication evidence file, markdown feeds the summary).
+        # Without an evidence dir, preserve prior behavior exactly: markdown to
+        # ./jscpd-report only when there is no star-config to drive reporters.
+        SUMMARY_MD="./jscpd-report/jscpd-report.md"
+        if [ -n "$DIR" ]; then
+          ARGS+=(--reporters markdown,json --output "$DIR")
+          SUMMARY_MD="$DIR/jscpd-report.md"
+        elif [ "$STAR_INSTALLED" != "true" ] || [ ! -f "${STAR_ROOT}/jscpd/default.json" ]; then
           ARGS+=(--reporters markdown --output ./jscpd-report)
         fi
         # jscpd_path is documented as space-separated. Split into an array
         # so each path is its own argv entry; paths with spaces are not
-        # representable here (acceptable trade-off — string-array inputs
+        # representable here (acceptable trade-off - string-array inputs
         # aren't supported by composite actions).
         IFS=' ' read -r -a JSCPD_PATHS <<< "$JSCPD_PATH"
         # jscpd's threshold is set inside the config file. Its exit code
@@ -83,12 +106,17 @@ runs:
           npx --yes jscpd "${ARGS[@]}" "${JSCPD_PATHS[@]}" || true
         fi
 
+        # Normalize the json report to the standardized evidence filename.
+        if [ -n "$DIR" ] && [ -f "$DIR/jscpd-report.json" ]; then
+          mv "$DIR/jscpd-report.json" "$DIR/duplication.jscpd.json"
+        fi
+
         # Attach the markdown report to the run summary if jscpd produced one.
-        if [ -f "./jscpd-report/jscpd-report.md" ]; then
+        if [ -f "$SUMMARY_MD" ]; then
           {
-            echo "## jscpd — cross-file duplication"
+            echo "## jscpd - cross-file duplication"
             echo ""
-            cat "./jscpd-report/jscpd-report.md"
+            cat "$SUMMARY_MD"
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
@@ -100,11 +128,21 @@ runs:
         STAR_INSTALLED: ${{ steps.detect.outputs.installed }}
         STAR_ROOT:      ${{ inputs.star_config_root }}
         FAIL_ON:        ${{ inputs.fail_on_findings }}
+        DIR:            ${{ inputs.output_dir }}
       run: |
         set -euo pipefail
         ARGS=(--reporter markdown)
+        CONFIG_ARGS=()
         if [ "$STAR_INSTALLED" = "true" ] && [ -f "${STAR_ROOT}/knip/default.json" ]; then
-          ARGS+=(--config "${STAR_ROOT}/knip/default.json")
+          CONFIG_ARGS+=(--config "${STAR_ROOT}/knip/default.json")
+        fi
+        ARGS+=("${CONFIG_ARGS[@]}")
+        # Dead-code evidence: knip emits one reporter per run, so a separate
+        # report-only json pass writes the evidence file without disturbing the
+        # markdown summary run below. Never fails the build.
+        if [ -n "$DIR" ]; then
+          echo "quality-scan/knip: npx knip --reporter json (evidence)"
+          npx --yes knip --reporter json "${CONFIG_ARGS[@]}" > "$DIR/deadcode.knip.json" 2>/dev/null || true
         fi
         echo "quality-scan/knip: npx knip ${ARGS[*]}"
         REPORT="$(mktemp)"

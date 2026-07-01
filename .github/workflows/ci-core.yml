@@ -127,13 +127,15 @@ jobs:
       # (deps). Restored as REPORT-ONLY: fail_on_findings=false and
       # continue-on-error, so it surfaces findings as evidence but NEVER
       # blocks the build. Needs node_modules (@sonarmd/star-config) so gated
-      # on yarn.lock.
+      # on yarn.lock. output_dir routes machine-readable reports into the
+      # shared evidence dir for the SOC2 audit-evidence bundle below.
       - name: Security scan
         if: hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
         continue-on-error: true
         uses: sonarmd/workflows/actions/security-scan@main
         with:
           fail_on_findings: "false"
+          output_dir: ci-evidence
 
       # Quality visibility: jscpd (copy-paste) + knip (dead code / unused
       # deps). Also REPORT-ONLY - reports, never blocks.
@@ -143,6 +145,29 @@ jobs:
         uses: sonarmd/workflows/actions/quality-scan@main
         with:
           fail_on_findings: "false"
+          output_dir: ci-evidence
+
+      # Supply-chain evidence: CycloneDX SBOM into the evidence dir. Warning,
+      # not a gate (the action itself never fails the build).
+      - name: SBOM
+        if: hashFiles(format('{0}/package.json', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/sbom-generator@main
+        with:
+          output_file: ci-evidence/sbom.cyclonedx.json
+
+      # SOC2 audit-evidence: consolidate SAST + SCA + secret scan + tests +
+      # quality + SBOM into ONE labeled artifact (INDEX.md + manifest.json),
+      # each file tagged with its control name and TSC reference. Evidence
+      # only - never gates. Always runs so a missing control is recorded as
+      # not-run rather than silently dropped.
+      - name: Evidence bundle
+        if: always() && hashFiles(format('{0}/yarn.lock', inputs.working_directory)) != ''
+        continue-on-error: true
+        uses: sonarmd/workflows/actions/ci-evidence-bundle@main
+        with:
+          evidence_dir: ci-evidence
+          test_report_path: ${{ inputs.test_report_path }}
 
       # Cache check: if a GitHub Release already carries release.tar.gz for
       # this tree hash (cd-core-tree marker in the body), skip bundle/sign/
