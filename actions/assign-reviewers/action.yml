@@ -49,11 +49,27 @@ runs:
           const { owner, repo } = context.repo;
           const pull_number = pr.number;
 
+          // Request only the delta: this runs on every PR event (including
+          // synchronize), so never re-ping someone who is already requested
+          // or has already submitted a review.
+          const { data: pending } = await github.rest.pulls.listRequestedReviewers({ owner, repo, pull_number });
+          const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number, per_page: 100 });
+          const already = new Set([
+            ...pending.users.map(u => u.login),
+            ...reviews.map(r => r.user && r.user.login).filter(Boolean),
+          ]);
+
           // Never request the author (GitHub rejects self-requests anyway).
           const reviewers = (process.env.REVIEWERS || '')
             .split(',')
             .map(s => s.trim())
-            .filter(login => login && login !== author);
+            .filter(login => login && login !== author && !already.has(login));
+
+          if (!reviewers.length) {
+            core.info('assign-reviewers: everyone already requested or reviewed, nothing to do');
+            core.setOutput('requested', 0);
+            return;
+          }
 
           let requested = 0;
           const skipped = [];
