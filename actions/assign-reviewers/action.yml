@@ -1,0 +1,83 @@
+name: Assign Reviewers
+description: Requests review from a fixed list of users on the current pull request. Skips drafts; optionally scoped to a single PR author.
+
+inputs:
+  reviewers:
+    description: 'Comma-separated GitHub usernames to request review from.'
+    required: true
+  only-author:
+    description: 'If set, only act when the PR author login matches this value.'
+    required: false
+    default: ''
+
+outputs:
+  requested:
+    description: 'Number of reviewers successfully requested.'
+    value: ${{ steps.request.outputs.requested }}
+
+runs:
+  using: composite
+  steps:
+    - name: Request reviewers
+      id: request
+      uses: actions/github-script@v8
+      env:
+        REVIEWERS: ${{ inputs.reviewers }}
+        ONLY_AUTHOR: ${{ inputs.only-author }}
+      with:
+        script: |
+          const pr = context.payload.pull_request;
+          if (!pr) {
+            core.setFailed('assign-reviewers: not a pull_request event');
+            return;
+          }
+
+          const author = pr.user.login;
+          const onlyAuthor = process.env.ONLY_AUTHOR || '';
+
+          if (pr.draft) {
+            core.info('assign-reviewers: PR is a draft, skipping');
+            core.setOutput('requested', 0);
+            return;
+          }
+          if (onlyAuthor && author !== onlyAuthor) {
+            core.info(`assign-reviewers: author '${author}' != '${onlyAuthor}', skipping`);
+            core.setOutput('requested', 0);
+            return;
+          }
+
+          const { owner, repo } = context.repo;
+          const pull_number = pr.number;
+
+          // Never request the author (GitHub rejects self-requests anyway).
+          const reviewers = (process.env.REVIEWERS || '')
+            .split(',')
+            .map(s => s.trim())
+            .filter(login => login && login !== author);
+
+          let requested = 0;
+          const skipped = [];
+          // Up to 15 reviewers per call; retry a failed chunk one-by-one so a
+          // single non-collaborator handle does not drop everyone else.
+          for (let i = 0; i < reviewers.length; i += 15) {
+            const chunk = reviewers.slice(i, i + 15);
+            try {
+              await github.rest.pulls.requestReviewers({ owner, repo, pull_number, reviewers: chunk });
+              requested += chunk.length;
+            } catch (chunkErr) {
+              for (const r of chunk) {
+                try {
+                  await github.rest.pulls.requestReviewers({ owner, repo, pull_number, reviewers: [r] });
+                  requested++;
+                } catch (userErr) {
+                  skipped.push(`${r}: ${userErr.message}`);
+                }
+              }
+            }
+          }
+
+          core.info(`assign-reviewers: requested review from ${requested} user(s)`);
+          if (skipped.length) {
+            core.warning(`assign-reviewers: skipped ${skipped.length}:\n${skipped.join('\n')}`);
+          }
+          core.setOutput('requested', requested);
