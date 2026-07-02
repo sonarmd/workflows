@@ -26,7 +26,7 @@ name: CI/CD
 #     attestations: write # build provenance attestations
 #     actions: read       # discover prior CI runs (cache probe)
 #     packages: write     # push/pull release tarball via GHCR-backed artifact store
-#     pull-requests: read # cut_release infers patch/minor from PR head ref
+#     pull-requests: write # assign_reviewers requests reviews; cut_release reads PR head ref
 #   jobs:
 #     cicd:
 #       uses: sonarmd/workflows/.github/workflows/cicd-orchestrator.yml@main
@@ -155,6 +155,24 @@ jobs:
       working_directory: ${{ inputs.working_directory }}
       runs_on: ${{ inputs.runs_on }}
     secrets: inherit
+
+  # -- Assign reviewers: PR events only --------------------------------------
+  # Requests review from a fixed list, scoped to one author, so PRs never sit
+  # unassigned. The action skips drafts and requests only the delta (never
+  # re-pings someone already requested or already reviewed), so running on
+  # every PR event is a no-op after the first pass and self-heals draft ->
+  # ready flips on the next push. Requires `pull-requests: write` from the
+  # caller's grant; with a read-only grant the action logs a warning and the
+  # job stays green.
+  assign_reviewers:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 2
+    steps:
+      - uses: sonarmd/workflows/actions/assign-reviewers@main
+        with:
+          only-author: avespoli-sonarmd
+          reviewers: vsiqueirasonarmd,cforrester-sonarmd,tn70626,Estebanhv336
 
   # -- CD: runs on branch push only, after CI passes ------------------------
   # cd-core handles the promote-or-generate logic internally:
