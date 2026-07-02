@@ -1,0 +1,99 @@
+name: Assign reviewers
+
+# Reusable workflow: request review from a fixed list of people on a pull request.
+# Call it from a consuming repo on pull_request (opened / ready_for_review).
+#
+# Only acts on non-draft PRs. Optionally restricted to a single author, so a repo
+# can wire "auto-request my reviewers when *I* open a PR" without affecting anyone
+# else's PRs.
+#
+# The pull_request trigger MUST live in the consuming repo: a reusable workflow
+# cannot self-trigger on another repo's PR events.
+#
+#   Caller example (in the consuming repo, e.g. triggr_api):
+#
+#     name: Assign my reviewers
+#     on:
+#       pull_request:
+#         types: [opened, ready_for_review]
+#     permissions:
+#       pull-requests: write
+#     jobs:
+#       assign:
+#         uses: sonarmd/workflows/.github/workflows/assign-reviewers.yml@main
+#         with:
+#           only_author: avespoli-sonarmd
+#           reviewers: vsiqueirasonarmd,cforrester-sonarmd,tn70626,Estebanhv336
+#
+# Note: GitHub only lets you request review from repo collaborators, up to 15 per
+# call. Non-collaborators are skipped and logged in the run warnings.
+
+on:
+  workflow_call:
+    inputs:
+      reviewers:
+        description: "Comma-separated GitHub usernames to request review from"
+        required: true
+        type: string
+      only_author:
+        description: "If set, only run when the PR author login matches this value"
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  request:
+    name: Request reviewers
+    # Never touch draft PRs; when only_author is set, only that author's PRs.
+    if: >-
+      github.event.pull_request.draft == false &&
+      ( inputs.only_author == '' ||
+        github.event.pull_request.user.login == inputs.only_author )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Request review from the configured list
+        uses: actions/github-script@v7
+        env:
+          REVIEWERS: ${{ inputs.reviewers }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const author = context.payload.pull_request.user.login;
+
+            // Never request the author (GitHub rejects self-requests anyway).
+            const reviewers = (process.env.REVIEWERS || '')
+              .split(',')
+              .map(s => s.trim())
+              .filter(login => login && login !== author);
+
+            let requested = 0;
+            const skipped = [];
+            // Up to 15 reviewers per call; retry a failed chunk one-by-one so a
+            // single non-collaborator handle does not drop everyone else.
+            for (let i = 0; i < reviewers.length; i += 15) {
+              const chunk = reviewers.slice(i, i + 15);
+              try {
+                await github.rest.pulls.requestReviewers({ owner, repo, pull_number, reviewers: chunk });
+                requested += chunk.length;
+              } catch (chunkErr) {
+                for (const r of chunk) {
+                  try {
+                    await github.rest.pulls.requestReviewers({ owner, repo, pull_number, reviewers: [r] });
+                    requested++;
+                  } catch (userErr) {
+                    skipped.push(`${r}: ${userErr.message}`);
+                  }
+                }
+              }
+            }
+
+            core.info(`Requested review from ${requested} person(s).`);
+            if (skipped.length) {
+              core.warning(`Skipped ${skipped.length}:\n${skipped.join('\n')}`);
+            }
